@@ -603,6 +603,154 @@ check('工具 name 前缀一致', [...registeredTools.keys()].every((name) => na
   check('repo/changes 文件按路径升序', (changes.files ?? []).map((f) => f.path).join('|') === [...(changes.files ?? [])].map((f) => f.path).sort().join('|'))
 }
 
+// ---- Git 工作台（IDEA 式面板）端点级行为回归：临时真实仓库 ----
+{
+  const wbRepo = join(tmp, 'wb-repo')
+  const { execFileSync } = await import('node:child_process')
+  const { writeFileSync } = await import('node:fs')
+  const { mkdirSync } = await import('node:fs')
+  mkdirSync(wbRepo, { recursive: true })
+  const git = (...args) => execFileSync('git', args, { cwd: wbRepo, stdio: 'ignore' })
+  git('init', '-q', '-b', 'main')
+  git('config', 'user.email', 'wb@example.com')
+  git('config', 'user.name', 'WB Test')
+  writeFileSync(join(wbRepo, 'a.txt'), 'one\n')
+  git('add', '.')
+  git('commit', '-q', '-m', 'first')
+  writeFileSync(join(wbRepo, 'a.txt'), 'one\ntwo\n')
+  writeFileSync(join(wbRepo, 'b-new.txt'), 'brand new\n')
+
+  // 授权这个仓库、允许写。
+  await call(handler, {
+    method: 'POST',
+    url: '/dsh-git-panel/settings',
+    body: JSON.stringify({ allowedRoots: [wbRepo], allowWrite: true, requireConfirm: true }),
+  })
+
+  // 只读：分支列表
+  const br = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/branches?cwd=${encodeURIComponent(wbRepo)}` })
+  check('wb/branches 200', br.status === 200 && br.json?.ok === true, JSON.stringify(br.json ?? {}).slice(0, 200))
+  check('wb/branches 含 main 且 current', br.json?.current === 'main' && (br.json?.branches ?? []).some((b) => b.name === 'main' && b.current === true))
+
+  // 只读：commits
+  const cm = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/commits?cwd=${encodeURIComponent(wbRepo)}&limit=10` })
+  check('wb/commits 200 且 1 条', cm.status === 200 && (cm.json?.commits ?? []).length === 1, JSON.stringify(cm.json?.commits ?? []).slice(0, 200))
+  check('wb/commits subject=first', cm.json?.commits?.[0]?.subject === 'first')
+  check('wb/commits 带 refs 装饰', String(cm.json?.commits?.[0]?.refs ?? '').includes('main'))
+
+  // 只读：commit 详情
+  const rev = cm.json?.commits?.[0]?.hash ?? ''
+  const cd = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/commit?cwd=${encodeURIComponent(wbRepo)}&rev=${encodeURIComponent(rev)}` })
+  check('wb/commit 200 且含文件表', cd.status === 200 && (cd.json?.files ?? []).some((f) => f.path === 'a.txt'), JSON.stringify(cd.json?.files ?? []).slice(0, 200))
+  check('wb/commit diff 非空', String(cd.json?.diff ?? '').includes('@@') || String(cd.json?.diff ?? '').length > 0)
+
+  // 只读：diff worktree / staged
+  const dw = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/diff?cwd=${encodeURIComponent(wbRepo)}&mode=worktree` })
+  check('wb/diff worktree 含 +two', dw.json?.ok === true && String(dw.json?.diff ?? '').includes('+two'), String(dw.json?.diff ?? '').slice(0, 120))
+  const ds = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/diff?cwd=${encodeURIComponent(wbRepo)}&mode=staged` })
+  check('wb/diff staged 空时 ok 且空 diff', ds.json?.ok === true && String(ds.json?.diff ?? '') === '', JSON.stringify(ds.json ?? {}).slice(0, 120))
+
+  // 只读：remotes（无远程时给空表 + 无 upstream）
+  const rm0 = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/remotes?cwd=${encodeURIComponent(wbRepo)}` })
+  check('wb/remotes 无远程时 ok 且空表', rm0.json?.ok === true && Array.isArray(rm0.json?.remotes) && rm0.json.remotes.length === 0)
+
+  // 未授权目录 fail-closed：commit 详情不泄露
+  const unauthorized = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/commits?cwd=${encodeURIComponent(process.cwd())}` })
+  check('wb/commits 未授权 403', unauthorized.status === 403, String(unauthorized.status))
+  check('wb/commits 未授权不泄露提交', !JSON.stringify(unauthorized.json ?? {}).includes('subject'))
+
+  // 写链路：stage → commit → branches/create → checkout → delete
+  const st = await call(handler, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/stage',
+    body: JSON.stringify({ cwd: wbRepo, paths: ['a.txt', 'b-new.txt'] }),
+  })
+  check('wb/stage ok', st.json?.ok === true, JSON.stringify(st.json ?? {}).slice(0, 200))
+
+  const cmRes = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/changes?cwd=${encodeURIComponent(wbRepo)}` })
+  const stagedFile = (cmRes.json?.changes?.files ?? []).find((f) => f.path === 'a.txt')
+  check('wb/stage 后文件标记 staged', stagedFile?.staged === true, JSON.stringify(stagedFile ?? {}))
+
+  // 空消息提交被拒
+  const badCommit = await call(handler, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/commit',
+    body: JSON.stringify({ cwd: wbRepo, message: '' }),
+  })
+  check('wb/commit 空消息被拒', badCommit.json?.ok === false && String(badCommit.json?.error ?? '').length > 0, JSON.stringify(badCommit.json ?? {}).slice(0, 160))
+
+  const goodCommit = await call(handler, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/commit',
+    body: JSON.stringify({ cwd: wbRepo, message: 'second: staged work' }),
+  })
+  check('wb/commit 成功返回 hash', goodCommit.json?.ok === true && typeof goodCommit.json?.hash === 'string' && goodCommit.json.hash.length > 0, JSON.stringify(goodCommit.json ?? {}).slice(0, 160))
+
+  const cm2 = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/commits?cwd=${encodeURIComponent(wbRepo)}` })
+  check('wb/commits 现在两条且最新是 second', (cm2.json?.commits ?? []).length === 2 && cm2.json?.commits?.[0]?.subject === 'second: staged work', JSON.stringify(cm2.json?.commits ?? []).slice(0, 160))
+
+  const mk = await call(handler, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/branches/create',
+    body: JSON.stringify({ cwd: wbRepo, name: 'wb/feature', checkout: true }),
+  })
+  check('wb/branches/create + checkout ok', mk.json?.ok === true, JSON.stringify(mk.json ?? {}).slice(0, 160))
+  const br2 = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/branches?cwd=${encodeURIComponent(wbRepo)}` })
+  check('wb/branches 切换后 current=wb/feature', br2.json?.current === 'wb/feature', String(br2.json?.current))
+
+  // 非法分支名被拒
+  const badName = await call(handler, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/branches/create',
+    body: JSON.stringify({ cwd: wbRepo, name: '-evil', checkout: false }),
+  })
+  check('wb/branches/create 非法名被拒', badName.json?.ok === false && String(badName.json?.error ?? '').includes('不合法'), JSON.stringify(badName.json ?? {}).slice(0, 160))
+
+  const co = await call(handler, { method: 'POST', url: '/dsh-git-panel/repo/branches/checkout', body: JSON.stringify({ cwd: wbRepo, name: 'main' }) })
+  check('wb/branches/checkout 回 main', co.json?.ok === true && (await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/branches?cwd=${encodeURIComponent(wbRepo)}` })).json?.current === 'main')
+
+  const bd = await call(handler, { method: 'POST', url: '/dsh-git-panel/repo/branches/delete', body: JSON.stringify({ cwd: wbRepo, name: 'wb/feature' }) })
+  check('wb/branches/delete ok', bd.json?.ok === true, JSON.stringify(bd.json ?? {}).slice(0, 160))
+
+  // discard 无确认被拒（400） + 带确认执行
+  writeFileSync(join(wbRepo, 'a.txt'), 'one\ntwo\nthree\n')
+  const dNo = await call(handler, { method: 'POST', url: '/dsh-git-panel/repo/discard', body: JSON.stringify({ cwd: wbRepo, paths: ['a.txt'] }) })
+  check('wb/discard 缺 confirmed 400', dNo.status === 400, String(dNo.status))
+  const dYes = await call(handler, { method: 'POST', url: '/dsh-git-panel/repo/discard', body: JSON.stringify({ cwd: wbRepo, paths: ['a.txt'], confirmed: true }) })
+  check('wb/discard 带确认 ok', dYes.json?.ok === true, JSON.stringify(dYes.json ?? {}).slice(0, 160))
+  const after = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/diff?cwd=${encodeURIComponent(wbRepo)}&mode=worktree` })
+  check('wb/discard 后 worktree 干净', after.json?.ok === true && String(after.json?.diff ?? '') === '', String(after.json?.diff ?? '').slice(0, 120))
+
+  // 路径逃逸被拒
+  const escape = await call(handler, { method: 'POST', url: '/dsh-git-panel/repo/stage', body: JSON.stringify({ cwd: wbRepo, paths: ['../../etc/passwd'] }) })
+  check('wb/stage 路径逃逸被拒', escape.json?.ok === false && String(escape.json?.error ?? '').includes('不合法'), JSON.stringify(escape.json ?? {}).slice(0, 160))
+
+  // 远程管理：add → remotes 列表 → remove
+  const ra = await call(handler, { method: 'POST', url: '/dsh-git-panel/repo/remotes/add', body: JSON.stringify({ cwd: wbRepo, name: 'origin', url: 'https://example.com/wb/repo.git' }) })
+  check('wb/remotes/add ok', ra.json?.ok === true, JSON.stringify(ra.json ?? {}).slice(0, 160))
+  const rl = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/remotes?cwd=${encodeURIComponent(wbRepo)}` })
+  check('wb/remotes 列出 origin', (rl.json?.remotes ?? []).some((r) => r.name === 'origin' && r.url === 'https://example.com/wb/repo.git'), JSON.stringify(rl.json?.remotes ?? []).slice(0, 160))
+  const badUrl = await call(handler, { method: 'POST', url: '/dsh-git-panel/repo/remotes/add', body: JSON.stringify({ cwd: wbRepo, name: 'x', url: 'file:///C:/windows' }) })
+  check('wb/remotes/add 非法 URL 被拒', badUrl.json?.ok === false, JSON.stringify(badUrl.json ?? {}).slice(0, 160))
+  const rr = await call(handler, { method: 'POST', url: '/dsh-git-panel/repo/remotes/remove', body: JSON.stringify({ cwd: wbRepo, name: 'origin' }) })
+  check('wb/remotes/remove ok', rr.json?.ok === true, JSON.stringify(rr.json ?? {}).slice(0, 160))
+
+  // push 缺 remote：missingConfig 结构化反馈（远程已被移除）
+  const p0 = await call(handler, { method: 'POST', url: '/dsh-git-panel/repo/push', body: JSON.stringify({ cwd: wbRepo, remote: '', branch: 'main' }) })
+  check('wb/push 缺 remote 报 missingConfig', p0.json?.ok === false && p0.json?.missingConfig === true, JSON.stringify(p0.json ?? {}).slice(0, 200))
+
+  // allowWrite=false 时写端点被拒
+  await call(handler, {
+    method: 'POST',
+    url: '/dsh-git-panel/settings',
+    body: JSON.stringify({ allowedRoots: [wbRepo], allowWrite: false, requireConfirm: true }),
+  })
+  const wOff = await call(handler, { method: 'POST', url: '/dsh-git-panel/repo/stage', body: JSON.stringify({ cwd: wbRepo, paths: ['a.txt'] }) })
+  check('wb/stage 在 allowWrite=false 时 403', wOff.status === 403, String(wOff.status))
+  const rOff = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/branches?cwd=${encodeURIComponent(wbRepo)}` })
+  check('wb/branches 只读不受 allowWrite 影响', rOff.status === 200 && rOff.json?.ok === true)
+}
+
 await rm(tmp, { recursive: true, force: true })
 
 if (failures.length > 0) {

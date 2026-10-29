@@ -1,14 +1,32 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
+import {
+  NS,
+  api,
+  routeUrl,
+  useStyles,
+  Dot,
+  BranchIcon,
+  RefreshIcon,
+  CopyIcon,
+  GearIcon,
+  PlusIcon,
+  EmptyState,
+  Skeleton,
+  Toast,
+  fmt,
+  type Dict,
+  type RepoStatusView,
+  type RepoChangesView,
+  type RepoGraphView,
+} from './shared.js'
+import { GraphView } from './graphview.js'
+import { Workbench } from './workbench.js'
 
 /** 服务短名（不是 package.json 里的全名）。 */
 export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
-const NS = 'dsh-git-panel'
-const ROUTE = '/dsh-git-panel'
-const BUILD = 'dgp-v9'
-
-type Dict = Record<string, string>
+const BUILD = 'dgp-v10'
 
 const ZH: Dict = {
   entry: 'Git',
@@ -141,6 +159,84 @@ const ZH: Dict = {
   toastCopiedFailed: '复制失败，请手动复制',
   toastDefault: '已设为默认账号',
   toastRecheck: '账号校验完成',
+  /* ---- Git 工作台（IDEA 式主面板） ---- */
+  wbTitle: 'Git 工作台',
+  wbOpenHint: '打开完整 Git 操作面板（变更 / 提交 / 拉取 / 推送 / 分支 / 历史）',
+  wbFetch: 'Fetch',
+  wbPull: 'Pull',
+  wbPush: 'Push',
+  wbUnstaged: '未暂存',
+  wbUntracked: '未跟踪',
+  wbStage: '暂存',
+  wbUnstage: '取消暂存',
+  wbDiscard: '丢弃',
+  wbHistory: '历史',
+  wbGraph: '分支图',
+  wbDiffTab: 'Diff',
+  wbMsgPlaceholder: '提交信息（必填）',
+  wbAmend: '修补上次提交',
+  wbCommit: '提交',
+  wbCommitNeedsStaged: '暂存区为空：请先在左侧勾选文件并暂存，再填写提交信息',
+  wbCleanHint: '没有可提交的改动。编辑文件后会出现在这里。',
+  wbInitHint: '此目录还不是 Git 仓库。初始化后即可在这里暂存、提交与查看历史。',
+  wbUnauthorizedHint: '该目录不在「仓库范围」授权内。把目录加入授权后即可操作。',
+  wbNoCommits: '仓库还没有提交',
+  wbNoCommitsHint: '完成首次提交后，历史会显示在这里。',
+  wbBranchTitle: '分支管理',
+  wbLocalBranches: '本地分支',
+  wbRemoteBranches: '远程分支',
+  wbNoRemoteBranches: '尚无远程分支（先 fetch 或推送）',
+  wbNewBranch: '新建分支',
+  wbBranchName: '分支名',
+  wbCheckoutAfterCreate: '创建后立即切换',
+  wbCreate: '创建',
+  wbCheckout: '切换',
+  wbDelete: '删除',
+  wbConfirmDelete: '确认删除',
+  wbCommitDetail: '提交详情',
+  wbDetailFailed: '读取提交详情失败',
+  wbAuthor: '作者',
+  wbDate: '日期',
+  wbFiles: '变更文件',
+  wbRemoteTitle: '远程仓库',
+  wbNoRemotes: '还没有配置远程仓库。添加后才能 Push / Pull。',
+  wbRemoteName: '名称',
+  wbRemoteUrl: 'URL（https:// 或 git@）',
+  wbAdd: '添加',
+  wbRemove: '移除',
+  wbPullTitle: '拉取（Pull）',
+  wbPullMerge: '合并（merge）',
+  wbPullRebase: '变基（rebase）',
+  wbPullUpstream: '将拉取自',
+  wbPullNoUpstream: '当前分支没有上游，Pull 会按远程同名分支拉取',
+  wbPullHint: '合并把远程提交并入当前分支并产生合并提交；变基把本地提交挪到远程之后，历史更线性。',
+  wbDiscardTitle: '丢弃未提交改动',
+  wbDiscardText: '以下文件的改动将被永久丢弃（未跟踪文件会被删除），此操作不可撤销：',
+  /* ---- 工作台 toast ---- */
+  toastStaged: '已暂存所选文件',
+  toastUnstaged: '已取消暂存',
+  toastDiscarded: '已丢弃所选改动',
+  toastCommitted: '提交成功',
+  toastAmended: '已修补上次提交',
+  toastFetched: 'Fetch 完成',
+  toastPulledMerge: 'Pull（merge）完成',
+  toastPulledRebase: 'Pull（rebase）完成',
+  toastPushed: 'Push 完成',
+  toastCheckedOut: '已切换分支',
+  toastBranchDeleted: '分支已删除',
+  toastBranchCreated: '分支已创建',
+  toastRemoteAdded: '远程仓库已添加',
+  toastRemoteRemoved: '远程仓库已移除',
+  /* ---- 工作台错误与状态 ---- */
+  actionFailed: '操作失败',
+  syncFailed: '同步失败',
+  syncConflicted: '产生合并冲突：请解决冲突后重新提交（可用命令行或 IDE 处理）',
+  syncRejected: '推送被拒绝：远端有新提交，请先 Pull 再 Push',
+  syncMissingConfig: '未配置远程仓库或上游分支：点分支名打开分支管理，或到设置页配置远程',
+  diffFailed: '读取 diff 失败',
+  diffEmpty: '没有差异',
+  diffEmptyHint: '该文件当前没有未提交改动，或已全部暂存。',
+  diffTruncated: 'diff 过长已截断，完整内容请用命令行查看',
   /* ---- 刷新 ---- */
   loadingLabel: '正在加载…',
 }
@@ -277,6 +373,82 @@ const EN: Dict = {
   toastDefault: 'Default account updated',
   toastRecheck: 'Account verification finished',
   /* ---- Misc ---- */
+  /* ---- Git 工作台（IDEA 式主面板） ---- */
+  wbTitle: 'Git Workbench',
+  wbOpenHint: 'Open the full Git panel (changes / commit / pull / push / branches / history)',
+  wbFetch: 'Fetch',
+  wbPull: 'Pull',
+  wbPush: 'Push',
+  wbUnstaged: 'Unstaged',
+  wbUntracked: 'Untracked',
+  wbStage: 'Stage',
+  wbUnstage: 'Unstage',
+  wbDiscard: 'Discard',
+  wbHistory: 'History',
+  wbGraph: 'Graph',
+  wbDiffTab: 'Diff',
+  wbMsgPlaceholder: 'Commit message (required)',
+  wbAmend: 'Amend last commit',
+  wbCommit: 'Commit',
+  wbCommitNeedsStaged: 'Nothing staged: tick files on the left and stage them, then write a commit message',
+  wbCleanHint: 'No changes to commit. Edited files will appear here.',
+  wbInitHint: 'This directory is not a Git repository yet. Initialize it to stage, commit and browse history here.',
+  wbUnauthorizedHint: 'This directory is not in the authorized scope. Add it in Settings → Git → Scope.',
+  wbNoCommits: 'No commits yet',
+  wbNoCommitsHint: 'History will appear here after the first commit.',
+  wbBranchTitle: 'Manage branches',
+  wbLocalBranches: 'Local',
+  wbRemoteBranches: 'Remote',
+  wbNoRemoteBranches: 'No remote branches yet (fetch or push first)',
+  wbNewBranch: 'New branch',
+  wbBranchName: 'Branch name',
+  wbCheckoutAfterCreate: 'Check out after create',
+  wbCreate: 'Create',
+  wbCheckout: 'Check out',
+  wbDelete: 'Delete',
+  wbConfirmDelete: 'Confirm delete',
+  wbCommitDetail: 'Commit',
+  wbDetailFailed: 'Failed to load commit detail',
+  wbAuthor: 'Author',
+  wbDate: 'Date',
+  wbFiles: 'Files',
+  wbRemoteTitle: 'Manage remotes',
+  wbNoRemotes: 'No remotes configured yet. Add one to enable Push / Pull.',
+  wbRemoteName: 'Name',
+  wbRemoteUrl: 'URL (https:// or git@)',
+  wbAdd: 'Add',
+  wbRemove: 'Remove',
+  wbPullTitle: 'Pull',
+  wbPullMerge: 'Merge',
+  wbPullRebase: 'Rebase',
+  wbPullUpstream: 'Pulling from',
+  wbPullNoUpstream: 'Current branch has no upstream; Pull will use the same-named remote branch',
+  wbPullHint: 'Merge folds remote commits into this branch with a merge commit; rebase moves local commits after remote ones for a linear history.',
+  wbDiscardTitle: 'Discard uncommitted changes',
+  wbDiscardText: 'Changes in the following files will be permanently discarded (untracked files deleted). This cannot be undone:',
+  toastStaged: 'Files staged',
+  toastUnstaged: 'Unstaged',
+  toastDiscarded: 'Changes discarded',
+  toastCommitted: 'Committed',
+  toastAmended: 'Last commit amended',
+  toastFetched: 'Fetch done',
+  toastPulledMerge: 'Pull (merge) done',
+  toastPulledRebase: 'Pull (rebase) done',
+  toastPushed: 'Push done',
+  toastCheckedOut: 'Branch switched',
+  toastBranchDeleted: 'Branch deleted',
+  toastBranchCreated: 'Branch created',
+  toastRemoteAdded: 'Remote added',
+  toastRemoteRemoved: 'Remote removed',
+  actionFailed: 'Action failed',
+  syncFailed: 'Sync failed',
+  syncConflicted: 'Merge conflicts: resolve them and commit again (CLI or IDE)',
+  syncRejected: 'Push rejected: remote has new commits. Pull first, then push',
+  syncMissingConfig: 'No remote or upstream configured: click the branch name to manage branches, or configure remotes in Settings',
+  diffFailed: 'Failed to load diff',
+  diffEmpty: 'No differences',
+  diffEmptyHint: 'This file has no uncommitted changes, or everything is staged.',
+  diffTruncated: 'Diff is truncated; view the full output in a terminal',
   loadingLabel: 'Loading…',
 }
 
@@ -314,413 +486,6 @@ interface ProviderView {
   oauthHint: string
   patHint: string
   patUrl: string
-}
-
-interface RepoStatusView {
-  isRepo: boolean
-  root: string
-  branch: string
-  detached: boolean
-  head: string
-  ahead: number
-  behind: number
-  changed: number
-  authorized?: boolean
-  error: string
-  /**
-   * repo=确认是仓库；no-repo=目录存在但没有 .git（才允许显示初始化）；
-   * invalid=路径非法/不存在/不可读（检测失败，不能当成未初始化）。
-   */
-  reason?: 'repo' | 'no-repo' | 'invalid'
-}
-
-/** 工作区改动文件（对应 node 半边 GET /repo/changes）。 */
-interface ChangeFileView {
-  path: string
-  index: string
-  worktree: string
-  added: number
-  deleted: number
-  staged: boolean
-}
-
-interface RepoChangesView {
-  isRepo: boolean
-  root: string
-  branch: string
-  dirty: boolean
-  files: ChangeFileView[]
-}
-
-/** 文案模板插值：把 {n} 之类占位符换成实际数值（宿主 locale 不做插值）。 */
-function fmt(template: string, params: Record<string, string | number>): string {
-  return template.replace(/\{(\w+)\}/g, (match, key) => (key in params ? String(params[key]) : match))
-}
-
-/** 路由基于当前页面 baseURI，避免硬编码端口（GUI 每次重启端口会变）。 */
-function routeUrl(path: string): string {
-  const base = document.baseURI || location.href
-  return new URL(ROUTE + path, base).toString()
-}
-
-async function api<T>(path: string, body?: unknown): Promise<T> {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 20_000)
-  try {
-    const response = await fetch(routeUrl(path), {
-      method: body === undefined ? 'GET' : 'POST',
-      headers: body === undefined ? undefined : { 'content-type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-      signal: controller.signal,
-      credentials: 'same-origin',
-    })
-    const text = await response.text()
-    let json: any = null
-    try {
-      json = text.length > 0 ? JSON.parse(text) : null
-    } catch {
-      json = null
-    }
-    if (!json) throw new Error(`接口返回非 JSON（HTTP ${response.status}）`)
-    return json as T
-  } finally {
-    clearTimeout(timer)
-  }
-}
-
-const CSS = `
-/* 作用域：只影响插件自己的 DOM。颜色/圆角/动效一律取宿主主题 token，
-   并带浅色主题真实取值作 fallback（宿主未注入时也不至于走样）。
-   .dgp-portal 用于 portal 到 body 的浮层（脱离 .dgp-root 后变量必须自带）。 */
-.dgp-root,.dgp-portal{
-  --dgp-fg:var(--dsw-alias-label-primary,#0f1115);
-  --dgp-fg2:var(--dsw-alias-label-secondary,#61666b);
-  --dgp-muted:var(--dsw-alias-label-tertiary,#81858c);
-  --dgp-faint:var(--dsw-alias-label-caption,#adb2b8);
-  --dgp-line:var(--dsw-alias-border-l2,#0000001a);
-  --dgp-line2:var(--dsw-alias-border-l3,#0000001f);
-  --dgp-inset:var(--dsw-alias-bg-module-platform,#f5f6f7);
-  --dgp-hover:var(--dsw-alias-interactive-bg-hover,#2631480f);
-  --dgp-accent:var(--dsw-alias-state-business-primary,#4176e6);
-  --dgp-danger:var(--dsw-alias-state-error-primary,#ec1313);
-  --dgp-ok:var(--dsw-alias-state-success-primary,#22c55e);
-  --dgp-warn:#b45309;
-  --dgp-r-xs:var(--dsw-radius-xs,4px);
-  --dgp-r-sm:var(--dsw-radius-sm,8px);
-  --dgp-ease:var(--ds-ease-in-out,cubic-bezier(.4,0,.2,1));
-  --dgp-fast:var(--ds-transition-duration-fast,.1s);
-  --dgp-code:var(--ds-font-family-code,"SF Mono","JetBrains Mono",Consolas,Menlo,monospace);
-  color:var(--dgp-fg);font-family:inherit;font-size:14px;line-height:22px;-webkit-font-smoothing:antialiased;
-}
-/* 分节骨架：与宿主 settings 的行式布局同一套度量 */
-.dgp-section{display:flex;flex-direction:column;padding:2px 0 8px;max-width:100%}
-.dgp-head{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;padding:0 0 14px;border-bottom:.5px solid var(--dgp-line)}
-.dgp-title{font-size:14px;font-weight:500;line-height:22px;color:var(--dgp-fg);display:flex;align-items:center;gap:7px}
-.dgp-sub{font-size:12px;line-height:18px;color:var(--dgp-muted);margin-top:4px}
-/* 分段控件 */
-.dgp-tabs,.dgp-seg{display:inline-flex;align-items:center;gap:2px;padding:2px;border-radius:var(--dgp-r-sm);background:var(--dgp-inset);align-self:flex-start;max-width:100%;overflow:hidden}
-.dgp-tab,.dgp-seg button{appearance:none;border:0;margin:0;background:transparent;color:var(--dgp-muted);height:26px;padding:0 12px;border-radius:calc(var(--dgp-r-sm) - 3px);font:inherit;font-size:12px;line-height:18px;font-weight:500;cursor:pointer;white-space:nowrap;transition:background var(--dgp-fast) var(--dgp-ease),color var(--dgp-fast) var(--dgp-ease),box-shadow var(--dgp-fast) var(--dgp-ease)}
-.dgp-tab:hover,.dgp-seg button:hover{color:var(--dgp-fg2)}
-.dgp-tab[data-on="1"],.dgp-seg button[data-on="1"]{background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dgp-fg);box-shadow:var(--dsw-shadow-lv1,0 2px 4px 0 #0000000d)}
-.dgp-tab:focus-visible,.dgp-seg button:focus-visible{outline:2px solid var(--dgp-accent);outline-offset:-1px}
-/* 分组与行 */
-.dgp-group{display:flex;flex-direction:column}
-.dgp-group-title{font-size:11px;line-height:16px;font-weight:500;letter-spacing:.02em;text-transform:uppercase;color:var(--dgp-faint);padding:18px 0 4px}
-.dgp-row{display:flex;align-items:center;gap:8px;min-width:0}
-.dgp-line{border-bottom:.5px solid var(--dgp-line);padding:13px 0;display:flex;align-items:center;justify-content:space-between;gap:24px}
-.dgp-line:last-of-type{border-bottom:none}
-.dgp-line-main{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
-.dgp-line-side{display:flex;align-items:center;gap:6px;flex:0 0 auto}
-.dgp-name{font-size:14px;line-height:22px;font-weight:500;color:var(--dgp-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dgp-meta{font-size:12px;line-height:18px;color:var(--dgp-muted);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.dgp-meta code,.dgp-mono{font-family:var(--dgp-code);font-size:11.5px}
-.dgp-hint{font-size:12px;line-height:18px;color:var(--dgp-muted);margin-top:5px}
-.dgp-err{font-size:12px;line-height:18px;color:var(--dgp-danger);margin-top:6px;word-break:break-word}
-.dgp-ok{font-size:12px;line-height:18px;color:var(--dgp-ok);margin-top:6px}
-/* 状态点与徽章 */
-.dgp-dot{width:6px;height:6px;border-radius:50%;background:var(--dgp-faint);flex:0 0 auto;box-shadow:0 0 0 3px color-mix(in srgb,var(--dgp-faint) 14%,transparent)}
-.dgp-dot[data-state="connected"]{background:var(--dgp-ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--dgp-ok) 16%,transparent)}
-.dgp-dot[data-state="expired"],.dgp-dot[data-state="error"]{background:var(--dgp-danger);box-shadow:0 0 0 3px color-mix(in srgb,var(--dgp-danger) 16%,transparent)}
-.dgp-badge{display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:var(--dgp-r-xs);border:.5px solid var(--dgp-line2);font-size:11px;line-height:16px;font-weight:500;color:var(--dgp-muted);white-space:nowrap}
-.dgp-badge[data-tone="mono"]{font-family:var(--dgp-code)}
-.dgp-badge[data-state="connected"]{color:var(--dgp-ok);border-color:color-mix(in srgb,var(--dgp-ok) 40%,transparent);background:color-mix(in srgb,var(--dgp-ok) 10%,transparent)}
-.dgp-badge[data-state="expired"],.dgp-badge[data-state="error"]{color:var(--dgp-danger);border-color:color-mix(in srgb,var(--dgp-danger) 40%,transparent);background:color-mix(in srgb,var(--dgp-danger) 9%,transparent)}
-/* 按钮 */
-.dgp-btn{appearance:none;display:inline-flex;align-items:center;justify-content:center;gap:5px;height:28px;padding:0 11px;border-radius:var(--dgp-r-sm);border:.5px solid var(--dgp-line2);background:transparent;color:var(--dgp-fg2);font:inherit;font-size:12px;line-height:18px;font-weight:500;cursor:pointer;text-decoration:none;white-space:nowrap;transition:background var(--dgp-fast) var(--dgp-ease),color var(--dgp-fast) var(--dgp-ease),border-color var(--dgp-fast) var(--dgp-ease)}
-.dgp-btn:hover:not(:disabled){background:var(--dgp-hover);color:var(--dgp-fg)}
-.dgp-btn:focus-visible{outline:2px solid var(--dgp-accent);outline-offset:1px}
-.dgp-btn:disabled{opacity:.45;cursor:not-allowed}
-.dgp-btn.primary{background:var(--dsw-alias-button-primary-fill,#0f1115);border-color:transparent;color:var(--dsw-alias-label-primary-inverted,#fff)}
-.dgp-btn.primary:hover:not(:disabled){background:var(--dsw-alias-button-primary-hover,#3c3c3d);color:var(--dsw-alias-label-primary-inverted,#fff)}
-.dgp-btn.danger:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover-danger,#ec13130d);border-color:color-mix(in srgb,var(--dgp-danger) 45%,transparent);color:var(--dgp-danger)}
-.dgp-btn.ghost{border-color:transparent}
-/* 表单 */
-.dgp-field{display:flex;flex-direction:column;padding:13px 0;border-bottom:.5px solid var(--dgp-line)}
-.dgp-field:last-of-type{border-bottom:none}
-.dgp-label{font-size:12px;line-height:18px;font-weight:500;color:var(--dgp-fg2);margin-bottom:7px}
-.dgp-input,.dgp-select,.dgp-area{width:100%;box-sizing:border-box;height:32px;padding:0 10px;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-sm);background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dgp-fg);font:inherit;font-size:13px;line-height:20px;outline:none;transition:border-color var(--dgp-fast) var(--dgp-ease),box-shadow var(--dgp-fast) var(--dgp-ease)}
-/* 单行控件不铺满整行：与宿主设置页「行内定宽控件」同一观感，避免表单感过重 */
-.dgp-input,.dgp-select{max-width:340px}
-.dgp-select{appearance:none;padding-right:26px;background-image:linear-gradient(45deg,transparent 50%,var(--dgp-muted) 50%),linear-gradient(135deg,var(--dgp-muted) 50%,transparent 50%);background-position:calc(100% - 14px) 14px,calc(100% - 9px) 14px;background-size:5px 5px,5px 5px;background-repeat:no-repeat}
-.dgp-area{height:auto;min-height:76px;padding:8px 10px;resize:vertical;font-family:var(--dgp-code);font-size:12px;line-height:20px}
-.dgp-input::placeholder,.dgp-area::placeholder{color:var(--dgp-faint)}
-.dgp-input:focus,.dgp-select:focus,.dgp-area:focus{border-color:var(--dgp-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--dgp-accent) 18%,transparent)}
-/* 勾选项 */
-.dgp-check{display:flex;align-items:flex-start;gap:10px;padding:13px 0;border-bottom:.5px solid var(--dgp-line);cursor:pointer}
-.dgp-check:last-of-type{border-bottom:none}
-.dgp-check input{appearance:none;flex:0 0 auto;width:16px;height:16px;margin:3px 0 0;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-xs);background:var(--dsw-alias-bg-layer-1,#fff);cursor:pointer;position:relative;transition:background var(--dgp-fast) var(--dgp-ease),border-color var(--dgp-fast) var(--dgp-ease)}
-.dgp-check input:checked{background:var(--dgp-accent);border-color:var(--dgp-accent)}
-.dgp-check input:checked::after{content:"";position:absolute;left:4.5px;top:1.5px;width:4px;height:8px;border:solid #fff;border-width:0 1.5px 1.5px 0;transform:rotate(42deg)}
-.dgp-check input:focus-visible{outline:2px solid var(--dgp-accent);outline-offset:1px}
-.dgp-check-body{display:flex;flex-direction:column;gap:3px;min-width:0}
-.dgp-check-title{font-size:13px;line-height:20px;font-weight:500;color:var(--dgp-fg)}
-/* 说明块 */
-.dgp-card{background:var(--dgp-inset);border-radius:var(--dgp-r-sm);padding:12px 14px;display:flex;flex-direction:column;gap:8px}
-.dgp-kv{display:grid;grid-template-columns:88px minmax(0,1fr);gap:6px 12px;font-size:12px;line-height:18px;margin:0}
-.dgp-kv dt{color:var(--dgp-muted);margin:0}
-.dgp-kv dd{color:var(--dgp-fg2);margin:0;overflow-wrap:anywhere}
-.dgp-code{font-family:var(--dgp-code);font-size:20px;line-height:28px;font-weight:600;letter-spacing:.14em;color:var(--dgp-fg);font-variant-numeric:tabular-nums}
-.dgp-link{color:var(--dsw-alias-link,var(--dgp-accent));text-decoration:none;border-bottom:.5px solid color-mix(in srgb,currentColor 40%,transparent)}
-.dgp-link:hover{border-bottom-color:currentColor}
-.dgp-sep{height:.5px;background:var(--dgp-line);margin:2px 0}
-/* composer 分支 chip（opencode 风格：等宽、无边框、低存在感） */
-.dgp-chip{display:inline-flex;align-items:center;gap:5px;height:22px;max-width:240px;padding:0 6px;margin:0;border:0;border-radius:var(--dgp-r-xs);background:transparent;color:var(--dgp-muted);cursor:pointer;font-family:var(--dgp-code);font-size:11px;line-height:16px;white-space:nowrap;overflow:hidden;transition:background var(--dgp-fast) var(--dgp-ease),color var(--dgp-fast) var(--dgp-ease)}
-.dgp-chip:hover{background:var(--dgp-hover);color:var(--dgp-fg2)}
-.dgp-chip:active{background:var(--dsw-alias-interactive-bg-active,#2631481a)}
-.dgp-chip:focus-visible{outline:2px solid var(--dgp-accent);outline-offset:1px}
-.dgp-chip svg{flex:0 0 auto;opacity:.7;transition:opacity var(--dgp-fast) var(--dgp-ease)}
-.dgp-chip:hover svg{opacity:1}
-.dgp-chip-name{overflow:hidden;text-overflow:ellipsis;max-width:150px}
-.dgp-chip-aux{color:var(--dgp-faint);font-variant-numeric:tabular-nums}
-.dgp-chip[data-warn="1"]{color:var(--dgp-danger)}
-.dgp-chip[data-warn="1"] svg{opacity:1}
-.dgp-chip[data-norepo="1"]{color:var(--dgp-faint)}
-.dgp-chip[data-open="1"]{background:var(--dgp-hover);color:var(--dgp-fg2)}
-.dgp-chip-wrap{position:relative;display:inline-flex;align-items:center}
-/* chip 弹出菜单：portal 到 body，fixed 定位在 chip 上方（composer 在屏幕底部，向下会出界）。
-   z-index 必须高于宿主浮层（commands/input-trigger 用 100，model-selection/chat/panel 用 1100）。 */
-.dgp-menu{display:flex;flex-direction:column;position:fixed;z-index:1200;min-width:236px;max-width:320px;max-height:min(340px,60vh);overflow-y:auto;padding:4px;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-md);background:var(--dsw-alias-bg-layer-1,var(--dgp-bg,#fff));box-shadow:var(--dsw-elevation-prominent,0 8px 28px #00000026);font-family:var(--dsw-font-family,inherit);font-size:12px;line-height:18px;color:var(--dgp-fg2);box-sizing:border-box}
-.dgp-menu-head{padding:7px 9px 6px;display:flex;align-items:center;gap:6px;color:var(--dgp-faint);font-size:11px;line-height:16px;letter-spacing:.02em;text-transform:uppercase}
-.dgp-menu-sum{padding:0 9px 7px;color:var(--dgp-muted);font-size:11px;line-height:16px;font-family:var(--dgp-code);word-break:break-all}
-/* 带分支拓扑时加宽：图区需要 380px 以上才看得清车道与提交标题。 */
-.dgp-menu[data-graph="1"]{width:min(440px,calc(100vw - 16px));min-width:0;max-width:min(440px,calc(100vw - 16px));max-height:min(520px,72vh)}
-.dgp-menu-item{display:flex;align-items:center;gap:8px;width:100%;padding:7px 9px;border:0;border-radius:var(--dgp-r-sm);background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;transition:background var(--dgp-fast) var(--dgp-ease)}
-.dgp-menu-item:hover:not(:disabled){background:var(--dgp-hover)}
-.dgp-menu-item:disabled{opacity:.55;cursor:default}
-.dgp-menu-item svg{flex:0 0 auto;opacity:.75}
-.dgp-menu-item-main{display:flex;flex-direction:column;min-width:0;gap:1px}
-.dgp-menu-item-title{color:var(--dgp-fg);font-size:12px;line-height:17px}
-.dgp-menu-item-hint{color:var(--dgp-faint);font-size:11px;line-height:15px}
-/* 主行动（未初始化时的「初始化 Git 项目」）：只靠图标与字重强调，不加填充色，保持菜单安静 */
-.dgp-menu-item[data-primary="1"] .dgp-menu-item-title{font-weight:500}
-.dgp-menu-item[data-primary="1"] svg{color:var(--dgp-accent);opacity:1}
-.dgp-menu-note{padding:7px 9px;color:var(--dgp-muted);font-size:11px;line-height:16px}
-.dgp-menu-note[data-tone="error"]{color:var(--dgp-danger)}
-.dgp-menu-note[data-tone="ok"]{color:var(--dsw-alias-state-success-primary,#22c55e)}
-.dgp-menu-sep{height:.5px;background:var(--dgp-line);margin:3px 6px}
-
-/* ------------------------------------------------------------------ */
-/* 分支拓扑图（车道式 DAG）                                            */
-/* 车道宽 13px、行高 26px：与 gitk / VS Code Git Graph 同量级，         */
-/* 8 条以内车道仍可读；超宽时图区横向滚动而不是压缩车道。               */
-/* 颜色按车道索引取（车道稳定 → 颜色稳定），不按分支名哈希。            */
-/* ------------------------------------------------------------------ */
-/* 车道配色：按车道索引取色（车道稳定 → 颜色稳定），8 色循环。
-   浅色主题与深色主题各一套，保证同一条线在两种背景下都可读。 */
-.dgp-root,.dgp-portal{
-  --dgp-lane-0:#4176e6;--dgp-lane-1:#1f9d63;--dgp-lane-2:#c98a06;--dgp-lane-3:#8b5cf6;
-  --dgp-lane-4:#0ea5e9;--dgp-lane-5:#e0526a;--dgp-lane-6:#e2762e;--dgp-lane-7:#64748b;
-}
-body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
-  --dgp-lane-0:#7aaaff;--dgp-lane-1:#4ecf9a;--dgp-lane-2:#e9b949;--dgp-lane-3:#b18cff;
-  --dgp-lane-4:#56c8f5;--dgp-lane-5:#f57e94;--dgp-lane-6:#f59a63;--dgp-lane-7:#94a3b8;
-  --dgp-warn:#e9b949;
-}
-.dgp-graph{display:flex;flex-direction:column;min-width:0}
-.dgp-graph-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 9px 5px;color:var(--dgp-faint);font-size:11px;line-height:16px;letter-spacing:.02em;text-transform:uppercase}
-.dgp-graph-meta{text-transform:none;letter-spacing:0;font-variant-numeric:tabular-nums;color:var(--dgp-faint)}
-.dgp-graph-body{display:flex;align-items:flex-start;max-height:min(320px,46vh);overflow:auto;overscroll-behavior:contain;padding:2px 4px 4px}
-.dgp-graph-row{display:flex;align-items:center;gap:8px;height:34px;padding:0 5px;border-radius:var(--dgp-r-xs);cursor:default;min-width:0;transition:background var(--dgp-fast) var(--dgp-ease)}
-.dgp-graph-row:hover{background:var(--dgp-hover)}
-.dgp-graph-row[data-active="1"]{background:var(--dgp-hover)}
-.dgp-graph-row[data-current="1"] .dgp-graph-subject{color:var(--dgp-fg)}
-.dgp-graph-svg{flex:0 0 auto;display:block;overflow:visible}
-.dgp-graph-dot{stroke:var(--dsw-alias-bg-layer-1,var(--dgp-bg,#fff));stroke-width:1.5;transition:r var(--dgp-fast) var(--dgp-ease)}
-.dgp-graph-line{fill:none;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;opacity:.9}
-.dgp-graph-main{display:flex;flex-direction:column;min-width:0;gap:0;flex:1 1 auto}
-.dgp-graph-subject{color:var(--dgp-fg2);font-size:12px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dgp-graph-sub{display:flex;align-items:center;gap:6px;min-width:0;color:var(--dgp-faint);font-size:10px;line-height:13px;font-family:var(--dgp-code);white-space:nowrap;overflow:hidden}
-.dgp-graph-hash{flex:0 0 auto;opacity:.85}
-.dgp-graph-author{overflow:hidden;text-overflow:ellipsis;min-width:0}
-.dgp-graph-refs{display:flex;align-items:center;gap:4px;flex:0 0 auto}
-.dgp-graph-ref{display:inline-flex;align-items:center;height:15px;padding:0 5px;border-radius:var(--dgp-r-xs);border:.5px solid var(--dgp-line2);background:transparent;color:var(--dgp-muted);font-family:var(--dgp-code);font-size:10px;line-height:15px;max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dgp-graph-ref[data-kind="head"]{border-color:transparent;background:var(--dgp-accent);color:#fff;font-weight:500}
-.dgp-graph-ref[data-kind="tag"]{border-color:var(--dgp-line2);color:var(--dgp-warn,#b45309)}
-.dgp-graph-ref[data-kind="remote"]{color:var(--dgp-faint)}
-.dgp-graph-note{padding:6px 9px 8px;color:var(--dgp-faint);font-size:11px;line-height:16px}
-.dgp-graph-note[data-tone="error"]{color:var(--dgp-danger)}
-.dgp-graph-detail{display:flex;align-items:center;gap:6px;padding:6px 9px 2px;border-top:.5px solid var(--dgp-line);margin-top:2px;color:var(--dgp-muted);font-size:11px;line-height:16px;min-width:0}
-.dgp-graph-detail-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dgp-code)}
-.dgp-graph-copy{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:0;border-radius:var(--dgp-r-xs);background:transparent;color:var(--dgp-faint);cursor:pointer}
-.dgp-graph-copy:hover{background:var(--dgp-hover);color:var(--dgp-fg2)}
-
-/* ------------------------------------------------------------------ */
-/* 授权概览（统计条）                                                  */
-/* 设计取向：仪表盘而非报表——四个等宽格、细分隔线、数字用等宽字形，    */
-/* 语义色只落在状态点与副标题上，避免整块染色破坏宿主设置页的安静感。  */
-/* ------------------------------------------------------------------ */
-.dgp-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:1px;margin:14px 0 2px;border-radius:var(--dgp-r-sm);overflow:hidden;background:var(--dgp-line)}
-.dgp-stat{position:relative;display:flex;flex-direction:column;gap:2px;padding:11px 13px 12px;background:var(--dsw-alias-bg-layer-1,#fff);min-width:0}
-.dgp-stat-label{font-size:11px;line-height:15px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;color:var(--dgp-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dgp-stat-value{font-family:var(--dgp-code);font-size:22px;line-height:28px;font-weight:600;letter-spacing:-.01em;color:var(--dgp-fg);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dgp-stat-hint{font-size:11px;line-height:15px;color:var(--dgp-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-/* 状态色只落在一条左侧色条 + 副标题上，主数字保持中性——避免四色混杂 */
-.dgp-stat::before{content:"";position:absolute;left:0;top:11px;bottom:12px;width:2px;border-radius:0 2px 2px 0;background:var(--dgp-faint);opacity:.55}
-.dgp-stat[data-tone="ok"]::before{background:var(--dgp-ok);opacity:.9}
-.dgp-stat[data-tone="warn"]::before{background:var(--dgp-warn,#b45309);opacity:.9}
-.dgp-stat[data-tone="danger"]::before{background:var(--dgp-danger);opacity:.9}
-.dgp-stat[data-tone="ok"] .dgp-stat-hint{color:var(--dgp-ok)}
-.dgp-stat[data-tone="warn"] .dgp-stat-hint{color:var(--dgp-warn,#b45309)}
-.dgp-stat[data-tone="danger"] .dgp-stat-hint{color:var(--dgp-danger)}
-
-/* ------------------------------------------------------------------ */
-/* 提示条：行内公告（重新授权提示等），弱于卡片但高于纯文本              */
-/* ------------------------------------------------------------------ */
-.dgp-callout{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px;padding:8px 10px 8px 12px;border:.5px solid var(--dgp-line2);border-left:2px solid var(--dgp-accent);border-radius:var(--dgp-r-xs);background:var(--dgp-inset);color:var(--dgp-fg2);font-size:12px;line-height:18px}
-.dgp-callout-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
-
-/* ------------------------------------------------------------------ */
-/* 空状态：几何插画 + 标题 + 说明                                        */
-/* ------------------------------------------------------------------ */
-.dgp-empty{display:flex;flex-direction:column;align-items:center;gap:7px;padding:26px 16px 24px;text-align:center;color:var(--dgp-muted)}
-.dgp-empty-art{color:var(--dgp-faint);opacity:.85}
-.dgp-empty-title{font-size:13px;line-height:19px;font-weight:500;color:var(--dgp-fg2)}
-.dgp-empty-hint{font-size:12px;line-height:18px;color:var(--dgp-muted);max-width:44ch}
-
-/* ------------------------------------------------------------------ */
-/* 骨架屏：加载时占位，避免纯文本 loading 的跳动                        */
-/* ------------------------------------------------------------------ */
-.dgp-skel{display:flex;flex-direction:column;gap:7px;padding:9px 0}
-.dgp-skel-line{height:11px;border-radius:var(--dgp-r-xs);background:linear-gradient(90deg,var(--dgp-inset) 0%,var(--dgp-hover) 42%,var(--dgp-inset) 84%);background-size:220% 100%;animation:dgp-shimmer 1.25s linear infinite}
-@keyframes dgp-shimmer{0%{background-position:120% 0}100%{background-position:-120% 0}}
-@media (prefers-reduced-motion:reduce){.dgp-skel-line{animation:none;background:var(--dgp-inset)}}
-
-/* ------------------------------------------------------------------ */
-/* 工作区改动（chip 菜单内）                                            */
-/* ------------------------------------------------------------------ */
-.dgp-changes{display:flex;flex-direction:column;min-width:0}
-.dgp-changes-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:5px 9px 6px;color:var(--dgp-faint);font-size:11px;line-height:16px;letter-spacing:.02em;text-transform:uppercase}
-.dgp-changes-count{text-transform:none;letter-spacing:0;font-variant-numeric:tabular-nums;color:var(--dgp-faint)}
-.dgp-change{display:flex;align-items:center;gap:7px;padding:4px 9px;min-width:0;border-radius:var(--dgp-r-xs);transition:background var(--dgp-fast) var(--dgp-ease)}
-.dgp-change:hover{background:var(--dgp-hover)}
-.dgp-change-code{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;min-width:19px;height:16px;padding:0 4px;border-radius:3px;background:var(--dgp-inset);color:var(--dgp-muted);font-family:var(--dgp-code);font-size:10px;line-height:16px;font-weight:600}
-/* 状态码语义色：M 中性、A 新增绿、D 删除红、R/C 重命名紫、?? 未跟踪琥珀 */
-.dgp-change-code[data-code="A"]{color:var(--dgp-ok);background:color-mix(in srgb,var(--dgp-ok) 12%,transparent)}
-.dgp-change-code[data-code="D"]{color:var(--dgp-danger);background:color-mix(in srgb,var(--dgp-danger) 11%,transparent)}
-.dgp-change-code[data-code="R"],.dgp-change-code[data-code="C"]{color:var(--dgp-lane-3);background:color-mix(in srgb,var(--dgp-lane-3) 12%,transparent)}
-.dgp-change-code[data-code="??"]{color:var(--dgp-warn,#b45309);background:color-mix(in srgb,var(--dgp-warn,#b45309) 12%,transparent)}
-.dgp-change-path{flex:1 1 auto;min-width:0;color:var(--dgp-fg2);font-family:var(--dgp-code);font-size:11px;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
-.dgp-change[data-staged="1"] .dgp-change-path{color:var(--dgp-fg)}
-.dgp-change-stat{flex:0 0 auto;font-family:var(--dgp-code);font-size:10.5px;line-height:15px;font-variant-numeric:tabular-nums}
-.dgp-change-stat[data-sign="add"]{color:var(--dgp-ok)}
-.dgp-change-stat[data-sign="del"]{color:var(--dgp-danger)}
-.dgp-change-stat[data-sign="staged"]{color:var(--dgp-accent)}
-.dgp-changes-note{padding:6px 9px 8px;color:var(--dgp-faint);font-size:11px;line-height:16px}
-.dgp-changes-note[data-tone="error"]{color:var(--dgp-danger)}
-
-/* ------------------------------------------------------------------ */
-/* 轻提示 toast（右下角浮层，脱离 composer 的包含块）                   */
-/* ------------------------------------------------------------------ */
-.dgp-toast-wrap{position:fixed;right:18px;bottom:18px;z-index:1300;pointer-events:none}
-.dgp-toast{display:flex;align-items:center;gap:8px;max-width:340px;padding:9px 13px;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-sm);background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:var(--dsw-elevation-prominent,0 8px 28px #00000026);color:var(--dgp-fg);font-size:12px;line-height:18px;animation:dgp-toast-in .18s var(--dgp-ease) both}
-.dgp-toast-dot{flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:var(--dgp-faint)}
-.dgp-toast[data-tone="ok"] .dgp-toast-dot{background:var(--dgp-ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--dgp-ok) 16%,transparent)}
-.dgp-toast[data-tone="error"] .dgp-toast-dot{background:var(--dgp-danger);box-shadow:0 0 0 3px color-mix(in srgb,var(--dgp-danger) 16%,transparent)}
-.dgp-toast[data-tone="info"] .dgp-toast-dot{background:var(--dgp-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--dgp-accent) 16%,transparent)}
-.dgp-toast-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
-@keyframes dgp-toast-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
-@media (prefers-reduced-motion:reduce){.dgp-toast{animation:none}}
-`
-
-function useStyles(): void {
-  useEffect(() => {
-    const id = 'dgp-style'
-    const existing = document.getElementById(id)
-    if (existing) {
-      if (existing.textContent !== CSS) existing.textContent = CSS
-      return
-    }
-    const node = document.createElement('style')
-    node.id = id
-    node.textContent = CSS
-    document.head.appendChild(node)
-  }, [])
-}
-
-function Dot({ state }: { state?: string }) {
-  return <span className="dgp-dot" data-state={state ?? 'none'} aria-hidden="true" />
-}
-
-function BranchIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="4.8" cy="3.6" r="1.5" />
-      <circle cx="4.8" cy="12.4" r="1.5" />
-      <circle cx="11.2" cy="6.2" r="1.5" />
-      <path d="M4.8 5.1v5.8" />
-      <path d="M11.2 7.7v.5a2.5 2.5 0 0 1-2.5 2.5H6.3" />
-    </svg>
-  )
-}
-
-/**
- * 空状态：几何插画 + 标题 + 说明。
- * 不用大面积灰底，用留白与线稿表达「还没有内容」，避免设置页出现一块死色。
- */
-function EmptyState({ title, hint }: { title: string; hint: string }) {
-  return (
-    <div className="dgp-empty">
-      <svg className="dgp-empty-art" width="88" height="60" viewBox="0 0 88 60" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-        <rect x="6" y="8" width="34" height="44" rx="6" />
-        <path d="M15 22h16M15 30h16M15 38h10" />
-        <path d="M52 30h14M59 23v14" />
-        <circle cx="66" cy="30" r="13" strokeDasharray="3 4" />
-      </svg>
-      <div className="dgp-empty-title">{title}</div>
-      <div className="dgp-empty-hint">{hint}</div>
-    </div>
-  )
-}
-
-/** 骨架屏：加载时占位，避免纯文本 loading 造成的布局跳动。 */
-function Skeleton({ rows = 3 }: { rows?: number }) {
-  const widths = ['62%', '44%', '78%', '55%', '70%']
-  return (
-    <div className="dgp-skel" aria-hidden="true">
-      {Array.from({ length: rows }, (_, index) => (
-        <div className="dgp-skel-line" key={index} style={{ width: widths[index % widths.length] }} />
-      ))}
-    </div>
-  )
-}
-
-/** 轻提示 toast：右下角浮层，2.6s 后自动消失；成功/失败用色点区分。 */
-function Toast({ tone, text, onDone }: { tone: 'ok' | 'error' | 'info'; text: string; onDone: () => void }) {
-  useEffect(() => {
-    const timer = window.setTimeout(onDone, 2600)
-    return () => window.clearTimeout(timer)
-  }, [onDone])
-  return createPortal(
-    // dgp-portal 必须带上：浮层挂在 document.body 上，脱离 .dgp-root 后
-    // --dgp-* 变量只在 .dgp-root/.dgp-portal 上定义，缺了会整套样式失效。
-    <div className="dgp-portal dgp-toast-wrap">
-      <div className="dgp-toast" data-tone={tone} role="status" aria-live="polite">
-        <span className="dgp-toast-dot" aria-hidden="true" />
-        <span className="dgp-toast-text">{text}</span>
-      </div>
-    </div>,
-    document.body,
-  )
 }
 
 /**
@@ -1694,39 +1459,6 @@ const ROW_H = 34
 const LANE_PAD = 9
 const DOT_R = 4
 
-interface GraphRefView {
-  name: string
-  kind: 'head' | 'local' | 'remote' | 'tag'
-}
-
-interface GraphRowView {
-  hash: string
-  short: string
-  parents: string[]
-  author: string
-  date: string
-  subject: string
-  refs: GraphRefView[]
-  row: number
-  lane: number
-  segments: Array<{ from: number; to: number }>
-  through: number[]
-}
-
-interface RepoGraphView {
-  isRepo: boolean
-  root: string
-  branch: string
-  head: string
-  detached: boolean
-  reason?: 'repo' | 'no-repo' | 'invalid'
-  error: string
-  truncated: boolean
-  laneCount: number
-  rows: GraphRowView[]
-  authorized?: boolean
-}
-
 function laneColor(lane: number): string {
   return `var(--dgp-lane-${((lane % 8) + 8) % 8})`
 }
@@ -1747,205 +1479,6 @@ function curvePath(from: number, to: number, row: number): string {
   const y2 = rowY(row + 1)
   const half = ROW_H / 2
   return `M${x1} ${y1} C${x1} ${y1 + half} ${x2} ${y2 - half} ${x2} ${y2}`
-}
-
-interface GraphProps {
-  t: (key: string) => string
-  graph: RepoGraphView | null
-  loading: boolean
-  error: string
-}
-
-function GraphView({ t, graph, loading, error }: GraphProps) {
-  const [active, setActive] = useState<string>('')
-  const [copied, setCopied] = useState('')
-
-  const rows = graph?.rows ?? []
-  const laneCount = Math.max(1, graph?.laneCount ?? 1)
-  const width = LANE_PAD * 2 + (laneCount - 1) * LANE_W
-  const height = Math.max(ROW_H, rows.length * ROW_H)
-  const selected = rows.find((item) => item.hash === active) ?? null
-
-  const copyHash = async (hash: string) => {
-    try {
-      await navigator.clipboard.writeText(hash)
-      setCopied(hash)
-      window.setTimeout(() => setCopied(''), 1500)
-    } catch {
-      setCopied('')
-    }
-  }
-
-  if (loading && !graph) {
-    return (
-      <div className="dgp-graph">
-        <div className="dgp-graph-head">
-          <span>{t('graphTitle')}</span>
-        </div>
-        <div className="dgp-graph-note">{t('graphLoading')}</div>
-      </div>
-    )
-  }
-
-  if (error.length > 0) {
-    return (
-      <div className="dgp-graph">
-        <div className="dgp-graph-head">
-          <span>{t('graphTitle')}</span>
-        </div>
-        <div className="dgp-graph-note" data-tone="error">
-          {t('graphFailed')}：{error}
-        </div>
-      </div>
-    )
-  }
-
-  if (!graph || rows.length === 0) {
-    return (
-      <div className="dgp-graph">
-        <div className="dgp-graph-head">
-          <span>{t('graphTitle')}</span>
-        </div>
-        <div className="dgp-graph-note">{t('graphEmpty')}</div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="dgp-graph">
-      <div className="dgp-graph-head">
-        <span>{t('graphTitle')}</span>
-        <span className="dgp-graph-meta">
-          {t('graphLanes').replace('{n}', String(laneCount))}
-          {graph.truncated ? ` · ${t('graphTruncated').replace('{n}', String(rows.length))}` : ''}
-        </span>
-      </div>
-      <div className="dgp-graph-body">
-        <svg className="dgp-graph-svg" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
-          {/* 先画线，再画节点：节点盖在连线之上，交叉处不会糊。 */}
-          {rows.map((item) =>
-            item.through.map((lane) => (
-              <line
-                key={`t-${item.row}-${lane}`}
-                className="dgp-graph-line"
-                x1={laneX(lane)}
-                y1={rowY(item.row)}
-                x2={laneX(lane)}
-                y2={rowY(item.row + 1)}
-                stroke={laneColor(lane)}
-              />
-            )),
-          )}
-          {rows.map((item) =>
-            item.segments.map((seg) =>
-              // 同车道：垂直直落；跨车道：S 形贝塞尔。两种都用 stroke 上色，交接处不跳色。
-              seg.from === seg.to ? (
-                <line
-                  key={`s-${item.row}-${seg.from}-${seg.to}`}
-                  className="dgp-graph-line"
-                  x1={laneX(seg.from)}
-                  y1={rowY(item.row)}
-                  x2={laneX(seg.to)}
-                  y2={rowY(item.row + 1)}
-                  stroke={laneColor(seg.from)}
-                />
-              ) : (
-                <path
-                  key={`s-${item.row}-${seg.from}-${seg.to}`}
-                  className="dgp-graph-line"
-                  d={curvePath(seg.from, seg.to, item.row)}
-                  stroke={laneColor(seg.to)}
-                />
-              ),
-            ),
-          )}
-          {rows.map((item) => {
-            const isHead = item.refs.some((ref) => ref.kind === 'head')
-            return (
-              <circle
-                key={`d-${item.hash}`}
-                className="dgp-graph-dot"
-                cx={laneX(item.lane)}
-                cy={rowY(item.row)}
-                r={isHead ? DOT_R + 1.4 : DOT_R}
-                fill={laneColor(item.lane)}
-              />
-            )
-          })}
-          {/* HEAD 外环：与「当前分支」区分开，只用描边不填充，避免抢眼。 */}
-          {rows
-            .filter((item) => item.refs.some((ref) => ref.kind === 'head'))
-            .map((item) => (
-              <circle
-                key={`h-${item.hash}`}
-                cx={laneX(item.lane)}
-                cy={rowY(item.row)}
-                r={DOT_R + 4}
-                fill="none"
-                stroke={laneColor(item.lane)}
-                strokeWidth="1"
-                opacity="0.45"
-              />
-            ))}
-        </svg>
-
-        <div style={{ minWidth: 0, flex: '1 1 auto' }}>
-          {rows.map((item) => {
-            const isHead = item.refs.some((ref) => ref.kind === 'head')
-            return (
-              <div
-                key={`r-${item.hash}`}
-                className="dgp-graph-row"
-                data-active={active === item.hash ? '1' : '0'}
-                data-current={isHead ? '1' : '0'}
-                title={`${item.short} · ${item.author} · ${item.date}\n${item.subject}`}
-                onMouseEnter={() => setActive(item.hash)}
-                onMouseLeave={() => setActive((current) => (current === item.hash ? '' : current))}
-                onClick={() => setActive(item.hash)}
-              >
-                <span className="dgp-graph-main">
-                  <span className="dgp-graph-subject">{item.subject || item.short}</span>
-                  <span className="dgp-graph-sub">
-                    <span className="dgp-graph-hash">{item.short}</span>
-                    <span className="dgp-graph-author">
-                      {item.author} · {item.date}
-                    </span>
-                  </span>
-                </span>
-                {item.refs.length > 0 ? (
-                  <span className="dgp-graph-refs">
-                    {item.refs.slice(0, 3).map((ref) => (
-                      <span key={`${item.hash}-${ref.kind}-${ref.name}`} className="dgp-graph-ref" data-kind={ref.kind} title={ref.name}>
-                        {ref.name}
-                      </span>
-                    ))}
-                  </span>
-                ) : null}
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      {selected ? (
-        <div className="dgp-graph-detail">
-          <span className="dgp-graph-detail-text" title={`${selected.hash}\n${selected.subject}`}>
-            {selected.short} · {selected.author} · {selected.date}
-          </span>
-          <button
-            type="button"
-            className="dgp-graph-copy"
-            title={copied === selected.hash ? t('graphCopied') : t('graphCopyHash')}
-            aria-label={t('graphCopyHash')}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => void copyHash(selected.hash)}
-          >
-            <CopyIcon />
-          </button>
-        </div>
-      ) : null}
-    </div>
-  )
 }
 
 /* ------------------------------------------------------------------ */
@@ -1975,6 +1508,7 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
   const [detectError, setDetectError] = useState('')
   const [checking, setChecking] = useState(false)
   const [open, setOpen] = useState(false)
+  const [workbench, setWorkbench] = useState(false)
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState<{ tone: 'ok' | 'error' | 'info'; text: string } | null>(null)
   const [changes, setChanges] = useState<RepoChangesView | null>(null)
@@ -2414,6 +1948,25 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
             </button>
           ) : null}
 
+          {/* 打开 Git 工作台主面板（IDEA 式）：chip 的主行动。 */}
+          <button
+            type="button"
+            className="dgp-menu-item"
+            role="menuitem"
+            data-primary="1"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => {
+              setOpen(false)
+              setWorkbench(true)
+            }}
+          >
+            <BranchIcon />
+            <span className="dgp-menu-item-main">
+              <span className="dgp-menu-item-title">{t('wbTitle')}</span>
+              <span className="dgp-menu-item-hint">{t('wbOpenHint')}</span>
+            </span>
+          </button>
+
           <button type="button" className="dgp-menu-item" role="menuitem" onMouseDown={(e) => e.preventDefault()} onClick={() => void copyPath()}>
             <CopyIcon />
             <span className="dgp-menu-item-main">
@@ -2440,42 +1993,22 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
             document.body,
           )
         : null}
+
+      {/* Git 工作台主面板（IDEA 式）：由 chip 打开，独立浮层 */}
+      {workbench ? (
+        <Workbench
+          t={t}
+          cwd={cwd}
+          status={status}
+          onStatusChange={(next) => setStatus(next)}
+          onClose={() => {
+            setWorkbench(false)
+            void reload()
+          }}
+          onOpenSettings={() => void openSettingsSection({ shortcuts }, t('navLabel'))}
+        />
+      ) : null}
     </span>
-  )
-}
-
-function PlusIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
-      <path d="M8 3.5v9M3.5 8h9" />
-    </svg>
-  )
-}
-
-function RefreshIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M13 8a5 5 0 1 1-1.6-3.7" />
-      <path d="M13 2.8V5.6h-2.8" />
-    </svg>
-  )
-}
-
-function CopyIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" aria-hidden="true">
-      <rect x="6" y="6" width="7" height="7" rx="1.5" />
-      <path d="M10 4.5V4a1.5 1.5 0 0 0-1.5-1.5H4A1.5 1.5 0 0 0 2.5 4v4.5A1.5 1.5 0 0 0 4 10h.5" />
-    </svg>
-  )
-}
-
-function GearIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <circle cx="8" cy="8" r="2" />
-      <path d="M8 1.8v1.4M8 12.8v1.4M2.6 8H1.2M14.8 8h-1.4M4.2 4.2 3.2 3.2M12.8 12.8l-1-1M11.8 4.2l1-1M3.2 12.8l1-1" />
-    </svg>
   )
 }
 

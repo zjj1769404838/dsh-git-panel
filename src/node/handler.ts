@@ -4,6 +4,27 @@ import type { PanelStore } from './store.js'
 import { normalizeRepos, normalizeRoots } from './store.js'
 import { initRepo, readRepoChanges, readRepoStatus } from './git.js'
 import { readRepoGraph } from './graph.js'
+import {
+  addRemote,
+  checkoutBranch,
+  commitStaged,
+  createBranch,
+  deleteBranch,
+  discardPaths,
+  fetchRepo,
+  hasMergeConflicts,
+  pullRepo,
+  pushRepo,
+  readBranches,
+  readCommitDetail,
+  readCommits,
+  readDiff,
+  readRemotes,
+  removeRemote,
+  renameBranch,
+  stagePaths,
+  unstagePaths,
+} from './git-ops.js'
 import { pollDeviceFlow, PROVIDERS, providerOf, startDeviceFlow, verifyToken } from './providers.js'
 import { redact } from './vault.js'
 
@@ -201,6 +222,118 @@ export function createHandler(deps: HandlerDeps) {
         return
       }
 
+      /** body.paths 归一成 string[]（容错非字符串项）。 */
+      const pathList = (value: unknown): string[] =>
+        Array.isArray(value) ? value.map((item) => String(item).trim()).filter((item) => item.length > 0) : []
+
+      /** Git 工作台只读端点的统一闸门：目录授权（未授权 fail-closed，不泄露仓库内容）。 */
+      const requireRead = (cwd: unknown, errorPayload: Record<string, unknown>): string | null => {
+        const dir = str(cwd).trim()
+        if (!dir) {
+          sendJson(res, 400, { ok: false, error: '缺少 cwd 参数', ...errorPayload })
+          return null
+        }
+        if (!deps.store.isRootAllowed(dir)) {
+          sendJson(res, 403, {
+            ok: false,
+            error: `目录不在可读范围内：${dir}（已授权根目录：${deps.store.settings().allowedRoots.join('、') || '无'}）`,
+            ...errorPayload,
+          })
+          return null
+        }
+        return dir
+      }
+
+      // ---- Git 工作台（IDEA 式面板）只读端点：GET，放在 405 判断之前。 ----
+
+      // 分支列表（本地 + 远端 + 跟踪关系）：只读，未授权 fail-closed。
+      if (method === 'GET' && path === '/repo/branches') {
+        const cwd = str(url.searchParams.get('cwd')).trim()
+        const dir = requireRead(cwd, { branches: [], current: '' })
+        if (!dir) return
+        const result = await readBranches(dir)
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error, branches: [], current: '' })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root, current: result.current, branches: result.branches })
+        return
+      }
+
+      // 远程仓库列表 + 当前 upstream：只读。
+      if (method === 'GET' && path === '/repo/remotes') {
+        const cwd = str(url.searchParams.get('cwd')).trim()
+        const dir = requireRead(cwd, { remotes: [] })
+        if (!dir) return
+        const result = await readRemotes(dir)
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error, remotes: [] })
+          return
+        }
+        sendJson(res, 200, {
+          ok: true,
+          root: result.root,
+          remotes: result.remotes,
+          upstream: result.upstream,
+          upstreamRemote: result.upstreamRemote,
+        })
+        return
+      }
+
+      // 提交历史：只读，limit/offset 分页。
+      if (method === 'GET' && path === '/repo/commits') {
+        const cwd = str(url.searchParams.get('cwd')).trim()
+        const dir = requireRead(cwd, { commits: [] })
+        if (!dir) return
+        const limit = Number.parseInt(url.searchParams.get('limit') ?? '', 10)
+        const offset = Number.parseInt(url.searchParams.get('offset') ?? '', 10)
+        const result = await readCommits(dir, Number.isFinite(limit) ? limit : 30, Number.isFinite(offset) ? offset : 0)
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error, commits: [] })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root, commits: result.commits, truncated: result.truncated })
+        return
+      }
+
+      // 单个提交详情（元信息 + 文件表 + diff）：只读。
+      if (method === 'GET' && path === '/repo/commit') {
+        const cwd = str(url.searchParams.get('cwd')).trim()
+        const rev = str(url.searchParams.get('rev')).trim()
+        const dir = requireRead(cwd, { commit: null, files: [], diff: '' })
+        if (!dir) return
+        const result = await readCommitDetail(dir, rev)
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error, commit: null, files: [], diff: '' })
+          return
+        }
+        sendJson(res, 200, {
+          ok: true,
+          root: result.root,
+          commit: result.commit,
+          files: result.files,
+          diff: result.diff,
+          diffTruncated: result.diffTruncated,
+        })
+        return
+      }
+
+      // diff 预览：mode=worktree（未暂存）| staged（已暂存）| commit。
+      if (method === 'GET' && path === '/repo/diff') {
+        const cwd = str(url.searchParams.get('cwd')).trim()
+        const dir = requireRead(cwd, { diff: '' })
+        if (!dir) return
+        const modeRaw = str(url.searchParams.get('mode')).trim()
+        const mode = modeRaw === 'staged' || modeRaw === 'commit' ? modeRaw : 'worktree'
+        const result = await readDiff(dir, mode, str(url.searchParams.get('path')).trim(), str(url.searchParams.get('rev')).trim())
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error, diff: '', truncated: false, totalLines: 0 })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root, diff: result.diff, truncated: result.truncated, totalLines: result.totalLines })
+        return
+      }
+
       if (method !== 'POST') {
         sendJson(res, 405, { ok: false, error: `不支持的请求方法：${method}` })
         return
@@ -217,6 +350,225 @@ export function createHandler(deps: HandlerDeps) {
         return
       }
       const body = parsed.body ?? {}
+
+      /** Git 工作台写端点的统一闸门：目录授权 → allowWrite。失败时已写响应并返回 null。 */
+      const requireWrite = (cwd: unknown): string | null => {
+        const dir = str(cwd).trim()
+        if (!dir) {
+          sendJson(res, 400, { ok: false, error: '缺少 cwd 参数' })
+          return null
+        }
+        if (!deps.store.isRootAllowed(dir)) {
+          sendJson(res, 403, {
+            ok: false,
+            error: `目录不在 Agent 可操作范围内：${dir}（已授权根目录：${deps.store.settings().allowedRoots.join('、') || '无'}）`,
+          })
+          return null
+        }
+        if (!deps.store.settings().allowWrite) {
+          sendJson(res, 403, { ok: false, error: '当前未开启写操作权限：请在 DSH 设置 → Git → 仓库范围里打开「允许修改仓库」' })
+          return null
+        }
+        return dir
+      }
+
+      // ---- Git 工作台（IDEA 式面板）写端点：POST，统一走 requireWrite 闸门。 ----
+      // 暂存文件。
+      if (path === '/repo/stage') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const result = await stagePaths(cwd, pathList(body.paths))
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root })
+        return
+      }
+
+      // 取消暂存。
+      if (path === '/repo/unstage') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const result = await unstagePaths(cwd, pathList(body.paths))
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root })
+        return
+      }
+
+      // 丢弃未提交改动（破坏性）：必须显式 confirmed:true，否则拒绝执行。
+      if (path === '/repo/discard') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        if (body.confirmed !== true) {
+          sendJson(res, 400, { ok: false, error: '丢弃改动是破坏性操作：需要 confirmed:true 才能执行' })
+          return
+        }
+        const result = await discardPaths(cwd, pathList(body.paths))
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root })
+        return
+      }
+
+      // 提交暂存区（message + amend）。
+      if (path === '/repo/commit') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const result = await commitStaged(cwd, str(body.message), body.amend === true)
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error, output: result.output })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root, hash: result.hash, output: result.output })
+        return
+      }
+
+      // 新建分支（可选立即切换）。
+      if (path === '/repo/branches/create') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const result = await createBranch(cwd, str(body.name), str(body.startPoint), body.checkout !== false)
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root, output: result.output })
+        return
+      }
+
+      // 切换分支。
+      if (path === '/repo/branches/checkout') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const result = await checkoutBranch(cwd, str(body.name))
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root, output: result.output })
+        return
+      }
+
+      // 删除分支（force=true 强删未合并分支）。
+      if (path === '/repo/branches/delete') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const result = await deleteBranch(cwd, str(body.name), body.force === true)
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root, output: result.output })
+        return
+      }
+
+      // 重命名分支。
+      if (path === '/repo/branches/rename') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const result = await renameBranch(cwd, str(body.name), str(body.newName))
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root, output: result.output })
+        return
+      }
+
+      // fetch（安全：只下载不合并）。
+      if (path === '/repo/fetch') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const result = await fetchRepo(cwd, str(body.remote))
+        sendJson(res, 200, {
+          ok: result.ok,
+          error: result.error,
+          output: result.output,
+          conflicted: result.conflicted,
+          rejected: result.rejected,
+          missingConfig: result.missingConfig,
+        })
+        return
+      }
+
+      // pull（merge / rebase 策略二选一）。
+      if (path === '/repo/pull') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const strategy = body.strategy === 'rebase' ? 'rebase' : 'merge'
+        const result = await pullRepo(cwd, str(body.remote), str(body.branch), strategy)
+        sendJson(res, 200, {
+          ok: result.ok,
+          error: result.error,
+          output: result.output,
+          conflicted: result.conflicted,
+          rejected: result.rejected,
+          missingConfig: result.missingConfig,
+        })
+        return
+      }
+
+      // push（setUpstream / force-with-lease / tags）。
+      if (path === '/repo/push') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const options = (typeof body === 'object' && body !== null ? body : {}) as { force?: unknown; setUpstream?: unknown; tags?: unknown }
+        const result = await pushRepo(cwd, str(body.remote), str(body.branch), {
+          force: options.force === true,
+          setUpstream: options.setUpstream === true,
+          tags: options.tags === true,
+        })
+        sendJson(res, 200, {
+          ok: result.ok,
+          error: result.error,
+          output: result.output,
+          conflicted: result.conflicted,
+          rejected: result.rejected,
+          missingConfig: result.missingConfig,
+        })
+        return
+      }
+
+      // 远程仓库：添加。
+      if (path === '/repo/remotes/add') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const result = await addRemote(cwd, str(body.name), str(body.url))
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root })
+        return
+      }
+
+      // 远程仓库：移除。
+      if (path === '/repo/remotes/remove') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const result = await removeRemote(cwd, str(body.name))
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root })
+        return
+      }
+
+      // 冲突状态检测：供面板在 pull/merge 之后轮询。
+      if (path === '/repo/conflicts') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const conflicted = await hasMergeConflicts(cwd)
+        sendJson(res, 200, { ok: true, conflicted })
+        return
+      }
 
       // 初始化仓库：写操作，必须过同源校验 + 根目录授权闸门。
       if (path === '/repo/init') {

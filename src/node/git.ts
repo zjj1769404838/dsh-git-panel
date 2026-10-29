@@ -30,8 +30,9 @@ const READ_ONLY = new Set([
   'tag',
   'describe',
   'blame',
+  'for-each-ref',
 ])
-const WRITE = new Set(['init', 'add', 'commit', 'checkout', 'switch', 'restore', 'reset', 'stash', 'merge', 'rebase', 'push', 'pull', 'fetch', 'cherry-pick', 'revert', 'tag', 'branch'])
+const WRITE = new Set(['init', 'add', 'commit', 'checkout', 'switch', 'restore', 'reset', 'stash', 'merge', 'rebase', 'push', 'pull', 'fetch', 'cherry-pick', 'revert', 'tag', 'branch', 'clean'])
 
 export function isWriteCommand(sub: string): boolean {
   return WRITE.has(sub)

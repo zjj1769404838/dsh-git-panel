@@ -148,6 +148,46 @@ if (clientOut) {
   check('client 已移除「当前会话仓库」快捷授权（无 dgp:cwd 通道）', !clientOut.includes('dgp:cwd') && !clientOut.includes('scopeCurrent'))
   check('client 旧 note 动态反馈机制已移除（改用 toast）', !clientOut.includes('setNote'))
   check('client 菜单静态提示行仍保留（dgp-menu-note）', clientOut.includes('dgp-menu-note'))
+  // ---- 2026-10-29 Git 工作台（IDEA 式主面板 + 二级弹窗）----
+  check('client 渲染 Git 工作台主面板（dgp-wb）', clientOut.includes('dgp-wb') && clientOut.includes('wbTitle'))
+  check('client 工作台顶栏有 Fetch/Pull/Push', clientOut.includes('/repo/fetch') && clientOut.includes('/repo/pull') && clientOut.includes('/repo/push'))
+  check('client 工作台左侧变更列表带勾选与批量操作', clientOut.includes('/repo/stage') && clientOut.includes('/repo/unstage') && clientOut.includes('/repo/discard'))
+  check('client discard 强制二次确认（confirmed:true）', clientOut.includes('confirmed: true'))
+  check('client 工作台提交走 /repo/commit 且带 amend', clientOut.includes('/repo/commit') && clientOut.includes('amend'))
+  check('client 分支操作走 /repo/branches/*', clientOut.includes('/repo/branches/create') && clientOut.includes('/repo/branches/checkout') && clientOut.includes('/repo/branches/delete'))
+  check('client 分支管理走二级弹窗（dgp-modal）', clientOut.includes('dgp-modal-mask') && clientOut.includes('"dialog"'))
+  check('client 提交详情弹窗拉 /repo/commit', clientOut.includes('/repo/commit?cwd=') || clientOut.includes('/repo/commit'))
+  check('client 远程仓库管理走 /repo/remotes/*', clientOut.includes('/repo/remotes/add') && clientOut.includes('/repo/remotes/remove'))
+  check('client Pull 策略弹窗提供 merge/rebase', clientOut.includes('wbPullMerge') && clientOut.includes('wbPullRebase'))
+  check('client 提交前校验暂存区与消息（wbCommitNeedsStaged）', clientOut.includes('wbCommitNeedsStaged'))
+  check('client 同步失败分三态（conflicted/rejected/missingConfig）', clientOut.includes('syncConflicted') && clientOut.includes('syncRejected') && clientOut.includes('syncMissingConfig'))
+  check('client 未初始化时只显示初始化入口（wbInitHint）', clientOut.includes('wbInitHint'))
+  check('client 未授权时引导去设置（wbUnauthorizedHint）', clientOut.includes('wbUnauthorizedHint'))
+  check('client 空仓库历史给空态（wbNoCommits）', clientOut.includes('wbNoCommits'))
+  check('client 操作有 busy 防重复提交（canCommit 门 + run 守卫）', clientOut.includes('wbCommitNeedsStaged') && clientOut.includes('actionFailed'))
+  check('client diff 预览带截断提示（diffTruncated）', clientOut.includes('diffTruncated'))
+}
+// ---- node 半边：git-ops 命令层与工作台端点 ----
+{
+  const gitOps = await readText(resolve(root, 'src/node/git-ops.ts'))
+  if (gitOps) {
+    check('git-ops 提供分支读写（readBranches/createBranch/checkoutBranch）', gitOps.includes('export async function readBranches') && gitOps.includes('export async function createBranch') && gitOps.includes('export async function checkoutBranch'))
+    check('git-ops 提供暂存/提交（stagePaths/commitStaged）', gitOps.includes('export async function stagePaths') && gitOps.includes('export async function commitStaged'))
+    check('git-ops 提交前校验暂存区非空', gitOps.includes("diff', '--cached', '--quiet"))
+    check('git-ops 分支名合法性校验（validBranchName）', gitOps.includes('export function validBranchName'))
+    check('git-ops push 用 --force-with-lease 而非 --force', gitOps.includes('--force-with-lease') && !gitOps.includes("'--force',"))
+    check('git-ops pull 支持 merge/rebase 策略', gitOps.includes('--no-rebase') && gitOps.includes('--rebase'))
+    check('git-ops 同步结果分类（classifySync）', gitOps.includes('function classifySync'))
+  }
+  const handlerSrc = await readText(resolve(root, 'src/node/handler.ts'))
+  if (handlerSrc) {
+    for (const route of ['/repo/branches', '/repo/remotes', '/repo/commits', '/repo/commit', '/repo/diff', '/repo/stage', '/repo/unstage', '/repo/discard', '/repo/commit', '/repo/pull', '/repo/push', '/repo/fetch', '/repo/remotes/add', '/repo/removes'.replace('removes', 'remotes/remove')]) {
+      check(`handler 挂载工作台端点 ${route}`, handlerSrc.includes(`'${route}'`))
+    }
+    check('handler 工作台写端点统一 requireWrite 闸门', handlerSrc.includes('const requireWrite'))
+    check('handler 只读端点 fail-closed（requireRead）', handlerSrc.includes('const requireRead'))
+    check('handler discard 端点强制 confirmed', handlerSrc.includes('body.confirmed !== true'))
+  }
 }
 
 if (failures.length > 0) {

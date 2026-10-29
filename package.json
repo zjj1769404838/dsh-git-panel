@@ -30,7 +30,8 @@
     "test:hardening": "node scripts/test-hardening.mjs",
     "preview": "node scripts/preview.mjs",
     "test:e2e": "node scripts/e2e-settings.mjs",
-    "test": "node scripts/gates/run.mjs && node scripts/test-hardening.mjs"
+    "test": "node scripts/gates/run.mjs && node scripts/test-hardening.mjs",
+    "test:e2e:wb": "node scripts/e2e-workbench.mjs"
   },
   "files": [
     "lib",
