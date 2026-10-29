@@ -100,11 +100,17 @@ export async function readBranches(cwd: string): Promise<BranchListResult> {
       tip: '',
     })
   }
+  // 「仅看当前项目相关分支」（2026-10-29 用户要求）：远程行只保留与本地
+  // 分支有同名/跟踪关系的（origin/main ↔ main），孤立远端分支不进列表。
+  const localNames = new Set(branches.map((branch) => branch.name))
   for (const line of remote.stdout.split('\n')) {
     if (line.trim().length === 0) continue
     const [name, head] = line.split('\t')
     // for-each-ref refs/remotes 会出现 origin/HEAD 符号引用，过滤掉。
     if (!name || name.endsWith('/HEAD')) continue
+    const slash = name.indexOf('/')
+    const shortName = slash > 0 ? name.slice(slash + 1) : name
+    if (!localNames.has(shortName)) continue
     branches.push({ name, head: head ?? '', upstream: '', ahead: 0, behind: 0, current: false, kind: 'remote', tip: head ?? '' })
   }
   return { ok: true, root, current, branches, error: '' }
@@ -575,6 +581,7 @@ export async function pushRepo(cwd: string, remote: string, branch: string, opti
   if (!branchName || !validBranchName(branchName)) return { ok: false, root, error: `分支名不合法：${branchName}`, output: '', conflicted: false, rejected: false, missingConfig: false }
   const args = ['push']
   if (options?.force) args.push('--force-with-lease')
+  // 无上游或显式要求时带 -u：首次推送直接在远程创建同名分支（初始化后默认行为）。
   if (options?.tags) args.push('--follow-tags')
   if (options?.setUpstream) args.push('-u')
   args.push('--', remoteName, branchName)
@@ -603,4 +610,22 @@ export async function hasMergeConflicts(cwd: string): Promise<boolean> {
 /** 错误兜底：把未知异常转成字符串（统一走 redact 防泄漏）。 */
 export function describeError(error: unknown): string {
   return redact(error)
+}
+
+/** 打开项目目录（资源管理器/Finder/xdg-open）。只 open，不执行任何 shell 字符串拼接。 */
+export async function openDirectory(cwd: string): Promise<{ ok: boolean; root: string; error: string }> {
+  const repo = ensureRepo(cwd)
+  if (!repo.ok) return { ok: false, root: '', error: repo.error ?? '目录不可用' }
+  const root = repo.root!
+  const { spawn } = await import('node:child_process')
+  const platform = process.platform
+  const command = platform === 'win32' ? 'explorer' : platform === 'darwin' ? 'open' : 'xdg-open'
+  return new Promise((resolvePromise) => {
+    // detached + unref：打开文件管理器后插件进程不等待、不持有子进程。
+    const child = spawn(command, [root], { detached: true, stdio: 'ignore' })
+    child.unref()
+    child.on('error', (error) => resolvePromise({ ok: false, root, error: redact(error) }))
+    // explorer 在目录已打开时可能返回非零退出码，但窗口确实会弹出；不视作失败。
+    child.on('exit', () => resolvePromise({ ok: true, root, error: '' }))
+  })
 }

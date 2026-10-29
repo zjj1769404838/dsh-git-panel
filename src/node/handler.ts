@@ -13,6 +13,7 @@ import {
   discardPaths,
   fetchRepo,
   hasMergeConflicts,
+  openDirectory,
   pullRepo,
   pushRepo,
   readBranches,
@@ -331,6 +332,20 @@ export function createHandler(deps: HandlerDeps) {
           return
         }
         sendJson(res, 200, { ok: true, root: result.root, diff: result.diff, truncated: result.truncated, totalLines: result.totalLines })
+        return
+      }
+
+      // 打开项目目录（系统文件管理器）：带授权闸门，不泄露未授权目录。
+      if (method === 'GET' && path === '/repo/open') {
+        const cwd = str(url.searchParams.get('cwd')).trim()
+        const dir = requireRead(cwd, {})
+        if (!dir) return
+        const result = await openDirectory(dir)
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root })
         return
       }
 

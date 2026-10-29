@@ -433,19 +433,20 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
   // ---------- 各状态的首屏 ----------
   if (!status) {
     return (
-      <div className="dgp-root dgp-wb" role="dialog" aria-label={t('wbTitle')}>
+      <><div className="dgp-portal dgp-wb-mask" onMouseDown={(event) => event.target === event.currentTarget && onClose()} /><div className="dgp-root dgp-wb" role="dialog" aria-label={t('wbTitle')}>
         <div className="dgp-wb-head">
           <span className="dgp-wb-title">{t('wbTitle')}</span>
           <button type="button" className="dgp-wb-x" onClick={onClose} aria-label="close">×</button>
         </div>
         <div className="dgp-wb-state"><Skeleton rows={4} /></div>
       </div>
+    </>
     )
   }
 
   if (!isRepo) {
     return (
-      <div className="dgp-root dgp-wb" role="dialog" aria-label={t('wbTitle')}>
+      <><div className="dgp-portal dgp-wb-mask" onMouseDown={(event) => event.target === event.currentTarget && onClose()} /><div className="dgp-root dgp-wb" role="dialog" aria-label={t('wbTitle')}>
         <div className="dgp-wb-head">
           <span className="dgp-wb-title">{t('wbTitle')}</span>
           <button type="button" className="dgp-wb-x" onClick={onClose} aria-label="close">×</button>
@@ -458,12 +459,13 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
           </button>
         </div>
       </div>
+    </>
     )
   }
 
   if (!authorized) {
     return (
-      <div className="dgp-root dgp-wb" role="dialog" aria-label={t('wbTitle')}>
+      <><div className="dgp-portal dgp-wb-mask" onMouseDown={(event) => event.target === event.currentTarget && onClose()} /><div className="dgp-root dgp-wb" role="dialog" aria-label={t('wbTitle')}>
         <div className="dgp-wb-head">
           <span className="dgp-wb-title">{t('wbTitle')}</span>
           <button type="button" className="dgp-wb-x" onClick={onClose} aria-label="close">×</button>
@@ -483,12 +485,13 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
           </button>
         </div>
       </div>
+    </>
     )
   }
 
   // ---------- 正常主面板 ----------
   return (
-    <div className="dgp-root dgp-wb" role="dialog" aria-label={t('wbTitle')}>
+    <><div className="dgp-portal dgp-wb-mask" onMouseDown={(event) => event.target === event.currentTarget && onClose()} /><div className="dgp-root dgp-wb" role="dialog" aria-label={t('wbTitle')}>
       {/* 顶栏：仓库 · 分支 · 同步按钮 · 设置 */}
       <div className="dgp-wb-head">
         <span className="dgp-wb-repo" title={status.root || cwd}>
@@ -729,6 +732,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
         />
       ) : null}
     </div>
+    </>
   )
 }
 

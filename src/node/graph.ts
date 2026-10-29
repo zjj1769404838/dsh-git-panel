@@ -215,7 +215,7 @@ export async function readRepoGraph(cwd: string, limitInput?: unknown): Promise<
 
   const log = await runGit(root, [
     'log',
-    '--all',
+    // 只看当前分支历史：Git 工作台聚焦当前项目演进线（2026-10-29 用户要求）。
     '--date-order',
     `-n${limit + 1}`,
     '--date=short',

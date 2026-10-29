@@ -318,7 +318,8 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 /* ------------------------------------------------------------------ */
 /* Git 工作台主面板（IDEA 式）                                          */
 /* ------------------------------------------------------------------ */
-.dgp-wb{position:fixed;z-index:1150;left:50%;bottom:52px;transform:translateX(-50%);width:min(760px,calc(100vw - 32px));max-height:min(540px,72vh);display:flex;flex-direction:column;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-lg,12px);background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:var(--dsw-elevation-prominent,0 12px 40px #00000030);overflow:hidden;font-size:12px;line-height:18px}
+.dgp-wb-mask{position:fixed;inset:0;z-index:1140;background:color-mix(in srgb,#000 28%,transparent)}
+.dgp-wb{position:fixed;z-index:1150;left:50%;top:50%;transform:translate(-50%,-50%);width:min(760px,calc(100vw - 32px));max-height:min(600px,80vh);display:flex;flex-direction:column;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-lg,12px);background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:var(--dsw-elevation-prominent,0 12px 40px #00000030);overflow:hidden;font-size:12px;line-height:18px}
 .dgp-wb-head{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:.5px solid var(--dgp-line);flex:0 0 auto}
 .dgp-wb-title{font-weight:500;color:var(--dgp-fg)}
 .dgp-wb-repo{display:inline-flex;align-items:center;gap:5px;font-weight:500;color:var(--dgp-fg);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

@@ -26,7 +26,7 @@ import { Workbench } from './workbench.js'
 /** 服务短名（不是 package.json 里的全名）。 */
 export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
-const BUILD = 'dgp-v10'
+const BUILD = 'dgp-v11'
 
 const ZH: Dict = {
   entry: 'Git',
@@ -89,6 +89,9 @@ const ZH: Dict = {
   menuInit: '初始化 Git 项目',
   menuInitHint: '只创建 .git 目录，不会删除或覆盖现有文件',
   menuSettings: '打开 Git 设置',
+  menuOpenDir: '打开项目目录',
+  toastOpened: '已在文件管理器中打开项目目录',
+  openFailed: '打开项目目录失败',
   menuCopyPath: '复制目录路径',
   menuRefresh: '刷新状态',
   menuChecking: '正在检测仓库状态…',
@@ -302,6 +305,9 @@ const EN: Dict = {
   menuInit: 'Initialize Git project',
   menuInitHint: 'Creates only the .git directory; existing files are kept as-is',
   menuSettings: 'Open Git settings',
+  menuOpenDir: 'Open project folder',
+  toastOpened: 'Project folder opened in file manager',
+  openFailed: 'Failed to open project folder',
   menuCopyPath: 'Copy directory path',
   menuRefresh: 'Refresh status',
   menuChecking: 'Checking repository status…',
@@ -1810,12 +1816,14 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
     }
   }
 
-  const copyPath = async () => {
+  /** 打开项目目录（系统文件管理器）：走后端 /repo/open，替代原「复制目录路径」。 */
+  const openDir = async () => {
     try {
-      await navigator.clipboard.writeText(cwd)
-      showToast('ok', t('toastCopied'))
-    } catch {
-      showToast('error', t('toastCopiedFailed'))
+      const data = await api<{ ok: boolean; error?: string }>(`/repo/open?cwd=${encodeURIComponent(cwd)}`)
+      if (data.ok) showToast('ok', t('toastOpened'))
+      else showToast('error', data.error || t('openFailed'))
+    } catch (error) {
+      showToast('error', `${t('openFailed')}：${(error as Error).message}`)
     }
   }
 
@@ -1967,10 +1975,10 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
             </span>
           </button>
 
-          <button type="button" className="dgp-menu-item" role="menuitem" onMouseDown={(e) => e.preventDefault()} onClick={() => void copyPath()}>
-            <CopyIcon />
+          <button type="button" className="dgp-menu-item" role="menuitem" onMouseDown={(e) => e.preventDefault()} onClick={() => { setOpen(false); void openDir() }}>
+            <FolderIcon />
             <span className="dgp-menu-item-main">
-              <span className="dgp-menu-item-title">{t('menuCopyPath')}</span>
+              <span className="dgp-menu-item-title">{t('menuOpenDir')}</span>
             </span>
           </button>
 
@@ -2012,6 +2020,14 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
   )
 }
 
+
+function FolderIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M1.8 4.5A1.5 1.5 0 0 1 3.3 3h3l1.5 1.7h4.9A1.5 1.5 0 0 1 14.2 6.2v5.3a1.5 1.5 0 0 1-1.5 1.5H3.3a1.5 1.5 0 0 1-1.5-1.5V4.5Z" />
+    </svg>
+  )
+}
 
 interface ClientContext {
   slots?: {
