@@ -29,6 +29,7 @@
     "gates": "node scripts/gates/run.mjs",
     "test:hardening": "node scripts/test-hardening.mjs",
     "preview": "node scripts/preview.mjs",
+    "test:e2e": "node scripts/e2e-settings.mjs",
     "test": "node scripts/gates/run.mjs && node scripts/test-hardening.mjs"
   },
   "files": [
@@ -44,6 +45,7 @@
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "esbuild": "^0.28.2",
+    "playwright-core": "^1.64.1",
     "typescript": "^5.9.3"
   },
   "keywords": [

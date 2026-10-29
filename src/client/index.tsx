@@ -514,6 +514,19 @@ const SETTINGS_TRIGGER_LABEL = /设置|設定|Settings|Preferences/i
  */
 const SETTINGS_TRIGGER_EXCLUDE = '[data-team-action],[data-team-panel],[aria-label*="团队"],[aria-label*="Team"]'
 
+/**
+ * 宿主账号菜单按钮（`dsh-client-ui-settings-account` 的 AccountMenu）。
+ * 它无条件占用 `settings.launcher` slot，导致宿主的设置按钮 fallback 不渲染，
+ * 真正的设置入口是这个账号菜单里的「设置」项。
+ */
+const ACCOUNT_MENU_SELECTORS = ['button[aria-haspopup="menu"]', 'button[aria-haspopup="true"]']
+
+/** 账号菜单按钮的文案（中文/英文两种宿主 locale）。 */
+const ACCOUNT_MENU_LABEL = /账号菜单|账户菜单|帐号菜单|Account\s*Menu|Account/i
+
+/** 账号菜单里「设置」菜单项的文案前缀（后面常跟着快捷键提示，如「设置 Ctrl+Alt+,」）。 */
+const SETTINGS_MENU_ITEM_LABEL = /^(设置|設定|Settings|Preferences)/i
+
 function isSettingsOpen(): boolean {
   return document.querySelector(SETTINGS_PANEL_SELECTOR) !== null
 }
@@ -552,6 +565,58 @@ function nextFrame(): Promise<void> {
       window.setTimeout(resolve, 16)
     }
   })
+}
+
+/**
+ * 找到宿主账号菜单按钮（打开账号菜单的浮层触发器）。
+ */
+function findAccountMenuTrigger(): HTMLButtonElement | undefined {
+  for (const selector of ACCOUNT_MENU_SELECTORS) {
+    const nodes = Array.from(document.querySelectorAll<HTMLButtonElement>(selector))
+    const matched = nodes.find((node) => {
+      if (node.disabled) return false
+      const name = node.getAttribute('aria-label') ?? node.textContent ?? ''
+      return ACCOUNT_MENU_LABEL.test(name)
+    })
+    if (matched !== undefined) return matched
+  }
+  return undefined
+}
+
+/**
+ * 走宿主真实路径打开设置页：账号菜单 → 「设置」菜单项。
+ *
+ * 宿主的设置按钮只是 `settings.launcher` slot 的 fallback，而
+ * `dsh-client-ui-settings-account` 的 AccountMenu 无条件占用该 slot，
+ * 于是设置按钮根本不在 DOM 里；唯一稳定可点的真入口是账号菜单里的「设置」项
+ * （菜单项文案形如「设置  Ctrl+Alt+,」，后面跟着快捷键提示）。
+ *
+ * 返回 true 表示设置面板已打开。
+ */
+async function openSettingsViaAccountMenu(): Promise<boolean> {
+  const trigger = findAccountMenuTrigger()
+  if (trigger === undefined) return false
+  if (trigger.getAttribute('aria-expanded') === 'true') {
+    // 菜单已经开着，直接找菜单项。
+  } else {
+    trigger.click()
+    await nextFrame()
+    await nextFrame()
+  }
+  const menus = Array.from(document.querySelectorAll<HTMLElement>('[role="menu"]'))
+  for (const menu of menus) {
+    const items = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"],button'))
+    const target = items.find((item) => {
+      const text = (item.textContent ?? '').trim()
+      return SETTINGS_MENU_ITEM_LABEL.test(text)
+    })
+    if (target === undefined) continue
+    target.click()
+    await nextFrame()
+    await nextFrame()
+    if (isSettingsOpen()) return true
+  }
+  return isSettingsOpen()
 }
 
 /** 跑一次动作，等两帧后看设置面板有没有出现。 */
@@ -595,22 +660,27 @@ async function selectSettingsSection(label: string): Promise<void> {
  * 合成的 Ctrl/Cmd+, 在桌面端永远到不了 `settings.open`。
  *
  * 按可信度依次尝试，任一成功即止：
- * 1) 点宿主自己的设置触发按钮（走宿主 onClick，最稳）；
- * 2) `shortcuts.registry.invoke('settings.open', ...)`（原生菜单走的同一条路，不校验 isTrusted）；
- * 3) 兜底派发 keydown（Web 端 runtime 无原生桥接，这条路有效）。
+ * 1) 宿主账号菜单 → 「设置」菜单项（宿主真入口，最稳）；
+ * 2) 点宿主自己的设置触发按钮（走宿主 onClick；部分构建里它确实在 DOM）；
+ * 3) `shortcuts.registry.invoke('settings.open', ...)`（原生菜单走的同一条路，不校验 isTrusted）；
+ * 4) 兜底派发 keydown（Web 端 runtime 无原生桥接，这条路有效）。
  */
 async function openSettingsSection(
   ctx?: { shortcuts?: { registry?: { invoke?: (id: string, context: any) => void } } },
   sectionLabel?: string,
 ): Promise<void> {
   if (!isSettingsOpen()) {
-    // 1) 点宿主的设置触发按钮。
-    const trigger = findSettingsTrigger()
-    if (trigger !== undefined) {
-      const opened = await attempt(() => trigger.click())
-      if (!opened) await openSettingsFallback(ctx)
-    } else {
-      await openSettingsFallback(ctx)
+    // 1) 宿主账号菜单里的「设置」。
+    const viaMenu = await openSettingsViaAccountMenu()
+    if (!viaMenu) {
+      // 2) 点宿主的设置触发按钮。
+      const trigger = findSettingsTrigger()
+      if (trigger !== undefined) {
+        const opened = await attempt(() => trigger.click())
+        if (!opened) await openSettingsFallback(ctx)
+      } else {
+        await openSettingsFallback(ctx)
+      }
     }
   }
   if (sectionLabel !== undefined && sectionLabel !== '') await selectSettingsSection(sectionLabel)
@@ -635,19 +705,28 @@ async function openSettingsFallback(ctx?: {
   }
 
   // 3) 兜底：Web 端 runtime 没有原生键盘桥接，keydown 分支可用。
-  await attempt(() => {
-    window.dispatchEvent(
-      new KeyboardEvent('keydown', {
-        key: ',',
-        code: 'Comma',
-        // 宿主默认绑定是 modifiers:['primary']；Windows 上 primary = control，
-        // 不能同时置 metaKey，否则 bindingKey 匹配不上。
-        ctrlKey: true,
-        bubbles: true,
-        cancelable: true,
-      }),
-    )
-  })
+  //    宿主按运行端注册两套绑定：desktop:* 是 Comma+primary（Ctrl+,），
+  //    web:* 是 Comma+primary+alt（Ctrl+Alt+,）；两种都要试。
+  const variants: Array<{ ctrlKey: boolean; altKey: boolean }> = [
+    { ctrlKey: true, altKey: false },
+    { ctrlKey: true, altKey: true },
+  ]
+  for (const variant of variants) {
+    // Windows 上 primary = control，不能同时置 metaKey，否则 bindingKey 匹配不上。
+    const opened = await attempt(() => {
+      window.dispatchEvent(
+        new KeyboardEvent('keydown', {
+          key: ',',
+          code: 'Comma',
+          ctrlKey: variant.ctrlKey,
+          altKey: variant.altKey,
+          bubbles: true,
+          cancelable: true,
+        }),
+      )
+    })
+    if (opened) return
+  }
 }
 
 /* ------------------------------------------------------------------ */

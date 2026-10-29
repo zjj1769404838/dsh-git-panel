@@ -124,6 +124,11 @@ if (clientOut) {
   check('client 打开设置排除智能体团队按钮（data-team-action）', clientOut.includes('data-team-action'))
   check('client 设置触发按钮只认文案匹配（设置/Settings）', clientOut.includes('Settings|Preferences') || clientOut.includes('Preferences'))
   check('client 已 inject shortcuts 服务', /inject\s*=\s*\[[^\]]*['"]shortcuts['"]/.test(clientOut))
+  // 宿主设置按钮只是 settings.launcher slot 的 fallback，被账号菜单占用后不在 DOM；
+  // 真入口是账号菜单里的「设置」项，必须走这条路径。
+  check('client 打开设置走宿主账号菜单（账号菜单）', clientOut.includes('账号菜单'))
+  check('client 账号菜单里找「设置」菜单项', clientOut.includes('role="menu"') && clientOut.includes('menuitem'))
+  check('client 快捷键兜底同时试 Ctrl+, 与 Ctrl+Alt+,', clientOut.includes('altKey'))
 }
 
 if (failures.length > 0) {
