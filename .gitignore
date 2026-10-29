@@ -1,0 +1,6 @@
+node_modules/
+lib/
+.work/
+docs/preview/*.html
+.tmp-*
+*.log
