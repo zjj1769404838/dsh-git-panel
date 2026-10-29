@@ -448,11 +448,6 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 /* ------------------------------------------------------------------ */
 /* 当前分支详情（提交记录）                                            */
 /* ------------------------------------------------------------------ */
-.dgp-branchbtn{appearance:none;display:inline-flex;align-items:center;gap:5px;height:22px;max-width:240px;padding:0 7px;border:0;border-radius:var(--dgp-r-xs);background:transparent;color:var(--dgp-muted);cursor:pointer;font:inherit;font-size:11px;line-height:16px;font-family:var(--dgp-code);white-space:nowrap;overflow:hidden;transition:background var(--dgp-fast) var(--dgp-ease),color var(--dgp-fast) var(--dgp-ease)}
-.dgp-branchbtn:hover:not(:disabled){background:var(--dgp-hover);color:var(--dgp-fg2)}
-.dgp-branchbtn:disabled{opacity:.5;cursor:not-allowed}
-.dgp-branchbtn:focus-visible{outline:2px solid var(--dgp-accent);outline-offset:1px}
-.dgp-branchbtn-name{overflow:hidden;text-overflow:ellipsis}
 .dgp-commits{display:flex;flex-direction:column;min-width:0}
 .dgp-commitrow{display:flex;align-items:flex-start;gap:9px;padding:7px 2px;border-bottom:.5px solid var(--dgp-line);min-width:0}
 .dgp-commitrow:last-child{border-bottom:none}

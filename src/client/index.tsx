@@ -23,7 +23,7 @@ import { Workbench, Modal } from './workbench.js'
 /** 服务短名（不是 package.json 里的全名）。 */
 export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
-const BUILD = 'dgp-v13'
+const BUILD = 'dgp-v14'
 
 const ZH: Dict = {
   entry: 'Git',
@@ -2634,20 +2634,8 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
         {warn ? <Dot state="error" /> : null}
       </button>
 
-      {/* 当前分支详情入口：按钮内容带上当前分支名（⎇ <branch>）。 */}
-      {isRepo && status?.branch ? (
-        <button
-          type="button"
-          className="dgp-branchbtn"
-          title={t('branchDetailTitle')}
-          aria-label={`${t('branchDetail')}: ${status.branch}`}
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={() => setBranchDetailOpen(true)}
-        >
-          <BranchIcon />
-          <span className="dgp-branchbtn-name">⎇ {status.branch}</span>
-        </button>
-      ) : null}
+      {/* 单一入口：分支详情不再单独做一个按钮，走 chip 菜单里的「当前分支详情」项，
+          分支名由 chip 自身与该菜单项的副标题承载。 */}
 
       {/* toast 放在菜单 portal 之外：菜单关闭后提示仍要留下。 */}
       {toast ? <Toast tone={toast.tone} text={toast.text} onDone={() => setToast(null)} /> : null}

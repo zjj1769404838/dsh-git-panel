@@ -1,10 +1,10 @@
 /**
  * 新 UI 真机端到端（client 半边重构后的入口体系）：
- * 1) chip 旁出现「当前分支详情」按钮，且按钮内容体现当前分支名
+ * 1) Git 只保留 chip 一个入口，chip 旁不再有独立的「当前分支详情」按钮
  * 2) 已初始化态菜单包含五个入口：刷新状态 / Git 工作台 / 打开项目目录(工作目录入口) / 打开 Git 设置(设置入口) / 当前分支详情
- * 3) 点「当前分支详情」→ 页面中央弹出 Modal，标题带分支名，正文展示提交记录四要素（信息/标识/作者/时间）
+ * 3) 菜单里的「当前分支详情」项带当前分支名，点它 → 页面中央弹出 Modal，标题带分支名，正文展示提交记录四要素（信息/标识/作者/时间）
  * 4) Modal 在视口内不溢出（居中）
- * 5) 关闭 Modal 后 chip 与分支按钮仍在，且无页面 JS 错误
+ * 5) 关闭 Modal 后 chip 仍在，且无页面 JS 错误
  *
  * 基建复用 mem-skill-playwright-core-edge-dsh-gui（自签 dsh-auth cookie + 本机 Edge）。
  * 注意：node 半边不热重载，桌面端未重启时 /repo/commits?ref= 若不可用，弹窗会显示错误文案——
@@ -182,29 +182,11 @@ try {
   const chipLabel = chipText.split(/\r?\n/u).map((s) => s.trim()).filter(Boolean)[0] ?? ''
   check('已切到本项目的会话（chip 显示真实分支）', switched.ok && chipLabel !== 'Git' && chipLabel.length > 0, `switched=${JSON.stringify(switched)} chip=${chipText}`)
 
-  // ① 当前分支详情按钮：存在且内容体现分支名
-  const branchBtn = await page.evaluate(() => {
-    const btn = document.querySelector('.dgp-branchbtn')
-    if (!btn) return null
-    return {
-      text: btn.textContent.trim(),
-      label: btn.getAttribute('aria-label') ?? '',
-    }
-  })
-  if (!branchBtn) {
-    check('chip 旁出现「当前分支详情」按钮', 'skip')
-    check('分支详情按钮内容体现当前分支名', 'skip')
-  } else {
-    check('chip 旁出现「当前分支详情」按钮', true)
-    const branchName = chipLabel.replace(/^⎇\s*/u, '').trim()
-    check(
-      '分支详情按钮内容体现当前分支名',
-      branchName.length > 0 && (branchBtn.text.includes(branchName) || branchBtn.label.includes(branchName)),
-      `chip=${chipLabel} btn=${JSON.stringify(branchBtn)}`,
-    )
-  }
+  // ① 单一入口：chip 旁不应再有独立的分支详情按钮
+  const branchBtnCount = await page.locator('.dgp-branchbtn').count()
+  check('Git 只有 chip 一个入口（无独立分支详情按钮）', branchBtnCount === 0, `branchbtn=${branchBtnCount}`)
 
-  // ② 已初始化态菜单：五个入口齐全
+  // ② 已初始化态菜单：五个入口齐全，且「当前分支详情」项带分支名
   await page.evaluate(() => document.querySelector('.dgp-chip')?.click())
   await page.waitForSelector('.dgp-menu', { timeout: 5_000 })
   check('点击 chip 打开菜单', (await page.locator('.dgp-menu').count()) === 1)
@@ -222,19 +204,28 @@ try {
     check(`菜单含【${label}】入口`, menuItems.some((item) => item.includes(keyword)), JSON.stringify(menuItems))
   }
 
-  // 关掉菜单，避免遮挡后续点击
-  await page.evaluate(() => document.querySelector('.dgp-menu')?.remove())
-  await page.waitForTimeout(200)
+  const branchName = chipLabel.replace(/^⎇\s*/u, '').trim()
+  const menuBranch = await page.evaluate(() => {
+    const items = [...document.querySelectorAll('.dgp-menu .dgp-menu-item')]
+    const hit = items.find((el) => (el.querySelector('.dgp-menu-item-title')?.textContent ?? '').includes('当前分支详情'))
+    return hit?.querySelector('.dgp-menu-item-hint')?.textContent?.trim() ?? ''
+  })
+  check(
+    '菜单里的【当前分支详情】体现当前分支名',
+    branchName.length > 0 && menuBranch.includes(branchName),
+    `chip=${chipLabel} menu=${menuBranch}`,
+  )
 
-  // ③ 点分支详情按钮 → 页面中央 Modal
+  // ③ 点菜单里的「当前分支详情」→ 页面中央 Modal
   const clicked = await page.evaluate(() => {
-    const btn = document.querySelector('.dgp-branchbtn')
-    if (!btn) return false
-    btn.click()
+    const items = [...document.querySelectorAll('.dgp-menu .dgp-menu-item')]
+    const hit = items.find((el) => (el.querySelector('.dgp-menu-item-title')?.textContent ?? '').includes('当前分支详情'))
+    if (!hit) return false
+    hit.click()
     return true
   })
   if (!clicked) {
-    check('点分支详情打开弹窗（.dgp-modal）', 'skip')
+    check('点当前分支详情打开弹窗（.dgp-modal）', 'skip')
     check('分支详情弹窗挂在 body 直属层', 'skip')
     check('分支详情弹窗在视口内且居中（不溢出）', 'skip')
     check('弹窗标题体现当前分支名', 'skip')
@@ -297,7 +288,7 @@ try {
       }
     }
 
-    // ④ 关闭弹窗：chip 与分支按钮仍在
+    // ④ 关闭弹窗：chip 仍在（不再有独立分支按钮）
     await page.evaluate(() => document.querySelector('.dgp-modal button[aria-label="close"]')?.click())
     await page.waitForTimeout(600)
     const after = await page.evaluate(() => ({
@@ -305,7 +296,11 @@ try {
       chip: document.querySelectorAll('.dgp-chip').length,
       branchbtn: document.querySelectorAll('.dgp-branchbtn').length,
     }))
-    check('关闭弹窗后 chip 与分支按钮仍在', after.modal === 0 && after.chip === 1 && after.branchbtn === 1, JSON.stringify(after))
+    check(
+      '关闭弹窗后 chip 仍在且无独立分支按钮',
+      after.modal === 0 && after.chip === 1 && after.branchbtn === 0,
+      JSON.stringify(after),
+    )
   }
 
   check('无页面 JS 错误', errors.length === 0, errors.slice(0, 3).join(' | '))

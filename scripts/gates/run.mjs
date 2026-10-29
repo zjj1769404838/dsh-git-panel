@@ -185,7 +185,7 @@ if (clientOut) {
   check('client 一级菜单不再内嵌分支拓扑（index.tsx 不再引用 GraphView）', !clientSrc.includes('GraphView'))
   check('client 一级菜单不再内嵌改动明细（index.tsx 不再有 ChangesList）', !clientSrc.includes('ChangesList'))
   check('client 工作台 portal 到 body（createPortal + document.body）', clientOut.includes('document.body') && portalImported >= 2)
-  check('client BUILD 版本已推进（dgp-v13）', clientOut.includes('dgp-v13'))
+  check('client BUILD 版本已推进（dgp-v14）', clientOut.includes('dgp-v14'))
   // ---- i18n 键完整性：任何 t('x') 用到的键都必须在 ZH/EN 字典里存在（防 wbCancel 类漏键） ----
   const clientNorm = clientSrc.replace(/\r\n/g, '\n')
   const dictStart = clientNorm.indexOf('const ZH: Dict = {')
@@ -225,9 +225,10 @@ if (clientOut) {
   check('client 提供分步初始化向导（bootstrap 端点）', clientSrcAll.includes('/repo/bootstrap'))
   check('client 初始化向导分步推进（initStep）', clientSrcAll.includes('initStep'))
   check('client 初始化失败可返回上一步（initBack）', clientSrcAll.includes('initBack'))
-  check('client 当前分支详情按钮（branchDetail）', clientSrcAll.includes('branchDetail'))
+  check('client 当前分支详情入口（branchDetail）', clientSrcAll.includes('branchDetail'))
   check('client 分支详情按 ref 取提交（ref=）', clientSrcAll.includes('ref=') && clientSrcAll.includes('/repo/commits'))
-  check('client BUILD 版本已推进（dgp-v13）', clientOut.includes('dgp-v13'))
+  check('client 分支详情不单独做按钮（Git 只有一个 chip 入口）', !clientSrcAll.includes('dgp-branchbtn'))
+  check('client BUILD 版本已推进（dgp-v14）', clientOut.includes('dgp-v14'))
 }
 // ---- node 半边：git-ops 命令层与工作台端点 ----
 {
