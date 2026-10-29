@@ -119,6 +119,11 @@ if (clientOut) {
   // 打开设置后要落在 Git 分节，而不是停在默认页；靠导航行 aria-current 判断当前分节。
   check('client 打开设置后定位到 Git 分节（aria-current）', clientOut.includes('aria-current'))
   check('client 设置触发按钮排除已展开态（aria-expanded）', clientOut.includes('aria-expanded'))
+  // 误跳「智能体团队」的回归：Agent Teams 触发按钮也是 aria-haspopup="dialog"，
+  // 必须靠 data-team-action / 文案排除，且绝不允许退化成「随便拿第一个按钮」。
+  check('client 打开设置排除智能体团队按钮（data-team-action）', clientOut.includes('data-team-action'))
+  check('client 设置触发按钮只认文案匹配（设置/Settings）', clientOut.includes('Settings|Preferences') || clientOut.includes('Preferences'))
+  check('client 已 inject shortcuts 服务', /inject\s*=\s*\[[^\]]*['"]shortcuts['"]/.test(clientOut))
 }
 
 if (failures.length > 0) {

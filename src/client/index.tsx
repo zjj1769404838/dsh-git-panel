@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, use
 import { createPortal } from 'react-dom'
 
 /** 服务短名（不是 package.json 里的全名）。 */
-export const inject = ['slots', 'sessions', 'locale']
+export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
 const NS = 'dsh-git-panel'
 const ROUTE = '/dsh-git-panel'
@@ -495,7 +495,7 @@ function BranchIcon() {
 const SETTINGS_PANEL_SELECTOR = '[data-shortcut-modal="settings"]'
 
 /**
- * 设置入口按钮的候选选择器，按可信度排序。
+ * 设置入口按钮的候选选择器。
  * 宿主 SettingsRoot 的 trigger 恒带 `aria-haspopup="dialog"`；`aria-keyshortcuts`
  * 只在快捷键目录里有 settings.open 这一行时才渲染，所以不能只依赖后者。
  */
@@ -504,21 +504,41 @@ const SETTINGS_TRIGGER_SELECTORS = [
   'button[aria-haspopup="dialog"]',
 ]
 
-/** 兜底时按可见文案认设置按钮（宿主 locale 可能给中文或英文）。 */
+/** 按可见文案认设置按钮（宿主 locale 可能给中文或英文）。 */
 const SETTINGS_TRIGGER_LABEL = /设置|設定|Settings|Preferences/i
+
+/**
+ * 必须排除的按钮：这些也是 `aria-haspopup="dialog"`，但打开的是别的浮层。
+ * `[data-team-action]` 是 Agent Teams 的「智能体团队」触发按钮（同 asar 包
+ * `dsh-experimental-client-ui-agent-team`），它的 aria-label 恰是「智能体团队」。
+ */
+const SETTINGS_TRIGGER_EXCLUDE = '[data-team-action],[data-team-panel],[aria-label*="团队"],[aria-label*="Team"]'
 
 function isSettingsOpen(): boolean {
   return document.querySelector(SETTINGS_PANEL_SELECTOR) !== null
 }
 
-/** 找到宿主的设置入口按钮；已展开的不算（再点会把它关掉）。 */
+/**
+ * 找到宿主的设置入口按钮。
+ *
+ * 只认**文案匹配**的按钮，绝不退化成「随便拿第一个 aria-haspopup 按钮」：
+ * 宿主把设置入口渲染在 `settings.launcher` slot 的 fallback 里，一旦该 slot
+ * 被 `dsh-client-ui-settings-account` 的账号菜单占用，真正的设置按钮就根本
+ * 不在 DOM 里，此时页面上其余 `aria-haspopup="dialog"` 按钮全是别的浮层
+ * （智能体团队 / 插件市场 / 定时任务 …），点错会把无关面板打开。
+ * 已展开的也不收（再点会把它关掉）。
+ */
 function findSettingsTrigger(): HTMLButtonElement | undefined {
   for (const selector of SETTINGS_TRIGGER_SELECTORS) {
     const nodes = Array.from(document.querySelectorAll<HTMLButtonElement>(selector))
-    const usable = nodes.filter((node) => !node.disabled && node.getAttribute('aria-expanded') !== 'true')
-    if (usable.length === 0) continue
-    const labeled = usable.find((node) => SETTINGS_TRIGGER_LABEL.test(node.getAttribute('aria-label') ?? node.textContent ?? ''))
-    return labeled ?? usable[0]
+    const labeled = nodes.find((node) => {
+      if (node.disabled) return false
+      if (node.getAttribute('aria-expanded') === 'true') return false
+      if (node.closest(SETTINGS_TRIGGER_EXCLUDE) !== null) return false
+      const name = node.getAttribute('aria-label') ?? node.textContent ?? ''
+      return SETTINGS_TRIGGER_LABEL.test(name)
+    })
+    if (labeled !== undefined) return labeled
   }
   return undefined
 }
@@ -1880,7 +1900,10 @@ export function apply(ctx: ClientContext): void {
 
   const sessions = ctx.sessions
   // shortcuts 是可选服务：软取，取不到也不影响 chip 渲染，只是「打开 Git 设置」少一条路径。
-  const shortcuts = typeof ctx.get === 'function' ? ctx.get('shortcuts') : undefined
+  // 已在 exports.inject 声明 'shortcuts'，正常情况下 ctx.shortcuts 直接可用；
+  // 仍保留 ctx.get 软取兜底，宿主降级时不至于整块崩掉。
+  const shortcuts =
+    (typeof ctx.get === 'function' ? ctx.get('shortcuts') : undefined) ?? ctx.shortcuts
 
   // 1) 设置页分节：全部配置都放这里（账号 / 仓库范围 / 授权说明）。
   try {
