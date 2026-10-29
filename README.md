@@ -154,14 +154,17 @@ node scripts/build.mjs
 ```bash
 npm run bundle        # 构建 lib/index.js + lib/client.js
 npm run typecheck     # tsc --noEmit
-npm run gates         # 81 项插件契约门禁
-npm run test:hardening# 133 项加固回归（含真实 git 仓库端到端）
-npm run test:e2e      # 13 项 GUI 端到端验证（需要本机 Edge + DSH Web 在跑）
+npm run gates         # 131 项插件契约门禁
+npm run test:hardening# 166 项加固回归（含真实 git 仓库端到端）
+npm run test:e2e      # 13 项设置页 GUI 端到端验证（需要本机 Edge + DSH Web 在跑）
+npm run test:e2e:wb   # 27 项 Git 工作台 GUI 端到端验证（含「点弹窗不消失」回归）
 npm run preview       # 用真实 CSS + 宿主 token 渲染 docs/preview/*.png（需要本机 Edge）
 npm test              # gates + hardening
 ```
 
 `test:e2e` 用 `playwright-core` 驱动**本机 Edge**（headless）打开真实 DSH Web GUI，验证「打开 Git 设置」这条链路：认证通过 → chip 存在 → 菜单里有「打开 Git 设置」→ 点击后**设置面板打开**且**智能体团队面板没被误开** → 导航落在 Git 分节 → Git 分节内容渲染 → 进已有会话后「智能体团队」入口自身仍能打开。脚本自己按宿主 `dsh-client-connection` 的规则从 `~/.dsh/.credentials.yaml` 铸造 `dsh-auth-*` cookie（**不打印任何凭据**），URL 可用 `--url` 或 `DSH_WEB_URL` 覆盖。
+
+`test:e2e:wb` 是工作台的点击回归：切到本项目的会话 → chip 显示真实分支 → 打开工作台（断言挂在 `body` 直属层，脱离 composer 的 `container-type:inline-size` 包含块）→ 点分支管理开二级弹窗 → **把弹窗内的标题/正文/输入框/复选框逐个点一遍，每次点完断言「弹窗 + 工作台 + chip」三件套都还在** → Pull / 远程仓库 / 提交详情同样处理 → 切 tab、刷新、勾选改动行都不许关掉工作台。这条链路正是「点一下弹窗就整片消失」的复现路径。
 
 `test:hardening` 用 mock ctx 驱动**构建产物 `lib/index.js`**，在临时 `DSH_HOME` 下跑，覆盖：路由注册、工具注册、跨站/超大请求拦截、设置归一化、密文不外泄、OAuth 缺 clientId 提示、未授权仓库/目录拒绝、写操作默认拒绝、`/repo/status` 的六种形态（缺 cwd / 非仓库且 `reason=no-repo` / 目录不存在与相对路径 `reason=invalid` / 已授权真实仓库 `reason=repo` / 未授权不泄露 ahead-behind）、`/repo/init` 的十种形态（未授权拒绝且不落 `.git` / 已授权创建 / 回报分支 / 幂等 / 缺 cwd / 目录不存在 / **初始化后原有文件与子目录内容原样保留**）、`/repo/changes` 的七种形态（缺 cwd 400 / 非仓库 `isRepo:false` / **未授权目录只回空壳不泄露路径与分支** / 已授权仓库回报 root+branch+dirty / 工作区修改为 `M` / 已暂存文件标记 `staged` / 未跟踪文件为 `??` / 文件按路径升序）、真实仓库的 status/branches/diff/log 与「确认前不执行、取消不执行、确认后执行、令牌不可复用」。
 
@@ -183,6 +186,9 @@ src/
     handler.ts        HTTP 路由
   client/
     index.tsx         React 组件：GitSection（设置页 settings.section）+ BranchChip（输入区 conversation.input.left）
+    shared.tsx        api/routeUrl/类型 + 全套 .dgp-* 样式 + Toast/EmptyState/Skeleton/图标
+    graphview.tsx     分支拓扑车道图（工作台「分支图」tab 使用）
+    workbench.tsx     IDEA 式 Git 工作台主面板 + 分支/新建分支/提交详情/远程/Pull 五个二级弹窗
 scripts/
   build.mjs           esbuild 双产物
   gates/run.mjs       契约门禁

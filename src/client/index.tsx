@@ -17,16 +17,13 @@ import {
   fmt,
   type Dict,
   type RepoStatusView,
-  type RepoChangesView,
-  type RepoGraphView,
 } from './shared.js'
-import { GraphView } from './graphview.js'
 import { Workbench } from './workbench.js'
 
 /** 服务短名（不是 package.json 里的全名）。 */
 export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
-const BUILD = 'dgp-v11'
+const BUILD = 'dgp-v12'
 
 const ZH: Dict = {
   entry: 'Git',
@@ -204,6 +201,7 @@ const ZH: Dict = {
   wbBranchName: '分支名',
   wbCheckoutAfterCreate: '创建后立即切换',
   wbCreate: '创建',
+  wbCancel: '取消',
   wbCheckout: '切换',
   wbDelete: '删除',
   wbConfirmDelete: '确认删除',
@@ -432,6 +430,7 @@ const EN: Dict = {
   wbBranchName: 'Branch name',
   wbCheckoutAfterCreate: 'Check out after create',
   wbCreate: 'Create',
+  wbCancel: 'Cancel',
   wbCheckout: 'Check out',
   wbDelete: 'Delete',
   wbConfirmDelete: 'Confirm delete',
@@ -514,108 +513,6 @@ interface ProviderView {
   oauthHint: string
   patHint: string
   patUrl: string
-}
-
-/**
- * 工作区改动明细：把「哪些文件还没提交」压缩成一列状态字母 + 路径 + 增删行数。
- * 状态字母沿用 git porcelain 的两列语义（A 新增 / M 修改 / D 删除 / R 重命名 / C 复制 / U 冲突 / ? 未跟踪），
- * 未跟踪二进制没有真实行数，此时显示「—」而不是编造一个数字。
- */
-function ChangesList({
-  t,
-  changes,
-  loading,
-  error,
-}: {
-  t: (key: string) => string
-  changes: RepoChangesView | null
-  loading: boolean
-  error: string
-}) {
-  if (loading) {
-    return (
-      <div className="dgp-changes">
-        <div className="dgp-changes-head">
-          <span>{t('changesTitle')}</span>
-        </div>
-        <Skeleton rows={3} />
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="dgp-changes">
-        <div className="dgp-changes-head">
-          <span>{t('changesTitle')}</span>
-        </div>
-        <div className="dgp-changes-note" data-tone="error">
-          {t('changesFailed')}：{error}
-        </div>
-      </div>
-    )
-  }
-
-  // 未授权目录时 node 只回空壳（root/branch 为空），这里明确告诉用户「在范围外」而不是假装干净。
-  if (!changes || !changes.root) {
-    return (
-      <div className="dgp-changes">
-        <div className="dgp-changes-head">
-          <span>{t('changesTitle')}</span>
-        </div>
-        <div className="dgp-changes-note">{t('changesUnauthorized')}</div>
-      </div>
-    )
-  }
-
-  const files = changes.files ?? []
-  if (files.length === 0) {
-    return (
-      <div className="dgp-changes">
-        <div className="dgp-changes-head">
-          <span>{t('changesTitle')}</span>
-          <span className="dgp-changes-count">{fmt(t('changesCount'), { n: 0 })}</span>
-        </div>
-        <div className="dgp-changes-note">{t('changesEmpty')}</div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="dgp-changes">
-      <div className="dgp-changes-head">
-        <span>{t('changesTitle')}</span>
-        <span className="dgp-changes-count">{fmt(t('changesCount'), { n: files.length })}</span>
-      </div>
-      {files.map((file) => {
-        const staged = file.index && file.index !== ' ' && file.index !== '??'
-        const worktree = file.worktree && file.worktree !== ' ' ? file.worktree : '??'
-        const code = worktree === '??' ? '??' : worktree
-        // node 侧对未跟踪二进制只能给出字节流估算，超过上限即视为不可计数。
-        const addedText = file.added > 2000 ? '—' : file.added > 0 ? `+${file.added}` : ''
-        const deletedText = file.deleted > 0 ? `-${file.deleted}` : ''
-        return (
-          <div className="dgp-change" key={file.path} title={file.path}>
-            <span className="dgp-change-code" data-code={code}>
-              {code}
-            </span>
-            <span className="dgp-change-path">{file.path}</span>
-            {staged ? <span className="dgp-change-stat" data-sign="staged">{t('changesStaged')}</span> : null}
-            {addedText ? (
-              <span className="dgp-change-stat" data-sign="add">
-                {addedText}
-              </span>
-            ) : null}
-            {deletedText ? (
-              <span className="dgp-change-stat" data-sign="del">
-                {deletedText}
-              </span>
-            ) : null}
-          </div>
-        )
-      })}
-    </div>
-  )
 }
 
 /** 设置面板在 DOM 里的稳定锚点（宿主 SettingsPanel 上写死）。 */
@@ -1585,18 +1482,12 @@ interface MenuAnchor {
 function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
   useStyles()
   const [status, setStatus] = useState<RepoStatusView | null>(null)
-  const [graph, setGraph] = useState<RepoGraphView | null>(null)
-  const [graphLoading, setGraphLoading] = useState(false)
-  const [graphError, setGraphError] = useState('')
   const [detectError, setDetectError] = useState('')
   const [checking, setChecking] = useState(false)
   const [open, setOpen] = useState(false)
   const [workbench, setWorkbench] = useState(false)
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState<{ tone: 'ok' | 'error' | 'info'; text: string } | null>(null)
-  const [changes, setChanges] = useState<RepoChangesView | null>(null)
-  const [changesLoading, setChangesLoading] = useState(false)
-  const [changesError, setChangesError] = useState('')
   const toastTimerRef = useRef<number | null>(null)
   const [anchor, setAnchor] = useState<MenuAnchor>({ left: 0, bottom: 0 })
   const wrapRef = useRef<HTMLSpanElement | null>(null)
@@ -1653,66 +1544,6 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
     }
   }, [cwd, t])
 
-  // 提交图只在「确实是仓库」时才拉，且与状态检测解耦：状态失败不影响图，
-  // 图失败也不把整体判成检测失败（避免一个只读接口拖垮 chip 主状态）。
-  const loadGraph = useCallback(async (): Promise<void> => {
-    if (!cwd) {
-      setGraph(null)
-      setGraphError('')
-      return
-    }
-    setGraphLoading(true)
-    try {
-      const data = await api<{ ok: boolean; graph?: RepoGraphView; error?: string }>(
-        `/repo/graph?cwd=${encodeURIComponent(cwd)}&limit=30`,
-      )
-      if (data.ok && data.graph) {
-        setGraph(data.graph)
-        setGraphError('')
-      } else {
-        setGraph(null)
-        setGraphError(data.error || t('graphFailed'))
-      }
-    } catch (error) {
-      setGraph(null)
-      setGraphError((error as Error).message || t('graphFailed'))
-    } finally {
-      setGraphLoading(false)
-    }
-  }, [cwd, t])
-
-  /** 工作区改动：只读明细，用于在 chip 菜单里一眼看到「哪些文件还没提交」。 */
-  const loadChanges = useCallback(async (): Promise<void> => {
-    if (!cwd) {
-      setChanges(null)
-      setChangesError('')
-      return
-    }
-    setChangesLoading(true)
-    try {
-      const data = await api<{ ok: boolean; changes?: RepoChangesView; error?: string }>(
-        `/repo/changes?cwd=${encodeURIComponent(cwd)}`,
-      )
-      if (data.ok && data.changes) {
-        setChanges(data.changes)
-        setChangesError('')
-      } else {
-        setChanges(null)
-        // 405 = 运行中的 node 半边还是旧产物（node 侧不热重载），给出可操作的提示而不是干巴巴的失败。
-        setChangesError(
-          String(data.error ?? '').includes('不支持的请求方法')
-            ? t('changesStaleNode')
-            : data.error || t('changesFailed'),
-        )
-      }
-    } catch (error) {
-      setChanges(null)
-      setChangesError((error as Error).message || t('changesFailed'))
-    } finally {
-      setChangesLoading(false)
-    }
-  }, [cwd, t])
-
   /** 轻提示：操作结果用 toast 反馈，不再往菜单里塞文字行。 */
   const showToast = useCallback((tone: 'ok' | 'error' | 'info', text: string) => {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
@@ -1729,10 +1560,6 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
   useEffect(() => {
     setStatus(null)
     setDetectError('')
-    setGraph(null)
-    setGraphError('')
-    setChanges(null)
-    setChangesError('')
     if (!cwd) return
     let alive = true
     const load = () => {
@@ -1745,28 +1572,6 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
       window.clearInterval(timer)
     }
   }, [cwd, reload])
-
-  // 提交图随「确认是仓库」加载，不跟随 15s 轮询（历史变化频率低，避免无谓 IO）。
-  useEffect(() => {
-    if (!cwd) {
-      setGraph(null)
-      setGraphError('')
-      return
-    }
-    if (!status || !status.isRepo) return
-    void loadGraph()
-  }, [cwd, status?.isRepo, loadGraph])
-
-  // 改动明细只在确认是仓库后拉取；与提交图解耦，互不拖累。
-  useEffect(() => {
-    if (!cwd) {
-      setChanges(null)
-      setChangesError('')
-      return
-    }
-    if (!status || !status.isRepo) return
-    void loadChanges()
-  }, [cwd, status?.isRepo, loadChanges])
 
   // 点空白 / Esc 关闭菜单
   useEffect(() => {
@@ -1859,11 +1664,6 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
       placeMenu()
       // 每次打开菜单都重新检测，避免用上一次的结果（尤其切换项目后）。
       void reload()
-      // 已确认是仓库时同时刷新提交图与改动明细（切项目后也要跟着换）。
-      if (status?.isRepo) {
-        void loadGraph()
-        void loadChanges()
-      }
     }
     setOpen(next)
   }
@@ -1944,7 +1744,6 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
               className="dgp-portal dgp-menu"
               role="menu"
               ref={menuRef}
-              data-graph={isRepo ? '1' : '0'}
               style={{
                 left: `${anchor.left}px`,
                 ...(anchor.top !== undefined ? { top: `${anchor.top}px` } : { bottom: `${anchor.bottom}px` }),
@@ -1955,22 +1754,6 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
             {t('menuTitle')}
           </span>
           <span className="dgp-menu-sum">{summary}</span>
-
-          {/* 分支拓扑：只有确认是仓库才画图，非仓库/检测失败仍走下面的原有菜单项。 */}
-          {isRepo ? (
-            <>
-              <span className="dgp-menu-sep" />
-              <GraphView t={t} graph={graph} loading={graphLoading} error={graphError} />
-            </>
-          ) : null}
-
-          {/* 工作区改动明细：让用户不进终端也知道「现在到底改了什么」。 */}
-          {isRepo ? (
-            <>
-              <span className="dgp-menu-sep" />
-              <ChangesList t={t} changes={changes} loading={changesLoading} error={changesError} />
-            </>
-          ) : null}
 
           <span className="dgp-menu-sep" />
 
@@ -2079,20 +1862,26 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
           )
         : null}
 
-      {/* Git 工作台主面板（IDEA 式）：由 chip 打开，独立浮层 */}
-      {workbench ? (
-        <Workbench
-          t={t}
-          cwd={cwd}
-          status={status}
-          onStatusChange={(next) => setStatus(next)}
-          onClose={() => {
-            setWorkbench(false)
-            void reload()
-          }}
-          onOpenSettings={() => void openSettingsSection({ shortcuts }, t('navLabel'))}
-        />
-      ) : null}
+      {/* Git 工作台主面板（IDEA 式）：由 chip 打开。
+          portal 到 body：composer 行有 container-type:inline-size，会建立 layout containment，
+          把后代 position:fixed 的包含块降级成那一行——挂 body 才能让遮罩与面板真正铺满视口，
+          面板内的点击也不会冒泡进宿主输入区。 */}
+      {workbench
+        ? createPortal(
+            <Workbench
+              t={t}
+              cwd={cwd}
+              status={status}
+              onStatusChange={(next) => setStatus(next)}
+              onClose={() => {
+                setWorkbench(false)
+                void reload()
+              }}
+              onOpenSettings={() => void openSettingsSection({ shortcuts }, t('navLabel'))}
+            />,
+            document.body,
+          )
+        : null}
     </span>
   )
 }

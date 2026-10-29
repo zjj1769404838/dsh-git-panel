@@ -185,7 +185,39 @@ try {
     const teamAfter = await page.locator('[data-team-panel]').count()
     check('「智能体团队」入口自身仍正常', teamAfter > 0, `[data-team-panel]=${teamAfter}`)
   } else {
-    console.log('SKIP 侧边栏没有可用会话，无法验证「智能体团队」入口自身可用性')
+    // 没有「进行中」任务时退回到点侧边栏任意会话行：团队入口只在会话页渲染。
+    // 项目行是展开/折叠切换：先展开，等 DOM 刷新后再点它下面的会话行。
+    await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('[role="treeitem"]')]
+      rows.find((row) => String(row.className).includes('projectRow'))?.click()
+    })
+    await page.waitForTimeout(800)
+    const fallback = await page.evaluate(() => {
+      const rows = [...document.querySelectorAll('[role="treeitem"]')]
+      const projectIndex = rows.findIndex((row) => String(row.className).includes('projectRow'))
+      const candidates = projectIndex >= 0 ? rows.slice(projectIndex + 1) : rows
+      const session = candidates.find((row) => String(row.className).includes('sessionRow'))
+      if (!session) return false
+      session.click()
+      return true
+    })
+    if (fallback) {
+      await page.waitForTimeout(4000)
+      const teamTrigger = await page.evaluate(() => {
+        const button = Array.from(document.querySelectorAll('button[aria-haspopup="dialog"]')).find(
+          (node) => (node.getAttribute('aria-label') ?? '') === '智能体团队',
+        )
+        if (button === undefined) return false
+        button.click()
+        return true
+      })
+      check('会话页存在「智能体团队」触发按钮', teamTrigger)
+      await page.waitForTimeout(2000)
+      const teamAfter = await page.locator('[data-team-panel]').count()
+      check('「智能体团队」入口自身仍正常', teamAfter > 0, `[data-team-panel]=${teamAfter}`)
+    } else {
+      console.log('SKIP 侧边栏没有可用会话，无法验证「智能体团队」入口自身可用性')
+    }
   }
 
   await page.screenshot({ path: '.work/e2e-settings.png', fullPage: false })

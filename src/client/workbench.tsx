@@ -15,6 +15,7 @@ import {
   Dot,
   EmptyState,
   Skeleton,
+  createPortal,
   BranchIcon,
   RefreshIcon,
   GearIcon,
@@ -142,9 +143,6 @@ function Modal({
     document.body,
   )
 }
-
-// createPortal 由宿主 react-dom 提供；esbuild external 已含 react-dom。
-declare const createPortal: (children: React.ReactNode, container: Element) => React.ReactNode
 
 export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSettings }: WorkbenchProps) {
   useStyles()
@@ -803,7 +801,6 @@ function FileRow({
         </span>
       ) : null}
       <button type="button" className="dgp-wb-fileact" data-danger={actionDanger ? '1' : '0'} onClick={onAction}>{actionLabel}</button>
-      <span className="sr-only">{t('changesTitle')}</span>
     </div>
   )
 }

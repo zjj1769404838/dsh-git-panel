@@ -77,6 +77,7 @@ if (nodeOut) {
 }
 
 const clientOut = await readText(resolve(root, 'lib/client.js'))
+const clientSrc = await readText(resolve(root, 'src/client/index.tsx'))
 check('client 产物非空', (clientOut?.length ?? 0) > 1000, `${clientOut?.length ?? 0} 字节`)
 if (clientOut) {
   check('client 产物带 ModuleLoader banner', clientOut.includes('__ModuleLoader__.load'))
@@ -166,6 +167,48 @@ if (clientOut) {
   check('client 空仓库历史给空态（wbNoCommits）', clientOut.includes('wbNoCommits'))
   check('client 操作有 busy 防重复提交（canCommit 门 + run 守卫）', clientOut.includes('wbCommitNeedsStaged') && clientOut.includes('actionFailed'))
   check('client diff 预览带截断提示（diffTruncated）', clientOut.includes('diffTruncated'))
+  // ---- 2026-10-29 修复：弹窗崩溃 + 一级菜单瘦身 ----
+  const portalRefs = (clientOut.match(/createPortal/gu) ?? []).length
+  const portalImported = (clientOut.match(/import_react_dom\d*\.createPortal/gu) ?? []).length
+  check(
+    'client 无裸 createPortal 调用（全部走 react-dom 导入）',
+    portalRefs > 0 && portalRefs === portalImported,
+    `refs=${portalRefs} imported=${portalImported}`,
+  )
+  check('client 源码不再用 declare const 声明 createPortal', !clientSrc.includes('declare const createPortal'))
+  check('client 一级菜单不再内嵌分支拓扑（index.tsx 不再引用 GraphView）', !clientSrc.includes('GraphView'))
+  check('client 一级菜单不再内嵌改动明细（index.tsx 不再有 ChangesList）', !clientSrc.includes('ChangesList'))
+  check('client 工作台 portal 到 body（createPortal + document.body）', clientOut.includes('document.body') && portalImported >= 2)
+  check('client BUILD 版本已推进（dgp-v12）', clientOut.includes('dgp-v12'))
+  // ---- i18n 键完整性：任何 t('x') 用到的键都必须在 ZH/EN 字典里存在（防 wbCancel 类漏键） ----
+  const dictStart = clientSrc.indexOf('const ZH: Dict = {')
+  const dictEnd = clientSrc.indexOf('const EN: Dict = {', dictStart)
+  const zhBlock = dictStart >= 0 && dictEnd > dictStart ? clientSrc.slice(dictStart, dictEnd) : ''
+  const definedKeys = new Set([...zhBlock.matchAll(/^\s{2}([A-Za-z][A-Za-z0-9_]*):/gmu)].map((m) => m[1]))
+  const usedKeys = new Set()
+  for (const file of ['index.tsx', 'workbench.tsx', 'graphview.tsx']) {
+    const src = await readText(resolve(root, 'src/client', file))
+    if (!src) continue
+    for (const m of src.matchAll(/t\(\s*'([A-Za-z0-9_]+)'\s*\)/gu)) usedKeys.add(m[1])
+  }
+  const missingKeys = [...usedKeys].filter((key) => !definedKeys.has(key)).sort()
+  check(
+    'client i18n 键完整（t() 用到的键都在字典里）',
+    definedKeys.size > 100 && missingKeys.length === 0,
+    `缺 ${missingKeys.join(',') || '-'}`,
+  )
+  const enStart = clientSrc.indexOf('const EN: Dict = {', dictStart)
+  const enEnd = enStart > 0 ? clientSrc.indexOf(String.fromCharCode(10) + '}' + String.fromCharCode(10), enStart) : -1
+  const enBlock = enStart > 0 && enEnd > enStart ? clientSrc.slice(enStart, enEnd) : ''
+  const enKeys = new Set([...enBlock.matchAll(/^\s{2}([A-Za-z][A-Za-z0-9_]*):/gmu)].map((m) => m[1]))
+  const zhOnly = [...definedKeys].filter((key) => !enKeys.has(key))
+  const enOnly = [...enKeys].filter((key) => !definedKeys.has(key))
+  check(
+    'client 中英字典键一一对应',
+    enKeys.size === definedKeys.size && zhOnly.length === 0 && enOnly.length === 0,
+    `zh=${definedKeys.size} en=${enKeys.size} zhOnly=${zhOnly.join(',') || '-'} enOnly=${enOnly.join(',') || '-'}`,
+  )
+  check('client 无未定义的工具类（sr-only 未在 CSS 中定义）', !clientSrc.includes('sr-only') && !(await readText(resolve(root, 'src/client/workbench.tsx')) ?? '').includes('sr-only'))
 }
 // ---- node 半边：git-ops 命令层与工作台端点 ----
 {
