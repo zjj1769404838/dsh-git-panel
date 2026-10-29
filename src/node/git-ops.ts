@@ -629,3 +629,71 @@ export async function openDirectory(cwd: string): Promise<{ ok: boolean; root: s
     child.on('exit', () => resolvePromise({ ok: true, root, error: '' }))
   })
 }
+
+export interface DiscoveredRepo {
+  root: string
+  name: string
+  branch: string
+  remotes: string[]
+}
+
+/** 扫描授权根目录（最多下探 3 层）里的 git 仓库，供「仓库范围」页展示远程+本地所有仓库。 */
+export async function discoverRepos(roots: string[]): Promise<DiscoveredRepo[]> {
+  const { readdirSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const found: DiscoveredRepo[] = []
+  const seen = new Set<string>()
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 3 || found.length >= 50) return
+    let entries: string[] = []
+    try {
+      entries = readdirSync(dir, { withFileTypes: true }).map((item) => item.name)
+    } catch {
+      return
+    }
+    if (entries.includes('.git')) {
+      try {
+        const branchRes = runGitSync(dir, ['rev-parse', '--abbrev-ref', 'HEAD'])
+        const remoteRes = runGitSync(dir, ['remote', '-v'])
+        const remotes = remoteRes.ok
+          ? [...new Set(remoteRes.stdout.split(String.fromCharCode(10)).filter(Boolean).map((line) => line.split(String.fromCharCode(9))[0]))]
+          : []
+        const key = dir.toLowerCase()
+        if (!seen.has(key)) {
+          seen.add(key)
+          found.push({
+            root: dir,
+            name: dir.split(/[\/]/).filter(Boolean).pop() || dir,
+            branch: branchRes.ok ? branchRes.stdout.trim() : '',
+            remotes,
+          })
+        }
+      } catch {
+        /* 单仓失败不阻塞扫描 */
+      }
+      // .git 目录下不再下探
+      return
+    }
+    for (const entry of entries) {
+      if (entry.startsWith('.') || entry === 'node_modules') continue
+      walk(join(dir, entry), depth + 1)
+    }
+  }
+  for (const root of roots) {
+    if (root === '*') continue
+    walk(root, 0)
+  }
+  return found
+}
+
+/** 同步版 runGit（discover 用 readdir 同步遍历，配套同步 git 调用）。 */
+function runGitSync(cwd: string, args: string[]): { ok: boolean; stdout: string; stderr: string } {
+  const { execFileSync } = require('node:child_process') as { execFileSync: (cmd: string, args: string[], opts: object) => Buffer }
+  try {
+    const stdout = execFileSync('git', ['-C', cwd, ...args], { timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] })
+    return { ok: true, stdout: stdout.toString(), stderr: '' }
+  } catch (error) {
+    const err = error as { stdout?: Buffer; stderr?: Buffer }
+    return { ok: false, stdout: err.stdout?.toString() ?? '', stderr: err.stderr?.toString() ?? '' }
+  }
+}

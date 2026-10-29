@@ -39,6 +39,8 @@ const ZH: Dict = {
   tabHelp: '授权说明',
   groupAccounts: '已连接',
   groupConnect: '连接新账号',
+  accountLabel: '账号备注名（可选）',
+  accountLabelHint: '同一平台多个账号时用于区分，如「工作」「个人」',
   groupScopeRepos: '远端仓库',
   groupScopeRoots: '本地目录',
   groupPolicy: '写操作策略',
@@ -72,6 +74,13 @@ const ZH: Dict = {
   scopeRepos: '允许 Agent 操作的远端仓库',
   scopeReposHint: '每行一个 owner/repo；填 * 表示全部仓库（不推荐）。留空表示不允许任何远端操作。',
   scopeRoots: '允许 Agent 操作的本地仓库目录',
+  scopeGrantAll: '授权全部仓库',
+  scopeGrantAllHint: '等同于在下方填 *（不限制）。之后可随时回来收窄范围。',
+  scopeDiscoverTitle: '检测到的仓库',
+  scopeDiscoverEmpty: '授权根目录下暂未扫描到 Git 仓库（保存授权目录后点「重新扫描」）',
+  scopeDiscoverNoRemote: '无远程',
+  scopeDiscoverUse: '加入授权',
+  scopeDiscoverReload: '重新扫描',
   scopeRootsHint: '每行一个绝对路径。本地 git 命令只会在这些目录（含子目录）内执行；填 * 表示不限制目录（等同于放开本机全部仓库，谨慎使用）。',
   allowWrite: '允许 Agent 修改仓库',
   allowWriteHint: '开启后 Agent 可执行 add/commit/checkout 等写操作；关闭时全部写操作会被拒绝。',
@@ -182,6 +191,8 @@ const ZH: Dict = {
   wbCommitNeedsStaged: '暂存区为空：请先在左侧勾选文件并暂存，再填写提交信息',
   wbCleanHint: '没有可提交的改动。编辑文件后会出现在这里。',
   wbInitHint: '此目录还不是 Git 仓库。初始化后即可在这里暂存、提交与查看历史。',
+  wbInitName: '仓库名',
+  wbInitRemote: '远程仓库地址（可选，留空则仅本地初始化）',
   wbUnauthorizedHint: '该目录不在「仓库范围」授权内。把目录加入授权后即可操作。',
   wbNoCommits: '仓库还没有提交',
   wbNoCommitsHint: '完成首次提交后，历史会显示在这里。',
@@ -255,6 +266,8 @@ const EN: Dict = {
   tabHelp: 'Authorization',
   groupAccounts: 'Connected',
   groupConnect: 'Connect an account',
+  accountLabel: 'Account label (optional)',
+  accountLabelHint: 'Distinguish multiple accounts on the same host, e.g. work / personal',
   groupScopeRepos: 'Remote repositories',
   groupScopeRoots: 'Local directories',
   groupPolicy: 'Write policy',
@@ -288,6 +301,13 @@ const EN: Dict = {
   scopeRepos: 'Remote repositories the agent may use',
   scopeReposHint: 'One owner/repo per line; * means all repositories (not recommended). Empty means no remote access.',
   scopeRoots: 'Local repository directories the agent may use',
+  scopeGrantAll: 'Authorize all repositories',
+  scopeGrantAllHint: 'Equivalent to * below (no limit). You can narrow the scope any time.',
+  scopeDiscoverTitle: 'Discovered repositories',
+  scopeDiscoverEmpty: 'No Git repositories found under authorized roots yet (save roots, then rescan)',
+  scopeDiscoverNoRemote: 'no remote',
+  scopeDiscoverUse: 'Authorize',
+  scopeDiscoverReload: 'Rescan',
   scopeRootsHint: 'One absolute path per line. Local git commands only run inside these directories. * means no directory limit (the whole machine — use with care).',
   allowWrite: 'Allow the agent to modify repositories',
   allowWriteHint: 'When on, the agent may run add/commit/checkout; when off, every write is rejected.',
@@ -399,6 +419,8 @@ const EN: Dict = {
   wbCommitNeedsStaged: 'Nothing staged: tick files on the left and stage them, then write a commit message',
   wbCleanHint: 'No changes to commit. Edited files will appear here.',
   wbInitHint: 'This directory is not a Git repository yet. Initialize it to stage, commit and browse history here.',
+  wbInitName: 'Repository name',
+  wbInitRemote: 'Remote URL (optional, leave empty for local only)',
   wbUnauthorizedHint: 'This directory is not in the authorized scope. Add it in Settings → Git → Scope.',
   wbNoCommits: 'No commits yet',
   wbNoCommitsHint: 'History will appear here after the first commit.',
@@ -852,6 +874,7 @@ function GitSection({ t }: SectionProps) {
   const [busy, setBusy] = useState(false)
 
   const [provider, setProvider] = useState('github')
+  const [accountLabel, setAccountLabel] = useState('')
   const [method, setMethod] = useState<'oauth' | 'pat'>('pat')
   const [token, setToken] = useState('')
   const [clientId, setClientId] = useState('')
@@ -869,6 +892,9 @@ function GitSection({ t }: SectionProps) {
   const [toast, setToast] = useState<{ tone: 'ok' | 'error' | 'info'; text: string } | null>(null)
   /** 正在重新授权的账号（provider+login）；非空时连接表单上方显示提示。 */
   const [reauthTarget, setReauthTarget] = useState<{ provider: string; login: string } | null>(null)
+  /** 「检测到的仓库」：授权根下扫描出的本地仓库（含 remotes）。进入 scope tab 时拉取。 */
+  const [discovered, setDiscovered] = useState<Array<{ root: string; name: string; branch: string; remotes: string[] }>>([])
+  const [discovering, setDiscovering] = useState(false)
 
   const timerRef = useRef<number | null>(null)
   const toastTimerRef = useRef<number | null>(null)
@@ -877,6 +903,36 @@ function GitSection({ t }: SectionProps) {
     if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
     setToast({ tone, text })
     toastTimerRef.current = window.setTimeout(() => setToast(null), 2600)
+  }, [])
+
+  /** 拉取「检测到的仓库」：/repo/discover 扫描授权根（远程 remotes 一并返回）。 */
+  const loadDiscovered = useCallback(async () => {
+    setDiscovering(true)
+    try {
+      const data = await api<{ ok: boolean; repos?: Array<{ root: string; name: string; branch: string; remotes: string[] }> }>('/repo/discover')
+      setDiscovered(data.ok && Array.isArray(data.repos) ? data.repos : [])
+    } catch {
+      setDiscovered([])
+    } finally {
+      setDiscovering(false)
+    }
+  }, [])
+
+  // 进入 scope tab 时扫描一次。
+  useEffect(() => {
+    if (tab !== 'scope') return
+    void loadDiscovered()
+  }, [tab, loadDiscovered])
+
+  /** 把检测到的仓库根加入授权目录文本框（去重，追加一行）。 */
+  const addRoot = useCallback((root: string) => {
+    setRootsText((prev) => {
+      const crlf = String.fromCharCode(13) + String.fromCharCode(10)
+      const lines = prev.split(new RegExp(crlf + '|' + String.fromCharCode(10))).map((line) => line.trim()).filter(Boolean)
+      if (lines.includes(root)) return prev
+      lines.push(root)
+      return lines.join(String.fromCharCode(10))
+    })
   }, [])
 
   useEffect(() => {
@@ -985,7 +1041,7 @@ function GitSection({ t }: SectionProps) {
     setError('')
     setFlowMsg('')
     try {
-      const data = await api<any>('/pat/connect', { provider, token, host, apiBase })
+      const data = await api<any>('/pat/connect', { provider, token, host, apiBase, label: accountLabel.trim() })
       if (!data.ok) {
         setError(data.error ?? '连接失败')
         return
@@ -1268,6 +1324,11 @@ function GitSection({ t }: SectionProps) {
             </div>
 
             <div className="dgp-field">
+              <label className="dgp-label">{t('accountLabel')}</label>
+              <input className="dgp-input" value={accountLabel} onChange={(event) => setAccountLabel(event.target.value)} placeholder={t('accountLabelHint')} />
+            </div>
+
+            <div className="dgp-field">
               <label className="dgp-label">{t('method')}</label>
               <div className="dgp-seg" role="group">
                 <button type="button" data-on={method === 'pat' ? '1' : '0'} onClick={() => setMethod('pat')}>
@@ -1384,6 +1445,22 @@ function GitSection({ t }: SectionProps) {
 
       {tab === 'scope' ? (
         <>
+          <ScopeDiscover
+            t={t}
+            repos={discovered}
+            loading={discovering}
+            onReload={() => void loadDiscovered()}
+            onUse={(root) => addRoot(root)}
+          />
+          <div className="dgp-line" style={{ padding: '9px 0' }}>
+            <div className="dgp-line-main">
+              <span className="dgp-name">{t('scopeGrantAll')}</span>
+              <span className="dgp-hint" style={{ marginTop: 2 }}>{t('scopeGrantAllHint')}</span>
+            </div>
+            <div className="dgp-line-side">
+              <button type="button" className="dgp-btn" onClick={() => { setRootsText('*'); setReposText('*') }}>{t('scopeGrantAll')}</button>
+            </div>
+          </div>
           <div className="dgp-group">
             <div className="dgp-group-title">{t('groupScopeRepos')}</div>
             <div className="dgp-field">
@@ -2020,6 +2097,54 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
   )
 }
 
+
+/** 仓库范围页「检测到的仓库」：列出授权根下扫描到的仓库，一键填入授权目录。 */
+function ScopeDiscover({
+  t,
+  repos,
+  loading,
+  onReload,
+  onUse,
+}: {
+  t: (key: string) => string
+  repos: Array<{ root: string; name: string; branch: string; remotes: string[] }>
+  loading: boolean
+  onReload: () => void
+  onUse: (root: string) => void
+}) {
+  return (
+    <div className="dgp-group">
+      <div className="dgp-group-title">{t('scopeDiscoverTitle')}</div>
+      {loading ? (
+        <Skeleton rows={2} />
+      ) : repos.length === 0 ? (
+        <div className="dgp-hint" style={{ padding: '2px 0 6px' }}>{t('scopeDiscoverEmpty')}</div>
+      ) : (
+        repos.map((repo) => (
+          <div key={repo.root} className="dgp-line" style={{ padding: '9px 0' }}>
+            <div className="dgp-line-main">
+              <span className="dgp-name">{repo.name}</span>
+              <span className="dgp-meta">
+                <code>{repo.root}</code>
+                {repo.branch ? <span>· {repo.branch}</span> : null}
+                {repo.remotes.length > 0 ? <span>· {repo.remotes.join(', ')}</span> : <span>· {t('scopeDiscoverNoRemote')}</span>}
+              </span>
+            </div>
+            <div className="dgp-line-side">
+              <button type="button" className="dgp-btn" onClick={() => onUse(repo.root)}>{t('scopeDiscoverUse')}</button>
+            </div>
+          </div>
+        ))
+      )}
+      <div className="dgp-line-side" style={{ paddingTop: 6 }}>
+        <button type="button" className="dgp-btn ghost" onClick={onReload}>
+          <RefreshIcon />
+          {t('scopeDiscoverReload')}
+        </button>
+      </div>
+    </div>
+  )
+}
 
 function FolderIcon() {
   return (

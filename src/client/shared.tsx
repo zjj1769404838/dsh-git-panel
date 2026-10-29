@@ -381,6 +381,10 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 .dgp-wb-msg:focus{border-color:var(--dgp-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--dgp-accent) 18%,transparent)}
 .dgp-wb-amend{display:inline-flex;align-items:center;gap:5px;color:var(--dgp-muted);font-size:11px;white-space:nowrap;cursor:pointer}
 .dgp-wb-amend input{accent-color:var(--dgp-accent)}
+/* 初始化表单（工作台非仓库首屏）：输入框放宽到 420px */
+.dgp-wb-initform{display:flex;flex-direction:column;gap:10px;align-items:stretch;width:min(420px,100%)}
+.dgp-wb-initfield{display:flex;flex-direction:column;gap:6px}
+.dgp-wb-initfield .dgp-input{max-width:none;width:100%}
 /* 二级弹窗（modal）：遮罩 + 居中面板，层级高于工作台 */
 .dgp-modal-mask{position:fixed;inset:0;z-index:1250;background:color-mix(in srgb,#000 32%,transparent);display:flex;align-items:center;justify-content:center}
 .dgp-modal{max-height:min(560px,80vh);display:flex;flex-direction:column;border-radius:var(--dgp-r-lg,12px);border:.5px solid var(--dgp-line2);background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:0 18px 56px #00000040;overflow:hidden}

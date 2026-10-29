@@ -180,6 +180,9 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
 
   const isRepo = status !== null && status.isRepo
   const authorized = status !== null && status.authorized !== false
+  // 初始化表单：仓库名（默认=当前会话目录名）与可选远程地址。
+  const [initName, setInitName] = useState(cwd.split(/[\/]/).filter(Boolean).pop() || '')
+  const [initRemote, setInitRemote] = useState('')
 
   const showToast = (tone: 'ok' | 'error' | 'info', text: string) => setToast({ tone, text })
 
@@ -419,6 +422,21 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
   const doInit = () =>
     run('init', () => api<{ ok: boolean; error?: string; result?: { created?: boolean; branch?: string } }>('/repo/init', { cwd, branch: 'main' }), t('initDone'))
 
+  /** 初始化 + 可选关联远程地址（复用既有 /repo/remotes/add，不臆造接口）。 */
+  const doInitWithForm = async () => {
+    const ok = await doInit()
+    if (!ok) return
+    const url = initRemote.trim()
+    if (!url) return
+    try {
+      const added = await api<{ ok: boolean; error?: string }>('/repo/remotes/add', { cwd, name: 'origin', url })
+      showToast(added.ok ? 'ok' : 'error', added.ok ? t('toastRemoteAdded') : added.error || t('actionFailed'))
+      await refreshAll()
+    } catch (error) {
+      showToast('error', `${t('actionFailed')}：${(error as Error).message}`)
+    }
+  }
+
   const openDetail = (rev: string) => {
     setDetailRev(rev)
     setModal('commit')
@@ -453,10 +471,20 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
         </div>
         <div className="dgp-wb-state">
           <EmptyState title={t('notRepo')} hint={t('wbInitHint')} />
-          <button type="button" className="dgp-btn primary" disabled={busy !== 'none'} onClick={() => void doInit()}>
-            <PlusIcon />
-            {t('menuInit')}
-          </button>
+          <div className="dgp-wb-initform">
+            <label className="dgp-wb-initfield">
+              <span className="dgp-label">{t('wbInitName')}</span>
+              <input className="dgp-input" value={initName} onChange={(event) => setInitName(event.target.value)} />
+            </label>
+            <label className="dgp-wb-initfield">
+              <span className="dgp-label">{t('wbInitRemote')}</span>
+              <input className="dgp-input" value={initRemote} onChange={(event) => setInitRemote(event.target.value)} placeholder="https://github.com/user/repo.git" />
+            </label>
+            <button type="button" className="dgp-btn primary" disabled={busy !== 'none'} onClick={() => void doInitWithForm()}>
+              <PlusIcon />
+              {t('menuInit')}
+            </button>
+          </div>
         </div>
       </div>
     </>
@@ -510,6 +538,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
         <button type="button" className="dgp-btn ghost" disabled={!canPull} onClick={() => void doFetch()}>{t('wbFetch')}</button>
         <button type="button" className="dgp-btn" disabled={!canPull} onClick={() => setModal('pull')}>{t('wbPull')}</button>
         <button type="button" className="dgp-btn primary" disabled={!canPush} onClick={() => void doPush(false)}>{t('wbPush')}</button>
+        <button type="button" className="dgp-btn ghost" onClick={() => setModal('remote')}>{t('wbRemoteTitle')}</button>
         <button type="button" className="dgp-wb-icon" disabled={busy !== 'none'} onClick={() => void refreshAll()} aria-label={t('refresh')}>
           <RefreshIcon />
         </button>
@@ -715,7 +744,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
         </Modal>
       ) : null}
 
-      {modal === 'branches' ? <BranchesModal t={t} cwd={cwd} branches={branches} current={currentBranch} onClose={() => setModal('none')} onChanged={refreshAll} run={run} /> : null}
+      {modal === 'branches' ? <BranchesModal t={t} cwd={cwd} branches={branches} current={currentBranch} onClose={() => setModal('none')} onChanged={refreshAll} run={run} onNewBranch={() => setModal('newBranch')} /> : null}
       {modal === 'newBranch' ? <NewBranchModal t={t} cwd={cwd} onClose={() => setModal('none')} onChanged={refreshAll} run={run} /> : null}
       {modal === 'commit' ? <CommitDetailModal t={t} cwd={cwd} rev={detailRev} onClose={() => setModal('none')} /> : null}
       {modal === 'remote' ? <RemoteModal t={t} cwd={cwd} remotes={remotes} onClose={() => setModal('none')} onChanged={refreshAll} run={run} /> : null}
@@ -781,7 +810,7 @@ function FileRow({
 
 /** 分支管理弹窗（IDEA 分支弹窗简化：Local/Remote 两组 + 切换/新建/删除）。 */
 function BranchesModal({
-  t, cwd, branches, current, onClose, onChanged, run,
+  t, cwd, branches, current, onClose, onChanged, run, onNewBranch,
 }: {
   t: (key: string) => string
   cwd: string
@@ -790,6 +819,8 @@ function BranchesModal({
   onClose: () => void
   onChanged: () => Promise<void>
   run: (kind: BusyKind, action: () => Promise<{ ok: boolean; error?: string }>, okText: string) => Promise<boolean>
+  /** 转到新建分支弹窗（修复死按钮：此前只 onClose 无动作）。 */
+  onNewBranch: () => void
 }) {
   const local = branches.filter((branch) => branch.kind === 'local')
   const remote = branches.filter((branch) => branch.kind === 'remote')
@@ -830,7 +861,7 @@ function BranchesModal({
         </div>
       </div>
       <div className="dgp-modal-foot" style={{ borderTop: 'none' }}>
-        <button type="button" className="dgp-btn primary" onClick={() => { onClose(); /* 打开新建弹窗由父组件接管 */ }}>{t('wbNewBranch')}</button>
+        <button type="button" className="dgp-btn primary" onClick={onNewBranch}>{t('wbNewBranch')}</button>
       </div>
     </Modal>
   )

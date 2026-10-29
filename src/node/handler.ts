@@ -12,6 +12,7 @@ import {
   deleteBranch,
   discardPaths,
   fetchRepo,
+  discoverRepos,
   hasMergeConflicts,
   openDirectory,
   pullRepo,
@@ -336,6 +337,17 @@ export function createHandler(deps: HandlerDeps) {
       }
 
       // 打开项目目录（系统文件管理器）：带授权闸门，不泄露未授权目录。
+      // 「仓库范围」页：扫描已授权根下的本地仓库（远程 remotes 一并返回）。
+      // `*` 根跳过——不扫全机。
+      if (method === 'GET' && path === '/repo/discover') {
+        const settings = deps.store.snapshot().settings
+        const roots = settings.allowedRoots.filter((root) => root !== '*')
+        const repos = await discoverRepos(roots)
+        sendJson(res, 200, { ok: true, repos })
+        return
+      }
+
+      // 打开项目目录（系统文件管理器）：带授权闸门，不泄露未授权目录。
       if (method === 'GET' && path === '/repo/open') {
         const cwd = str(url.searchParams.get('cwd')).trim()
         const dir = requireRead(cwd, {})
@@ -629,11 +641,12 @@ export function createHandler(deps: HandlerDeps) {
           sendJson(res, 400, { ok: false, error: '令牌有效但无法读取账号身份（可能缺少 user:read 权限）' })
           return
         }
+        const label = str(body.label).trim()
         const record = deps.store.addAccount({
           provider,
           kind: 'pat',
           login: identity.login,
-          displayName: identity.displayName,
+          displayName: label ? `${identity.displayName || identity.login}（${label}）` : identity.displayName,
           avatarUrl: identity.avatarUrl,
           host,
           apiBase,
