@@ -66,7 +66,7 @@ const ZH: Dict = {
   waiting: '等待授权…',
   authDone: '授权完成',
   authFailed: '授权失败',
-  currentRepo: '当前会话仓库',
+  currentRepo: '当前仓库',
   notRepo: '当前会话目录不是 Git 仓库',
   menuInit: '初始化 Git 项目',
   menuInitHint: '只创建 .git 目录，不会删除或覆盖现有文件',
@@ -126,9 +126,6 @@ const ZH: Dict = {
   setDefault: '设为默认',
   isDefault: '默认账号',
   reauthHint: '用新的令牌覆盖当前账号',
-  scopeCurrent: '当前会话仓库',
-  scopeCurrentHint: '把当前会话目录加入授权范围',
-  scopeCurrentAdded: '已在授权范围内',
   /* ---- 工作区改动 ---- */
   changesTitle: '工作区改动',
   changesCount: '{n} 个文件',
@@ -203,7 +200,7 @@ const EN: Dict = {
   waiting: 'Waiting for authorization…',
   authDone: 'Authorized',
   authFailed: 'Authorization failed',
-  currentRepo: 'Current session repository',
+  currentRepo: 'Current repository',
   notRepo: 'The current session directory is not a Git repository',
   menuInit: 'Initialize Git project',
   menuInitHint: 'Creates only the .git directory; existing files are kept as-is',
@@ -263,9 +260,6 @@ const EN: Dict = {
   setDefault: 'Set as default',
   isDefault: 'Default account',
   reauthHint: 'Replace this account with a new token',
-  scopeCurrent: 'Current session repository',
-  scopeCurrentHint: 'Allow the current session directory',
-  scopeCurrentAdded: 'Already in scope',
   /* ---- Workspace changes ---- */
   changesTitle: 'Workspace changes',
   changesCount: '{n} files',
@@ -354,32 +348,6 @@ interface RepoChangesView {
   branch: string
   dirty: boolean
   files: ChangeFileView[]
-}
-
-/**
- * 当前会话目录：composer 的 BranchChip 写入，设置页读取后提供「授权当前目录」快捷入口。
- * 两组件在同一 bundle 内，用模块级变量 + sessionStorage 双写，避免跨 slot 传参依赖宿主行为。
- */
-let lastKnownCwd = ''
-
-function rememberCwd(cwd: string): void {
-  lastKnownCwd = cwd
-  try {
-    if (cwd) window.sessionStorage.setItem('dgp:cwd', cwd)
-    else window.sessionStorage.removeItem('dgp:cwd')
-  } catch {
-    /* ignore */
-  }
-}
-
-function recallCwd(): string {
-  if (lastKnownCwd) return lastKnownCwd
-  try {
-    const value = window.sessionStorage.getItem('dgp:cwd')
-    return typeof value === 'string' ? value : ''
-  } catch {
-    return ''
-  }
 }
 
 /** 文案模板插值：把 {n} 之类占位符换成实际数值（宿主 locale 不做插值）。 */
@@ -1128,13 +1096,6 @@ function GitSection({ t }: SectionProps) {
   const [toast, setToast] = useState<{ tone: 'ok' | 'error' | 'info'; text: string } | null>(null)
   /** 正在重新授权的账号（provider+login）；非空时连接表单上方显示提示。 */
   const [reauthTarget, setReauthTarget] = useState<{ provider: string; login: string } | null>(null)
-  /** 当前会话目录（由 composer 的 BranchChip 写入），用于「一键授权当前仓库」。 */
-  const [currentCwd, setCurrentCwd] = useState('')
-
-  useEffect(() => {
-    if (tab !== 'scope') return
-    setCurrentCwd(recallCwd())
-  }, [tab, state])
 
   const timerRef = useRef<number | null>(null)
   const toastTimerRef = useRef<number | null>(null)
@@ -1665,26 +1626,6 @@ function GitSection({ t }: SectionProps) {
               <label className="dgp-label">{t('scopeRoots')}</label>
               <textarea className="dgp-area" value={rootsText} onChange={(event) => setRootsText(event.target.value)} placeholder={'D:\\work\\my-repo'} />
               <div className="dgp-hint">{t('scopeRootsHint')}</div>
-              {currentCwd ? (
-                <div className="dgp-line" style={{ borderBottom: 'none', justifyContent: 'flex-start', gap: 10, marginTop: 8 }}>
-                  <button
-                    type="button"
-                    className="dgp-btn"
-                    disabled={busy || roots.some((root) => root === '*' || currentCwd.toLowerCase() === root.toLowerCase() || currentCwd.toLowerCase().startsWith(root.toLowerCase().replace(/[\\/]+$/, '') + '\\'))}
-                    onClick={() => {
-                      const next = roots.includes(currentCwd) ? roots : [...roots, currentCwd]
-                      setRootsText(next.join('\n'))
-                      showToast('ok', t('scopeCurrentAdded'))
-                    }}
-                  >
-                    {t('scopeCurrent')}
-                  </button>
-                  <span className="dgp-hint" style={{ marginTop: 0 }}>
-                    {t('scopeCurrentHint')}
-                  </span>
-                  <code className="dgp-code">{currentCwd}</code>
-                </div>
-              ) : null}
             </div>
           </div>
 
@@ -2160,11 +2101,6 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
       if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
     }
   }, [])
-
-  // 把当前目录记给设置页（跨 slot 通道），供「授权当前会话仓库」快捷按钮使用。
-  useEffect(() => {
-    rememberCwd(cwd)
-  }, [cwd])
 
   useEffect(() => {
     setStatus(null)

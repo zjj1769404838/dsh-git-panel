@@ -97,13 +97,11 @@
 - **用户价值**：恢复授权从「5 步表单」变成「1 次点击 + 粘贴新令牌」。
 - **复杂度 / 优先级**：低 / **P1**。
 
-### F6 · 一键授权当前会话仓库 `[已落地]`
+### F6 · 一键授权当前会话仓库 `[已撤回]`
 
-- **目标**：消除「手打绝对路径」这一最易错环节。
-- **涉及文件**：`src/client/index.tsx`（`scopeCurrent` 按钮 + `rememberCwd`/`recallCwd` 跨组件通道）。
-- **实现方式**：composer chip 与设置分节是同 bundle 的两个 slot，宿主未提供跨 slot 传参，故用模块级变量 + `sessionStorage('dgp:cwd')` 双写做通道；设置页读到 cwd 后提供「当前会话仓库」按钮，点击即把该目录追加进 `allowedRoots`（已授权或已设为 `*` 时按钮禁用）。
-- **用户价值**：授权目录从「抄路径」变成「点一下」。
-- **复杂度 / 优先级**：中（需要自建跨组件通道）/ **P1**。
+- **原目标**：消除「手打绝对路径」这一最易错环节。
+- **撤回原因**：需要自建跨 slot 通道（模块级变量 + `sessionStorage('dgp:cwd')`）才能实现，收益只是省一次抄路径；用户判断为多余功能，已于 2026-10-29 完整移除（按钮、ZH/EN i18n 键、`currentCwd` 状态、`rememberCwd`/`recallCwd` 通道、BranchChip 侧写入副作用），授权目录改为手填绝对路径。
+- **涉及文件**：`src/client/index.tsx`（已清理）、`scripts/gates/run.mjs`（断言改为「已移除」反向断言）。
 
 ### F7 · 骨架屏与图形化空状态 `[已落地]`
 
@@ -180,11 +178,9 @@
 │ D:\my-projects\plugins          │
 │ D:\work                        │
 └────────────────────────────────┘
-[ 当前会话仓库 ]  把当前会话目录加入授权范围
-                 D:\my-projects\plugins\dsh-git-panel
 ```
 
-- 「当前会话仓库」按钮在已授权或已设 `*` 时禁用；点击后 toast 提示并把路径追加进 textarea（**不自动保存**，避免误改授权范围）。
+- 授权目录按绝对路径逐行填写；目录级授权会放行该路径及其所有子目录，`*` 表示不限制。
 - 授权策略两组开关（允许写操作 / 写操作需二次确认）保持原有勾选样式。
 
 ### 3.3 输入区 chip 菜单
@@ -227,11 +223,10 @@
 | 2 | client 侧新增 CSS 变量与五组新 class（stats / callout / empty / skel / changes / toast） | — | `src/client/index.tsx` CSS 块 |
 | 3 | 新增 `Skeleton` / `EmptyState` / `Toast` / `ChangesList` 组件 | 步骤 2 | `src/client/index.tsx` |
 | 4 | `GitSection` 接入统计条、默认账号、重新授权提示条 | 步骤 3 | `src/client/index.tsx` |
-| 5 | `GitSection` 接入「当前会话仓库」快捷授权 + `rememberCwd`/`recallCwd` 通道 | 步骤 4 | `src/client/index.tsx` |
-| 6 | `BranchChip` 接入 `/repo/changes`，并把 `note` 机制换成 toast | 步骤 1、3 | `src/client/index.tsx` |
-| 7 | 回归扩容：gates 加产物断言、hardening 加 `/repo/changes` 行为回归、preview 加 4 组样张 | 步骤 1–6 | `scripts/gates/run.mjs`、`scripts/test-hardening.mjs`、`scripts/preview.mjs` |
-| 8 | README 更新（门禁数字、接口表、能力表、预览图） | 步骤 7 | `README.md` |
-| 9 | 本文档 + 提交 | 步骤 8 | `docs/enhancement-plan.md` |
+| 5 | `BranchChip` 接入 `/repo/changes`，并把 `note` 机制换成 toast | 步骤 1、3 | `src/client/index.tsx` |
+| 6 | 回归扩容：gates 加产物断言、hardening 加 `/repo/changes` 行为回归、preview 加 4 组样张 | 步骤 1–5 | `scripts/gates/run.mjs`、`scripts/test-hardening.mjs`、`scripts/preview.mjs` |
+| 7 | README 更新（门禁数字、接口表、能力表、预览图） | 步骤 6 | `README.md` |
+| 8 | 本文档 + 提交 | 步骤 7 | `docs/enhancement-plan.md` |
 
 F8 / F9 / F10 属后续排期，不在本轮范围。
 
@@ -243,8 +238,8 @@ F8 / F9 / F10 属后续排期，不在本轮范围。
 | --- | --- |
 | `src/node/git.ts` | 新增 `ChangeFile` / `RepoChanges` 接口、`decodeGitPath`（C 风格引号 + 八进制还原）、`splitStatusPath`、`normalizeNumstatPath`、`countFileLines`、`readRepoChanges(cwd)`；`MAX_CHANGE_FILES=500`、`MAX_UNTRACKED_LINES=2000` |
 | `src/node/handler.ts` | 新增 `GET /repo/changes`（缺 cwd 400；未授权目录只回空壳；非仓库 `isRepo:false`） |
-| `src/client/index.tsx` | `BUILD` → `dgp-v9`；新增 `--dgp-warn` 变量（浅 `#b45309` / 深 `#e9b949`）；新增 `.dgp-stats` `.dgp-stat` `.dgp-callout` `.dgp-empty` `.dgp-skel` `.dgp-changes` `.dgp-toast` CSS 块与 `data-sign="staged"` 规则；新增 `EmptyState` / `Skeleton` / `Toast` / `ChangesList` 组件、`ChangeFileView` / `RepoChangesView` 类型、`fmt()` 与 `rememberCwd()` / `recallCwd()`；`GitSection` 增 `toast` / `reauthTarget` / `currentCwd` 状态与统计条、默认账号、重新授权、当前目录快捷授权；`BranchChip` 增 `changes` / `changesLoading` / `changesError` / `toast` 状态与 `loadChanges()`，移除 `note` 机制 |
-| `scripts/gates/run.mjs` | 新增 18 项产物断言（统计条、toast、骨架屏、空状态、改动列表、`defaultAccountId`、`reauthTarget`、`/repo/changes`、`dgp:cwd` 等）→ 81 项 |
+| `src/client/index.tsx` | `BUILD` → `dgp-v9`；新增 `--dgp-warn` 变量（浅 `#b45309` / 深 `#e9b949`）；新增 `.dgp-stats` `.dgp-stat` `.dgp-callout` `.dgp-empty` `.dgp-skel` `.dgp-changes` `.dgp-toast` CSS 块与 `data-sign="staged"` 规则；新增 `EmptyState` / `Skeleton` / `Toast` / `ChangesList` 组件、`ChangeFileView` / `RepoChangesView` 类型、`fmt()`；`GitSection` 增 `toast` / `reauthTarget` 状态与统计条、默认账号、重新授权；`BranchChip` 增 `changes` / `changesLoading` / `changesError` / `toast` 状态与 `loadChanges()`，移除 `note` 机制 |
+| `scripts/gates/run.mjs` | 新增 18 项产物断言（统计条、toast、骨架屏、空状态、改动列表、`defaultAccountId`、`reauthTarget`、`/repo/changes` 等，含「已移除 `scopeCurrent` / `dgp:cwd`」反向断言）→ 81 项 |
 | `scripts/test-hardening.mjs` | 新增「工作区改动明细」测试块（独立沙箱仓库，21 项断言：缺 cwd / 非仓库 / 未授权不泄露 / root+branch+dirty / `M` / staged / `??` / 升序）→ 133 项 |
 | `scripts/preview.mjs` | 新增 `FALLBACK_CSS`（5 组新 class 兜底，置于产物 CSS **之前**）、4 组新样张（stats / changes / toast / empty，浅深各一）、`page()` 增加 `extraCss` 参数与 `TOAST_PREVIEW_CSS` |
 | `README.md` | 门禁数字 63→81 / 112→133；能力表新增 7 行；接口表新增 `/repo/changes`；预览图新增 4 组 |
@@ -262,10 +257,9 @@ F8 / F9 / F10 属后续排期，不在本轮范围。
 1. 设置页 `Git` 分节顶部显示四格统计条，数字与实际状态一致（账号数、授权目录数、授权仓库数、写操作开关）；`allowedRoots` 含 `*` 时显示 `∞`。
 2. 账号行显示「默认账号」徽章；点「设为默认」后 `POST /settings` 成功、徽章切换、toast 提示成功；失败时 toast 提示错误文案。
 3. 点「重新授权」后 provider/method 自动切到该账号取值、令牌输入清空、连接区顶部出现可取消的提示条。
-4. 仓库范围页「当前会话仓库」按钮在有 cwd 时可用，点击把该路径追加进授权目录并 toast 提示；已在范围内或已设 `*` 时按钮禁用。
-5. chip 菜单打开时能列出未提交文件（状态字母 + 路径 + 增删行数 + 已暂存标记）；未授权目录显示「当前目录未在授权范围内」；无改动显示空状态；加载中显示骨架屏。
-6. 所有动作反馈以 toast 呈现且 2.6 秒自动消失；关闭 chip 菜单后 toast 仍可见。
-7. 既有功能不回归：账号连接 / 校验 / 断开、OAuth 设备码、分支拓扑图、初始化 Git 项目、复制路径、打开 Git 设置（落 Git 分节）全部照旧可用。
+4. chip 菜单打开时能列出未提交文件（状态字母 + 路径 + 增删行数 + 已暂存标记）；未授权目录显示「当前目录未在授权范围内」；无改动显示空状态；加载中显示骨架屏。
+5. 所有动作反馈以 toast 呈现且 2.6 秒自动消失；关闭 chip 菜单后 toast 仍可见。
+6. 既有功能不回归：账号连接 / 校验 / 断开、OAuth 设备码、分支拓扑图、初始化 Git 项目、复制路径、打开 Git 设置（落 Git 分节）全部照旧可用。
 
 ### 工程
 
@@ -290,7 +284,6 @@ F8 / F9 / F10 属后续排期，不在本轮范围。
 | 改动列表上限 500 条无「已截断」标记 | 用户可能误以为只有 500 个改动 | 当前 `files.length` 即实际返回数，界面显示「N 个文件」，为真实值；后续可加 `truncated` 字段 |
 | 未跟踪二进制的行数是字节流估算 | 增删行数不准确 | 超过 2000 行上限时界面显示「—」；二进制建议后续按 `git diff --numstat` 的 `-` 判定 |
 | 增删行数是「暂存区 + 工作区合计」 | 与 `git diff` 单看一侧的数值不同 | README 已注明口径；后续可拆分 `stagedAdded` / `worktreeAdded` |
-| `rememberCwd` 走 `sessionStorage` | 多标签页/多窗口下可能读到别的会话目录 | 只在「当前会话仓库」按钮旁展示完整路径供人工确认；不自动写入授权 |
 | 统计条新增视觉密度 | 宿主设置页其他分节没有此元素，可能显得「重」 | 严格复用宿主 token 与度量；语义色只落在 2px 色条与副标题，主数字保持中性 |
 | toast 与宿主浮层共存 | z-index 冲突或视觉重复 | `z-index:1300` 高于宿主 1100 上限；暂未发现宿主自带全局 toast |
 
@@ -308,7 +301,7 @@ F8 / F9 / F10 属后续排期，不在本轮范围。
 
 本轮已落地 F1–F7，F8–F10 留待后续。
 
-**新增能力**：授权概览统计条、轻提示 toast（替换 `note` 机制）、工作区改动明细（新增 `GET /repo/changes`）、默认账号、重新授权、一键授权当前会话仓库、骨架屏与图形化空状态。
+**新增能力**：授权概览统计条、轻提示 toast（替换 `note` 机制）、工作区改动明细（新增 `GET /repo/changes`）、默认账号、重新授权、骨架屏与图形化空状态。
 
 **回归基线**：`typecheck` 0 错 · `gates` 81 项 · `hardening` 133 项 · GUI 端到端 13 项 · `lib/client.js` 116.3kb · `lib/index.js` 77.1kb。
 

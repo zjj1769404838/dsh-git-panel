@@ -145,7 +145,7 @@ if (clientOut) {
   check('client 支持设定默认账号（defaultAccountId）', clientOut.includes('defaultAccountId'))
   check('client 支持重新授权（reauthTarget）', clientOut.includes('reauthTarget'))
   check('client 重新授权有提示条（dgp-callout）', clientOut.includes('dgp-callout'))
-  check('client 支持授权当前会话目录（dgp:cwd 通道）', clientOut.includes('dgp:cwd') && clientOut.includes('sessionStorage'))
+  check('client 已移除「当前会话仓库」快捷授权（无 dgp:cwd 通道）', !clientOut.includes('dgp:cwd') && !clientOut.includes('scopeCurrent'))
   check('client 旧 note 动态反馈机制已移除（改用 toast）', !clientOut.includes('setNote'))
   check('client 菜单静态提示行仍保留（dgp-menu-note）', clientOut.includes('dgp-menu-note'))
 }
