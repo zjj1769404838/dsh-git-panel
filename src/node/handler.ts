@@ -15,6 +15,7 @@ import {
   discoverRepos,
   hasMergeConflicts,
   openDirectory,
+  parseRemoteRepo,
   pullRepo,
   pushRepo,
   readBranches,
@@ -24,10 +25,11 @@ import {
   readRemotes,
   removeRemote,
   renameBranch,
+  stageAll,
   stagePaths,
   unstagePaths,
 } from './git-ops.js'
-import { pollDeviceFlow, PROVIDERS, providerOf, startDeviceFlow, verifyToken } from './providers.js'
+import { pollDeviceFlow, PROVIDERS, providerOf, startDeviceFlow, verifyToken, listAccountRepos } from './providers.js'
 import { redact } from './vault.js'
 
 export const ROUTE_PREFIX = '/dsh-git-panel'
@@ -141,6 +143,38 @@ export function createHandler(deps: HandlerDeps) {
 
       if (method === 'GET' && path === '/providers') {
         sendJson(res, 200, { ok: true, providers: Object.values(PROVIDERS) })
+        return
+      }
+
+      // 账号下的远程仓库列表（只读）：用于选择 bootstrap 目标与设置仓库权限。
+      if (method === 'GET' && path === '/account/repos') {
+        const accountId = str(url.searchParams.get('accountId')).trim()
+        const account = accountId ? deps.store.getAccount(accountId) : deps.store.activeAccount()
+        if (!account) {
+          sendJson(res, 200, {
+            ok: false,
+            error: accountId ? '账号不存在' : '尚未连接 Git 账号，请先在设置中连接账号',
+            repos: [],
+          })
+          return
+        }
+        const token = deps.store.revealSecret(account.id)
+        if (!token) {
+          deps.store.markAccount(account.id, { status: 'error', lastError: '凭据无法解密' })
+          sendJson(res, 200, { ok: false, error: '凭据无法解密，请重新授权', repos: [] })
+          return
+        }
+        const result = await listAccountRepos(
+          providerOf(account.provider),
+          token,
+          account.apiBase || undefined,
+          account.host,
+        )
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error ?? '读取仓库列表失败', repos: [] })
+          return
+        }
+        sendJson(res, 200, { ok: true, repos: result.repos })
         return
       }
 
@@ -282,14 +316,20 @@ export function createHandler(deps: HandlerDeps) {
         return
       }
 
-      // 提交历史：只读，limit/offset 分页。
+      // 提交历史：只读，limit/offset 分页；可选 ref（分支/标签/提交号）限定历史范围。
       if (method === 'GET' && path === '/repo/commits') {
         const cwd = str(url.searchParams.get('cwd')).trim()
         const dir = requireRead(cwd, { commits: [] })
         if (!dir) return
         const limit = Number.parseInt(url.searchParams.get('limit') ?? '', 10)
         const offset = Number.parseInt(url.searchParams.get('offset') ?? '', 10)
-        const result = await readCommits(dir, Number.isFinite(limit) ? limit : 30, Number.isFinite(offset) ? offset : 0)
+        const ref = str(url.searchParams.get('ref')).trim()
+        const result = await readCommits(
+          dir,
+          Number.isFinite(limit) ? limit : 30,
+          Number.isFinite(offset) ? offset : 0,
+          ref || undefined,
+        )
         if (!result.ok) {
           sendJson(res, 200, { ok: false, error: result.error, commits: [] })
           return
@@ -397,6 +437,46 @@ export function createHandler(deps: HandlerDeps) {
           return null
         }
         return dir
+      }
+
+      /**
+       * 远端写端点的「归属授权」闸门：确认目标远端仓库在该账号下可写。
+       * - 显式给了 accountId 但账号不存在 → 403（fail-closed）。
+       * - 一个账号都没有 → 放行（没有凭据归属可言），只记一条 warn。
+       * - 目标仓库解析不出（本地路径 remote 等）→ 放行，记 warn。
+       * - 解析成功但该账号对该仓库非 full → 403。
+       * 失败时已写响应并返回 false。
+       */
+      const requireRemoteWritable = async (
+        cwd: string,
+        payload: JsonBody,
+        url: string,
+      ): Promise<boolean> => {
+        const requestedId = str(payload.accountId).trim()
+        const account = requestedId
+          ? deps.store.getAccount(requestedId)
+          : deps.store.activeAccount()
+        if (requestedId && !account) {
+          sendJson(res, 403, { ok: false, error: '账号不存在' })
+          return false
+        }
+        if (!account) {
+          deps.log?.('warn', `远端操作未绑定账号（跳过归属校验）：${url}`)
+          return true
+        }
+        const repoKey = parseRemoteRepo(url)
+        if (!repoKey) {
+          deps.log?.('warn', `远端地址无法解析为 owner/repo（跳过归属校验）：${url}`)
+          return true
+        }
+        if (!deps.store.isRepoWritableFor(account.id, repoKey)) {
+          sendJson(res, 403, {
+            ok: false,
+            error: `目标远程仓库 ${repoKey} 未授权写入`,
+          })
+          return false
+        }
+        return true
       }
 
       // ---- Git 工作台（IDEA 式面板）写端点：POST，统一走 requireWrite 闸门。 ----
@@ -508,10 +588,34 @@ export function createHandler(deps: HandlerDeps) {
         return
       }
 
+      /** 取 remote 名称（兼容 remote / remoteName 两种入参）。 */
+      const remoteNameOf = (payload: JsonBody): string => {
+        const explicit = str(payload.remoteName).trim()
+        if (explicit) return explicit
+        const legacy = str(payload.remote).trim()
+        return legacy
+      }
+
+      /**
+       * 取目标远端 URL 列表：给定 remote 名则取该条；未给则取全部 remote。
+       * remote 不存在时返回空数组（后续 push/fetch 自己报 missingConfig）。
+       */
+      const remoteUrlsOf = async (cwd: string, name: string): Promise<string[]> => {
+        const result = await readRemotes(cwd)
+        if (!result.ok) return []
+        if (name.length === 0) return result.remotes.map((item) => item.url)
+        const hit = result.remotes.find((item) => item.name === name)
+        return hit ? [hit.url] : []
+      }
+
       // fetch（安全：只下载不合并）。
       if (path === '/repo/fetch') {
         const cwd = requireWrite(body.cwd)
         if (!cwd) return
+        const remoteName = remoteNameOf(body)
+        for (const url of await remoteUrlsOf(cwd, remoteName)) {
+          if (!(await requireRemoteWritable(cwd, body, url))) return
+        }
         const result = await fetchRepo(cwd, str(body.remote))
         sendJson(res, 200, {
           ok: result.ok,
@@ -528,6 +632,10 @@ export function createHandler(deps: HandlerDeps) {
       if (path === '/repo/pull') {
         const cwd = requireWrite(body.cwd)
         if (!cwd) return
+        const remoteName = remoteNameOf(body)
+        for (const url of await remoteUrlsOf(cwd, remoteName)) {
+          if (!(await requireRemoteWritable(cwd, body, url))) return
+        }
         const strategy = body.strategy === 'rebase' ? 'rebase' : 'merge'
         const result = await pullRepo(cwd, str(body.remote), str(body.branch), strategy)
         sendJson(res, 200, {
@@ -545,6 +653,13 @@ export function createHandler(deps: HandlerDeps) {
       if (path === '/repo/push') {
         const cwd = requireWrite(body.cwd)
         if (!cwd) return
+        const targetRemote = remoteNameOf(body)
+        // 未指定 remote 时 push 自身会报「缺少 remote 名称」，不阻塞也不放行到真实远端。
+        if (targetRemote.length > 0) {
+          for (const url of await remoteUrlsOf(cwd, targetRemote)) {
+            if (!(await requireRemoteWritable(cwd, body, url))) return
+          }
+        }
         const options = (typeof body === 'object' && body !== null ? body : {}) as { force?: unknown; setUpstream?: unknown; tags?: unknown }
         const result = await pushRepo(cwd, str(body.remote), str(body.branch), {
           force: options.force === true,
@@ -566,7 +681,9 @@ export function createHandler(deps: HandlerDeps) {
       if (path === '/repo/remotes/add') {
         const cwd = requireWrite(body.cwd)
         if (!cwd) return
-        const result = await addRemote(cwd, str(body.name), str(body.url))
+        const targetUrl = str(body.url)
+        if (!(await requireRemoteWritable(cwd, body, targetUrl))) return
+        const result = await addRemote(cwd, str(body.name), targetUrl)
         if (!result.ok) {
           sendJson(res, 200, { ok: false, error: result.error })
           return
@@ -597,20 +714,10 @@ export function createHandler(deps: HandlerDeps) {
         return
       }
 
-      // 初始化仓库：写操作，必须过同源校验 + 根目录授权闸门。
+      // 初始化仓库：写操作，必须过同源校验 + requireWrite 闸门（根目录授权 + 允许写）。
       if (path === '/repo/init') {
-        const cwd = str(body.cwd).trim()
-        if (!cwd) {
-          sendJson(res, 400, { ok: false, error: '缺少 cwd 参数' })
-          return
-        }
-        if (!deps.store.isRootAllowed(cwd)) {
-          sendJson(res, 403, {
-            ok: false,
-            error: `目录不在 Agent 可操作范围内：${cwd}（已授权根目录：${deps.store.settings().allowedRoots.join('、') || '无'}）`,
-          })
-          return
-        }
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
         const branch = str(body.branch).trim() || 'main'
         const result = await initRepo(cwd, branch)
         if (!result.ok) {
@@ -619,6 +726,144 @@ export function createHandler(deps: HandlerDeps) {
         }
         deps.log?.('info', `仓库初始化：${result.root}（created=${result.created}）`)
         sendJson(res, 200, { ok: true, result })
+        return
+      }
+
+      // 一键初始化：本地仓库 + 远程 origin + 分支 + 可选首次提交。
+      if (path === '/repo/bootstrap') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const steps: string[] = []
+
+        // 1) 账号校验：必须存在且凭据可解。
+        const accountId = str(body.accountId).trim()
+        const account = accountId ? deps.store.getAccount(accountId) : deps.store.activeAccount()
+        if (!account) {
+          sendJson(res, 200, { ok: false, error: accountId ? '账号不存在' : '尚未连接 Git 账号，请先在设置中连接账号' })
+          return
+        }
+        const token = deps.store.revealSecret(account.id)
+        if (!token) {
+          deps.store.markAccount(account.id, { status: 'error', lastError: '凭据无法解密' })
+          sendJson(res, 200, { ok: false, error: '凭据无法解密，请重新授权' })
+          return
+        }
+
+        // 2) 解析远程目标。
+        const remoteMode = body.remoteMode === 'existing' ? 'existing' : 'new'
+        let remoteUrl = str(body.remoteUrl).trim()
+        const repoFullName = str(body.repoFullName).trim()
+        if (remoteMode === 'existing') {
+          if (!repoFullName) {
+            sendJson(res, 200, { ok: false, error: '请选择要使用的远程仓库' })
+            return
+          }
+          if (!remoteUrl) {
+            const listed = await listAccountRepos(
+              providerOf(account.provider),
+              token,
+              account.apiBase || undefined,
+              account.host,
+            )
+            if (!listed.ok) {
+              sendJson(res, 200, { ok: false, error: listed.error ?? '读取远程仓库列表失败' })
+              return
+            }
+            const hit = listed.repos.find((item) => item.fullName.toLowerCase() === repoFullName.toLowerCase())
+            if (!hit) {
+              sendJson(res, 200, { ok: false, error: `未在该账号的远程仓库中找到 ${repoFullName}` })
+              return
+            }
+            remoteUrl = hit.url
+          }
+        } else if (!remoteUrl) {
+          sendJson(res, 200, { ok: false, error: '请填写远程仓库地址' })
+          return
+        }
+
+        // 3) 远端归属授权（fail-closed）：解析得出 owner/repo 时必须对该账号可写。
+        const repoKey = parseRemoteRepo(remoteUrl)
+        if (repoKey && !deps.store.isRepoWritableFor(account.id, repoKey)) {
+          sendJson(res, 403, { ok: false, error: `远程仓库 ${repoKey} 未授权写入` })
+          return
+        }
+
+        // 4) 初始化本地仓库。
+        const branchName = str(body.branchName).trim() || 'main'
+        let root = cwd
+        const status = await readRepoStatus(cwd)
+        if (!status.isRepo) {
+          const init = await initRepo(cwd, branchName)
+          if (!init.ok) {
+            sendJson(res, 200, { ok: false, error: init.error ?? '初始化本地仓库失败' })
+            return
+          }
+          root = init.root
+          steps.push('已初始化本地仓库')
+        } else {
+          root = status.root
+        }
+
+        // 5) 远程 origin：已存在且指向不同地址时不静默覆盖。
+        const remotes = await readRemotes(root)
+        const origin = remotes.ok ? remotes.remotes.find((item) => item.name === 'origin') : undefined
+        if (origin) {
+          if (origin.url !== remoteUrl) {
+            sendJson(res, 200, { ok: false, error: 'origin 已存在且指向不同地址' })
+            return
+          }
+          steps.push('已存在远程 origin')
+        } else {
+          const added = await addRemote(root, 'origin', remoteUrl)
+          if (!added.ok) {
+            sendJson(res, 200, { ok: false, error: added.error ?? '添加远程 origin 失败' })
+            return
+          }
+          steps.push('已添加远程 origin')
+        }
+
+        // 6) 分支：new = 新建并切换；existing = 直接切换（分支不存在则报错）。
+        // 「新建分支」撞名时降级为「切换到已存在分支」——git init -b 已建同名分支，直接创建会失败。
+        const branchMode = body.branchMode === 'existing' ? 'existing' : 'new'
+        let branch = branchName
+        const branchList = await readBranches(root)
+        const branchExists =
+          branchList.ok && branchList.branches.some((item) => item.kind === 'local' && item.name === branchName)
+        if (branchMode === 'new' && !branchExists) {
+          const created = await createBranch(root, branchName, '', true)
+          if (!created.ok) {
+            sendJson(res, 200, { ok: false, error: `创建分支 ${branchName} 失败：${created.error || '分支已存在或名称不合法'}` })
+            return
+          }
+          steps.push(`已创建分支 ${branchName}`)
+          steps.push(`已切换到分支 ${branchName}`)
+        } else {
+          const switched = await checkoutBranch(root, branchName)
+          if (!switched.ok) {
+            sendJson(res, 200, { ok: false, error: `切换到分支 ${branchName} 失败：${switched.error || '分支不存在'}` })
+            return
+          }
+          steps.push(branchMode === 'new' ? `分支 ${branchName} 已存在，已切换到该分支` : `已切换到分支 ${branchName}`)
+        }
+
+        // 7) 可选首次提交。
+        const message = str(body.initialCommitMessage).trim()
+        if (message.length > 0) {
+          const staged = await stageAll(root)
+          if (!staged.ok) {
+            sendJson(res, 200, { ok: false, error: staged.error ?? '暂存文件失败' })
+            return
+          }
+          const committed = await commitStaged(root, message, false)
+          if (!committed.ok) {
+            sendJson(res, 200, { ok: false, error: `创建首次提交失败：${committed.error || '未知原因'}` })
+            return
+          }
+          steps.push('已创建首次提交')
+        }
+
+        deps.log?.('info', `仓库初始化完成：${root}（origin=${remoteUrl}）`)
+        sendJson(res, 200, { ok: true, root, branch, remoteName: 'origin', remoteUrl, steps, error: '' })
         return
       }
 
@@ -791,6 +1036,7 @@ export function createHandler(deps: HandlerDeps) {
         if ('allowWrite' in body) patch.allowWrite = body.allowWrite === true
         if ('requireConfirm' in body) patch.requireConfirm = body.requireConfirm !== false
         if ('defaultAccountId' in body) patch.defaultAccountId = str(body.defaultAccountId)
+        if ('repoPermissions' in body) patch.repoPermissions = body.repoPermissions
         const settings = deps.store.updateSettings(patch as any)
         deps.log?.('info', `设置已更新：repos=${settings.allowedRepos.length} roots=${settings.allowedRoots.length} write=${settings.allowWrite}`)
         sendJson(res, 200, { ok: true, settings, state: deps.store.snapshot() })

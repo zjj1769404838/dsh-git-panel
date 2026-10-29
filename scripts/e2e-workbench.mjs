@@ -10,6 +10,7 @@ import { createHash, createHmac } from 'node:crypto'
 import { join } from 'node:path'
 import { chromium } from 'playwright-core'
 
+const NEWLINE_RE = /\r?\n/u
 let pass = 0
 const failures = []
 const skipped = []
@@ -102,37 +103,72 @@ try {
       return true
     })
   }
-  async function clickSessionUnderProject() {
+  // 列出该项目下的会话行（项目行之后的全部 sessionRow）
+  async function listSessionsUnderProject() {
     return page.evaluate(() => {
       const rows = [...document.querySelectorAll('[role="treeitem"]')]
       const index = rows.findIndex(
         (item) => String(item.className).includes('projectRow') && item.textContent.trim() === 'dsh-git-panel',
       )
-      if (index < 0) return null
-      const session = rows.slice(index + 1).find((item) => String(item.className).includes('sessionRow'))
-      if (!session) return null
-      session.click()
-      return session.textContent.trim().slice(0, 40)
+      if (index < 0) return []
+      return rows
+        .slice(index + 1)
+        .filter((item) => String(item.className).includes('sessionRow'))
+        .map((item) => item.textContent.trim().slice(0, 40))
     })
   }
+  // 按文本点某个会话行（DOM 会重建，每次都重新查询）
+  async function clickSessionByText(text) {
+    return page.evaluate((target) => {
+      const rows = [...document.querySelectorAll('[role="treeitem"]')]
+      const index = rows.findIndex(
+        (item) => String(item.className).includes('projectRow') && item.textContent.trim() === 'dsh-git-panel',
+      )
+      if (index < 0) return false
+      const session = rows
+        .slice(index + 1)
+        .filter((item) => String(item.className).includes('sessionRow'))
+        .find((item) => item.textContent.trim().slice(0, 40) === target)
+      if (!session) return false
+      session.click()
+      return true
+    }, text)
+  }
+  // chip 当前显示的分支名（空串表示还没渲染出 chip）
+  async function readChipLabel() {
+    if ((await page.locator('.dgp-chip').count()) === 0) return ''
+    const text = (await page.locator('.dgp-chip').first().innerText()).trim()
+    return text.split(NEWLINE_RE).map((s) => s.trim()).filter(Boolean)[0] ?? ''
+  }
 
+  // 项目下可能有多个会话（其中「新会话」目录并非 Git 仓库），
+  // 逐个点过去，直到 chip 显示出真实分支名为止。
   let switched = { ok: false, why: 'no tree' }
   if (treeReady) {
     const found = await clickProject()
     if (!found) switched = { ok: false, why: 'no project row' }
     else {
       await page.waitForTimeout(600)
-      let session = await clickSessionUnderProject()
-      if (session === null) {
+      let sessions = await listSessionsUnderProject()
+      if (sessions.length === 0) {
         // 项目行原本是展开的，刚才那一下把它折叠了：再点一次展开。
         await clickProject()
         await page.waitForTimeout(600)
-        session = await clickSessionUnderProject()
+        sessions = await listSessionsUnderProject()
       }
-      switched = session === null ? { ok: false, why: 'no session row' } : { ok: true, session }
+      for (const session of sessions) {
+        await clickSessionByText(session)
+        await page.waitForTimeout(2000)
+        const label = await readChipLabel()
+        if (label && label !== 'Git') {
+          switched = { ok: true, session }
+          break
+        }
+      }
+      if (!switched.ok) switched = { ok: false, why: 'no git session', sessions }
     }
   }
-  await page.waitForTimeout(2500)
+  await page.waitForTimeout(1500)
 
   await page.waitForSelector('.dgp-chip', { timeout: 15_000 })
   check('输入框下方存在 Git chip 入口', (await page.locator('.dgp-chip').count()) === 1)

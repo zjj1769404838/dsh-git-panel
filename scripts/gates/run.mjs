@@ -78,6 +78,12 @@ if (nodeOut) {
 
 const clientOut = await readText(resolve(root, 'lib/client.js'))
 const clientSrc = await readText(resolve(root, 'src/client/index.tsx'))
+// 三个 client 源文件的合并文本：重构后的新能力可能落在 shared.tsx / workbench.tsx。
+const clientSrcAll = [
+  clientSrc,
+  await readText(resolve(root, 'src/client/shared.tsx')),
+  await readText(resolve(root, 'src/client/workbench.tsx')),
+].join('\n')
 check('client 产物非空', (clientOut?.length ?? 0) > 1000, `${clientOut?.length ?? 0} 字节`)
 if (clientOut) {
   check('client 产物带 ModuleLoader banner', clientOut.includes('__ModuleLoader__.load'))
@@ -179,17 +185,18 @@ if (clientOut) {
   check('client 一级菜单不再内嵌分支拓扑（index.tsx 不再引用 GraphView）', !clientSrc.includes('GraphView'))
   check('client 一级菜单不再内嵌改动明细（index.tsx 不再有 ChangesList）', !clientSrc.includes('ChangesList'))
   check('client 工作台 portal 到 body（createPortal + document.body）', clientOut.includes('document.body') && portalImported >= 2)
-  check('client BUILD 版本已推进（dgp-v12）', clientOut.includes('dgp-v12'))
+  check('client BUILD 版本已推进（dgp-v13）', clientOut.includes('dgp-v13'))
   // ---- i18n 键完整性：任何 t('x') 用到的键都必须在 ZH/EN 字典里存在（防 wbCancel 类漏键） ----
-  const dictStart = clientSrc.indexOf('const ZH: Dict = {')
-  const dictEnd = clientSrc.indexOf('const EN: Dict = {', dictStart)
-  const zhBlock = dictStart >= 0 && dictEnd > dictStart ? clientSrc.slice(dictStart, dictEnd) : ''
+  const clientNorm = clientSrc.replace(/\r\n/g, '\n')
+  const dictStart = clientNorm.indexOf('const ZH: Dict = {')
+  const dictEnd = clientNorm.indexOf('const EN: Dict = {', dictStart)
+  const zhBlock = dictStart >= 0 && dictEnd > dictStart ? clientNorm.slice(dictStart, dictEnd) : ''
   const definedKeys = new Set([...zhBlock.matchAll(/^\s{2}([A-Za-z][A-Za-z0-9_]*):/gmu)].map((m) => m[1]))
   const usedKeys = new Set()
   for (const file of ['index.tsx', 'workbench.tsx', 'graphview.tsx']) {
     const src = await readText(resolve(root, 'src/client', file))
     if (!src) continue
-    for (const m of src.matchAll(/t\(\s*'([A-Za-z0-9_]+)'\s*\)/gu)) usedKeys.add(m[1])
+    for (const m of src.replace(/\r\n/g, '\n').matchAll(/t\(\s*'([A-Za-z0-9_]+)'\s*\)/gu)) usedKeys.add(m[1])
   }
   const missingKeys = [...usedKeys].filter((key) => !definedKeys.has(key)).sort()
   check(
@@ -197,9 +204,9 @@ if (clientOut) {
     definedKeys.size > 100 && missingKeys.length === 0,
     `缺 ${missingKeys.join(',') || '-'}`,
   )
-  const enStart = clientSrc.indexOf('const EN: Dict = {', dictStart)
-  const enEnd = enStart > 0 ? clientSrc.indexOf(String.fromCharCode(10) + '}' + String.fromCharCode(10), enStart) : -1
-  const enBlock = enStart > 0 && enEnd > enStart ? clientSrc.slice(enStart, enEnd) : ''
+  const enStart = clientNorm.indexOf('const EN: Dict = {', dictStart)
+  const enEnd = enStart > 0 ? clientNorm.indexOf('\n}\n', enStart) : -1
+  const enBlock = enStart > 0 && enEnd > enStart ? clientNorm.slice(enStart, enEnd) : ''
   const enKeys = new Set([...enBlock.matchAll(/^\s{2}([A-Za-z][A-Za-z0-9_]*):/gmu)].map((m) => m[1]))
   const zhOnly = [...definedKeys].filter((key) => !enKeys.has(key))
   const enOnly = [...enKeys].filter((key) => !definedKeys.has(key))
@@ -209,6 +216,18 @@ if (clientOut) {
     `zh=${definedKeys.size} en=${enKeys.size} zhOnly=${zhOnly.join(',') || '-'} enOnly=${enOnly.join(',') || '-'}`,
   )
   check('client 无未定义的工具类（sr-only 未在 CSS 中定义）', !clientSrc.includes('sr-only') && !(await readText(resolve(root, 'src/client/workbench.tsx')) ?? '').includes('sr-only'))
+  // ---- 2026-10-29 重构：多账号/多仓库权限 + 分步初始化 + 当前分支详情 ----
+  // 注意：这些标识是源码里的变量/字面量名，产物经过 esbuild 压缩会被改名，
+  // 所以只能对源码断言（只有 BUILD 版本号是字符串常量，产物里仍可见）。
+  check('client 拉取账号远程仓库列表（/account/repos）', clientSrcAll.includes('/account/repos'))
+  check('client 保存账号级仓库权限（repoPermissions）', clientSrcAll.includes('repoPermissions'))
+  check('client 展示仓库权限三档（full/read/none）', clientSrcAll.includes("'full'") && clientSrcAll.includes("'read'") && clientSrcAll.includes("'none'"))
+  check('client 提供分步初始化向导（bootstrap 端点）', clientSrcAll.includes('/repo/bootstrap'))
+  check('client 初始化向导分步推进（initStep）', clientSrcAll.includes('initStep'))
+  check('client 初始化失败可返回上一步（initBack）', clientSrcAll.includes('initBack'))
+  check('client 当前分支详情按钮（branchDetail）', clientSrcAll.includes('branchDetail'))
+  check('client 分支详情按 ref 取提交（ref=）', clientSrcAll.includes('ref=') && clientSrcAll.includes('/repo/commits'))
+  check('client BUILD 版本已推进（dgp-v13）', clientOut.includes('dgp-v13'))
 }
 // ---- node 半边：git-ops 命令层与工作台端点 ----
 {
@@ -230,6 +249,27 @@ if (clientOut) {
     check('handler 工作台写端点统一 requireWrite 闸门', handlerSrc.includes('const requireWrite'))
     check('handler 只读端点 fail-closed（requireRead）', handlerSrc.includes('const requireRead'))
     check('handler discard 端点强制 confirmed', handlerSrc.includes('body.confirmed !== true'))
+    // ---- 2026-10-29 重构：账号 → 远程仓库权限 + 分步初始化 ----
+    check('handler 挂载账号远程仓库列表端点 /account/repos', handlerSrc.includes("'/account/repos'"))
+    check('handler 挂载分步初始化端点 /repo/bootstrap', handlerSrc.includes("'/repo/bootstrap'"))
+    check('handler 远端写端点按账号仓库归属校验（isRepoWritableFor）', handlerSrc.includes('isRepoWritableFor'))
+    check('handler /repo/init 也走 requireWrite 闸门', /\/repo\/init[\s\S]{0,900}requireWrite/.test(handlerSrc))
+    const storeSrc = await readText(resolve(root, 'src/node/store.ts'))
+    if (storeSrc) {
+      check('store 提供 per-account/per-repo 权限结构（repoPermissions）', storeSrc.includes('repoPermissions'))
+      check('store 提供仓库权限查询（repoPermission）', storeSrc.includes('repoPermission('))
+      check('store 提供仓库权限写入（setRepoPermission）', storeSrc.includes('setRepoPermission('))
+    }
+    const providersSrc = await readText(resolve(root, 'src/node/providers.ts'))
+    if (providersSrc) {
+      check('providers 提供列出账号远程仓库（listAccountRepos）', providersSrc.includes('export async function listAccountRepos'))
+      check('providers 提供仓库列表端点纯函数（便于门禁）', providersSrc.includes('accountReposEndpoint'))
+    }
+    const gitOpsSrc2 = await readText(resolve(root, 'src/node/git-ops.ts'))
+    if (gitOpsSrc2) {
+      check('git-ops 提供 remote URL → owner/repo 解析（parseRemoteRepo）', gitOpsSrc2.includes('export function parseRemoteRepo'))
+      check('git-ops readCommits 支持按 ref 取日志', /readCommits[\s\S]{0,200}ref\??:/.test(gitOpsSrc2))
+    }
   }
 }
 

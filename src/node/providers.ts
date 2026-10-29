@@ -308,3 +308,95 @@ export async function fetchRepo(
   if (!result.ok) return { ok: false, error: result.error }
   return { ok: true, repo: result.json }
 }
+
+/** 账号下的远程仓库（用于权限授权与 bootstrap 选择目标）。 */
+export interface AccountRepoInfo {
+  /** owner/repo（GitLab 可能是 group/subgroup/repo） */
+  fullName: string
+  name: string
+  owner: string
+  /** 可直接 `git remote add` 的克隆地址 */
+  url: string
+  private: boolean
+  defaultBranch: string
+}
+
+/**
+ * 各平台「列出账号可见仓库」的接口路径。
+ * 单独导出便于单测断言拼接结果（不做任何网络请求）。
+ */
+export function accountReposEndpoint(provider: ProviderId, base: string): string {
+  const root = String(base ?? '').replace(/\/+$/, '')
+  if (provider === 'gitlab') {
+    return `${root}/api/v4/projects?membership=true&per_page=100`
+  }
+  if (provider === 'gitea') {
+    return `${root}/user/repos?limit=50`
+  }
+  return `${root}/user/repos?per_page=100&affiliation=owner,collaborator,organization_member`
+}
+
+function pickString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim().length > 0) return value.trim()
+  }
+  return ''
+}
+
+function mapAccountRepo(provider: ProviderId, raw: any): AccountRepoInfo | null {
+  if (!raw || typeof raw !== 'object') return null
+  if (provider === 'gitlab') {
+    const path = pickString(raw.path_with_namespace)
+    if (!path) return null
+    const segments = path.split('/')
+    const name = pickString(raw.name) || segments[segments.length - 1] || ''
+    const owner = segments.slice(0, -1).join('/')
+    return {
+      fullName: path,
+      name,
+      owner,
+      url: pickString(raw.http_url_to_repo, raw.ssh_url_to_repo, raw.web_url),
+      private: raw.visibility === 'private',
+      defaultBranch: pickString(raw.default_branch) || 'main',
+    }
+  }
+  // GitHub / Gitea 字段结构接近。
+  const fullName = pickString(raw.full_name)
+  if (!fullName) return null
+  const segments = fullName.split('/')
+  return {
+    fullName,
+    name: pickString(raw.name) || segments[segments.length - 1] || '',
+    owner: pickString(raw.owner?.login, raw.owner?.username, raw.namespace?.login) || segments.slice(0, -1).join('/'),
+    url: pickString(raw.clone_url, raw.http_url_to_repo, raw.ssh_url, raw.web_url),
+    private: raw.private === true || raw.visibility === 'private',
+    defaultBranch: pickString(raw.default_branch) || 'main',
+  }
+}
+
+/**
+ * 列出某账号可见的全部远程仓库。
+ * 任何失败都返回 `{ok:false,error}`（可读中文），绝不抛异常、绝不回显令牌。
+ */
+export async function listAccountRepos(
+  provider: ProviderId,
+  token: string,
+  apiBase?: string,
+  host?: string,
+): Promise<{ ok: boolean; repos: AccountRepoInfo[]; error?: string }> {
+  if (typeof token !== 'string' || token.trim().length === 0) {
+    return { ok: false, repos: [], error: '令牌为空' }
+  }
+  const base = resolveApiBase(provider, apiBase, host)
+  if (!base) return { ok: false, repos: [], error: '该平台需要填写 API 地址（例如 https://git.example.com/api/v1）' }
+  const url = accountReposEndpoint(provider, base)
+  const result = await request(url, { token })
+  if (!result.ok) return { ok: false, repos: [], error: result.error || '读取仓库列表失败' }
+  const list = Array.isArray(result.json) ? result.json : []
+  const repos: AccountRepoInfo[] = []
+  for (const item of list) {
+    const mapped = mapAccountRepo(provider, item)
+    if (mapped) repos.push(mapped)
+  }
+  return { ok: true, repos }
+}

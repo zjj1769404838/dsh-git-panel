@@ -6,6 +6,8 @@ import { open, redact, seal } from './vault.js'
 
 export type AuthKind = 'oauth' | 'pat'
 export type AccountStatus = 'connected' | 'expired' | 'error'
+/** 单仓库权限档位：full=可读可写；read=只读；none=未授权。 */
+export type RepoPermission = 'full' | 'read' | 'none'
 
 export interface AccountRecord {
   id: string
@@ -37,6 +39,12 @@ export interface Settings {
   /** 写操作前是否要求用户在界面上确认。 */
   requireConfirm: boolean
   defaultAccountId: string
+  /**
+   * 账号 → 仓库 权限表（可选，缺省表示沿用全局 allowedRepos 兼容语义）。
+   * 外层 key = accountId，内层 key = 规范化后的 owner/repo。
+   * 某个账号的表存在时：表内未列出的仓库默认 'full'（新账号=默认完整权限）。
+   */
+  repoPermissions?: Record<string, Record<string, RepoPermission>>
 }
 
 export interface PanelState {
@@ -102,6 +110,37 @@ export function normalizeRepos(input: unknown): string[] {
   return out
 }
 
+function normalizePermission(value: unknown): RepoPermission {
+  return value === 'full' || value === 'read' ? value : 'none'
+}
+
+/**
+ * 归一化「账号 → 仓库权限」表：
+ * - 内层 key 用 normalizeRepo 规范化（非法 key 丢弃）；
+ * - 权限值只接受 full/read/none，其它一律降级为 none；
+ * - 外层 key 只保留仍存在的账号 id（账号已删的条目丢弃）。
+ */
+export function normalizeRepoPermissions(
+  input: unknown,
+  accountIds: string[],
+): Record<string, Record<string, RepoPermission>> {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return {}
+  const valid = new Set(accountIds)
+  const out: Record<string, Record<string, RepoPermission>> = {}
+  for (const [accountId, table] of Object.entries(input as Record<string, unknown>)) {
+    if (!valid.has(accountId)) continue
+    if (!table || typeof table !== 'object' || Array.isArray(table)) continue
+    const inner: Record<string, RepoPermission> = {}
+    for (const [repo, perm] of Object.entries(table as Record<string, unknown>)) {
+      const key = normalizeRepo(repo)
+      if (!key || key === '*') continue
+      inner[key] = normalizePermission(perm)
+    }
+    out[accountId] = inner
+  }
+  return out
+}
+
 /** 账号状态 + 设置的单文件存储；每次写入先写临时文件再 rename，避免半截 JSON。 */
 export class PanelStore {
   private state: PanelState = emptyState()
@@ -145,6 +184,12 @@ export class PanelStore {
           requireConfirm: raw.settings?.requireConfirm !== false,
           defaultAccountId:
             typeof raw.settings?.defaultAccountId === 'string' ? raw.settings.defaultAccountId : '',
+          repoPermissions: normalizeRepoPermissions(
+            raw.settings?.repoPermissions,
+            accounts
+              .filter((item) => item && typeof item.id === 'string')
+              .map((item) => item.id),
+          ),
         },
       }
     } catch (error) {
@@ -170,7 +215,19 @@ export class PanelStore {
     return {
       version: this.state.version,
       accounts: this.state.accounts.map((item) => ({ ...item, secret: '' })),
-      settings: { ...this.state.settings, allowedRepos: [...this.state.settings.allowedRepos] },
+      settings: {
+        ...this.state.settings,
+        allowedRepos: [...this.state.settings.allowedRepos],
+        allowedRoots: [...this.state.settings.allowedRoots],
+        repoPermissions: this.state.settings.repoPermissions
+          ? Object.fromEntries(
+              Object.entries(this.state.settings.repoPermissions).map(([id, table]) => [
+                id,
+                { ...table },
+              ]),
+            )
+          : undefined,
+      },
     }
   }
 
@@ -235,6 +292,12 @@ export class PanelStore {
     if (!this.state.settings.defaultAccountId || replacedDefault) {
       this.state.settings.defaultAccountId = record.id
     }
+    // 新账号建立自己的仓库权限表（空表=该账号名下仓库默认 full）。
+    // 被替换掉的旧账号权限表一并丢弃（账号已不存在）。
+    const table = { ...(this.state.settings.repoPermissions ?? {}) }
+    for (const item of replaced) delete table[item.id]
+    table[record.id] = {}
+    this.state.settings.repoPermissions = table
     this.persist()
     return record
   }
@@ -244,6 +307,11 @@ export class PanelStore {
     this.state.accounts = this.state.accounts.filter((item) => item.id !== id)
     if (this.state.settings.defaultAccountId === id) {
       this.state.settings.defaultAccountId = this.state.accounts[0]?.id ?? ''
+    }
+    if (this.state.settings.repoPermissions) {
+      const table = { ...this.state.settings.repoPermissions }
+      delete table[id]
+      this.state.settings.repoPermissions = table
     }
     if (this.state.accounts.length === before) return false
     this.persist()
@@ -275,9 +343,65 @@ export class PanelStore {
     if ('allowWrite' in patch) next.allowWrite = patch.allowWrite === true
     if ('requireConfirm' in patch) next.requireConfirm = patch.requireConfirm !== false
     if (typeof next.defaultAccountId !== 'string') next.defaultAccountId = ''
+    if ('repoPermissions' in patch) {
+      next.repoPermissions = normalizeRepoPermissions(
+        patch.repoPermissions,
+        this.state.accounts.map((item) => item.id),
+      )
+    }
     this.state.settings = next
     this.persist()
-    return { ...next, allowedRepos: [...next.allowedRepos], allowedRoots: [...next.allowedRoots] }
+    return {
+      ...next,
+      allowedRepos: [...next.allowedRepos],
+      allowedRoots: [...next.allowedRoots],
+      repoPermissions: next.repoPermissions
+        ? Object.fromEntries(
+            Object.entries(next.repoPermissions).map(([id, table]) => [id, { ...table }]),
+          )
+        : undefined,
+    }
+  }
+
+  /**
+   * 某账号对某仓库的权限。
+   * - 该账号已有 per-repo 权限表 → 表内未列出的仓库默认 'full'；
+   * - 老账号（没有表）→ 沿用全局 allowedRepos 兼容语义。
+   */
+  repoPermission(accountId: string, repo: string): RepoPermission {
+    const normalized = normalizeRepo(repo)
+    if (!normalized || normalized === '*') return 'none'
+    const table = this.state.settings.repoPermissions?.[accountId]
+    if (table) {
+      const hit = table[normalized]
+      return hit ?? 'full'
+    }
+    const list = this.state.settings.allowedRepos
+    if (list.includes('*')) return 'full'
+    return list.includes(normalized) ? 'full' : 'none'
+  }
+
+  /** 设置某账号对某仓库的权限（写入并落盘）。 */
+  setRepoPermission(accountId: string, repo: string, perm: RepoPermission): RepoPermission {
+    const normalized = normalizeRepo(repo)
+    if (!normalized || normalized === '*') return 'none'
+    const table = { ...(this.state.settings.repoPermissions ?? {}) }
+    const inner = { ...(table[accountId] ?? {}) }
+    inner[normalized] = normalizePermission(perm)
+    table[accountId] = inner
+    this.state.settings.repoPermissions = table
+    this.persist()
+    return inner[normalized]
+  }
+
+  /** 某账号是否至少可读该仓库。 */
+  isRepoAllowedFor(accountId: string, repo: string): boolean {
+    return this.repoPermission(accountId, repo) !== 'none'
+  }
+
+  /** 某账号是否可写该仓库（fail-closed 判定用）。 */
+  isRepoWritableFor(accountId: string, repo: string): boolean {
+    return this.repoPermission(accountId, repo) === 'full'
   }
 
   /** 远端仓库是否在授权范围内。空列表=未授权；`*`=全部。 */

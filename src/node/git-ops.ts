@@ -1,5 +1,6 @@
 import { redact } from './vault.js'
 import { ensureRepo, runGit } from './git.js'
+import { normalizeRepo } from './store.js'
 
 /**
  * Git 工作台（IDEA 式面板）的命令层：全部走 `runGit`（execFile 参数数组、
@@ -290,22 +291,33 @@ export interface CommitListResult {
 const MAX_COMMITS = 200
 
 /** 提交历史（--topo-order 带图，父母 hash 单列出来给图与详情用）。 */
-export async function readCommits(cwd: string, limit: number, offset: number): Promise<CommitListResult> {
+export async function readCommits(cwd: string, limit: number, offset: number, ref?: string): Promise<CommitListResult> {
   const repo = ensureRepo(cwd)
   if (!repo.ok) return { ok: false, root: '', commits: [], error: repo.error ?? '目录不可用', truncated: false }
   const root = repo.root!
   const cap = Math.min(Math.max(Number.isFinite(limit) ? limit : 30, 1), MAX_COMMITS)
   const skip = Math.min(Math.max(Number.isFinite(offset) ? offset : 0, 0), 100_000)
+  const revision = String(ref ?? '').trim()
+  // ref 只接受普通分支/标签/提交号：以 - 开头一律拒绝（避免被当成 git 选项）。
+  if (revision.length > 0 && (revision.startsWith('-') || /\s/.test(revision))) {
+    return { ok: false, root, commits: [], error: `分支/提交号不合法：${revision}`, truncated: false }
+  }
   // 空仓库：log 直接失败，返回空列表而不是错误。
-  const result = await runGit(root, [
-    'log',
+  const args = ['log']
+  if (revision.length > 0) args.push(revision)
+  args.push(
     `-n${cap}`,
     `--skip=${skip}`,
     '--date=iso-local',
     '--pretty=format:%H%x09%h%x09%an%x09%ae%x09%ad%x09%P%x09%D%x09%s',
-  ])
+  )
+  const result = await runGit(root, args)
   if (!result.ok) {
-    if (/does not have any commits yet|bad revision/i.test(result.stderr)) {
+    if (/does not have any commits yet|bad revision|unknown revision|ambiguous argument/i.test(result.stderr)) {
+      // 显式指定 ref 时「bad revision」是真实错误（分支不存在），不能静默返回空列表。
+      if (revision.length > 0) {
+        return { ok: false, root, commits: [], error: `无法解析分支或提交：${revision}`, truncated: false }
+      }
       return { ok: true, root, commits: [], error: '', truncated: false }
     }
     return { ok: false, root, commits: [], error: result.error, truncated: false }
@@ -435,6 +447,45 @@ export async function readDiff(cwd: string, mode: DiffMode, path: string, rev: s
 export interface RemoteRow {
   name: string
   url: string
+}
+
+/** 暂存全部改动（`git add -A`），用于初始化仓库后的首次提交。 */
+export async function stageAll(cwd: string): Promise<{ ok: boolean; root: string; error: string }> {
+  const repo = ensureRepo(cwd)
+  if (!repo.ok) return { ok: false, root: '', error: repo.error ?? '目录不可用' }
+  const result = await runGit(repo.root!, ['add', '-A'])
+  if (!result.ok) return { ok: false, root: repo.root!, error: result.error }
+  return { ok: true, root: repo.root!, error: '' }
+}
+
+/**
+ * 把 remote URL 解析成 owner/repo 形式的仓库键。
+ * 支持 https://host/owner/repo(.git)、http://、git@host:owner/repo、ssh://git@host/owner/repo。
+ * 解析不出（本地路径、file:// 等）返回 null。
+ */
+export function parseRemoteRepo(url: string): string | null {
+  const raw = String(url ?? '').trim()
+  if (raw.length === 0) return null
+  let path = ''
+  if (/^git@[^:]+:/i.test(raw)) {
+    // scp 语法：git@host:owner/repo.git
+    path = raw.replace(/^git@[^:]+:/i, '')
+  } else if (/^ssh:\/\//i.test(raw)) {
+    // ssh://git@host/owner/repo.git
+    path = raw
+      .replace(/^ssh:\/\//i, '')
+      .replace(/^[^/]*@/, '')
+      .replace(/^[^/]*\//, '')
+  } else if (/^https?:\/\//i.test(raw)) {
+    // http(s)://host/owner/repo.git
+    path = raw.replace(/^https?:\/\//i, '').replace(/^[^/]*\//, '')
+  } else {
+    return null
+  }
+  path = path.split('#')[0].split('?')[0]
+  const normalized = normalizeRepo(path)
+  if (!normalized || normalized === '*') return null
+  return normalized
 }
 
 export interface RemoteListResult {

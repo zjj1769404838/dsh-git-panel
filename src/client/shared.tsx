@@ -211,7 +211,7 @@ export const CSS = `
 .dgp-chip[data-warn="1"] svg{opacity:1}
 .dgp-chip[data-norepo="1"]{color:var(--dgp-faint)}
 .dgp-chip[data-open="1"]{background:var(--dgp-hover);color:var(--dgp-fg2)}
-.dgp-chip-wrap{position:relative;display:inline-flex;align-items:center}
+.dgp-chip-wrap{position:relative;display:inline-flex;align-items:center;gap:4px}
 .dgp-menu{display:flex;flex-direction:column;position:fixed;z-index:1200;min-width:236px;max-width:320px;max-height:min(340px,60vh);overflow-y:auto;padding:4px;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-md);background:var(--dsw-alias-bg-layer-1,var(--dgp-bg,#fff));box-shadow:var(--dsw-elevation-prominent,0 8px 28px #00000026);font-family:var(--dsw-font-family,inherit);font-size:12px;line-height:18px;color:var(--dgp-fg2);box-sizing:border-box}
 .dgp-menu-head{padding:7px 9px 6px;display:flex;align-items:center;gap:6px;color:var(--dgp-faint);font-size:11px;line-height:16px;letter-spacing:.02em;text-transform:uppercase}
 .dgp-menu-sum{padding:0 9px 7px;color:var(--dgp-muted);font-size:11px;line-height:16px;font-family:var(--dgp-code);word-break:break-all}
@@ -405,6 +405,64 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 .dgp-wb-remoteurl{font-size:10.5px;color:var(--dgp-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1 1 auto}
 .dgp-wb-detail .dgp-kv{margin:0 0 8px}
 .dgp-wb-msgtext{margin:0 0 8px;padding:8px 10px;background:var(--dgp-inset);border-radius:var(--dgp-r-sm);font:inherit;font-size:12px;white-space:pre-wrap;color:var(--dgp-fg2)}
+/* ------------------------------------------------------------------ */
+/* 账号 → 远程仓库权限（多账号管理）                                    */
+/* ------------------------------------------------------------------ */
+.dgp-repos{display:flex;flex-direction:column;gap:2px;padding:6px 0 2px 10px;border-left:1.5px solid var(--dgp-line);margin-top:2px}
+.dgp-repo{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 0;border-bottom:.5px solid var(--dgp-line);min-width:0}
+.dgp-repo:last-child{border-bottom:none}
+.dgp-repo-main{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto}
+.dgp-repo-name{font-family:var(--dgp-code);font-size:12px;line-height:18px;color:var(--dgp-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dgp-repo-meta{font-size:11px;line-height:16px;color:var(--dgp-muted);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.dgp-perm{flex:0 0 auto;display:flex;align-items:center;gap:6px}
+.dgp-perm-select{width:auto;max-width:132px;height:26px;font-size:12px;padding:0 26px 0 8px;background-position:calc(100% - 13px) 11px,calc(100% - 8px) 11px}
+.dgp-perm-label{font-size:11px;color:var(--dgp-faint);white-space:nowrap}
+.dgp-repo-toggle{appearance:none;border:0;background:transparent;color:var(--dgp-muted);font:inherit;font-size:11.5px;cursor:pointer;padding:2px 4px;border-radius:var(--dgp-r-xs);display:inline-flex;align-items:center;gap:5px}
+.dgp-repo-toggle:hover{background:var(--dgp-hover);color:var(--dgp-fg)}
+.dgp-repo-toggle svg{flex:0 0 auto;transform:rotate(-90deg);transition:transform var(--dgp-fast) var(--dgp-ease)}
+.dgp-repo-toggle[data-open="1"] svg{transform:rotate(0deg)}
+/* ------------------------------------------------------------------ */
+/* 分步初始化向导                                                      */
+/* ------------------------------------------------------------------ */
+.dgp-steps{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:10px}
+.dgp-step{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 8px;border-radius:var(--dgp-r-xs);background:var(--dgp-inset);color:var(--dgp-faint);font-size:11px;line-height:16px;white-space:nowrap}
+.dgp-step[data-on="1"]{background:color-mix(in srgb,var(--dgp-accent) 12%,transparent);color:var(--dgp-accent);font-weight:500}
+.dgp-step[data-done="1"]{color:var(--dgp-ok)}
+.dgp-step-sep{color:var(--dgp-faint);font-size:11px}
+.dgp-options{display:flex;flex-direction:column;gap:2px;margin:0;padding:0;list-style:none}
+.dgp-option{display:flex;align-items:center;gap:9px;padding:7px 9px;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-sm);cursor:pointer;min-width:0;transition:background var(--dgp-fast) var(--dgp-ease),border-color var(--dgp-fast) var(--dgp-ease)}
+.dgp-option:hover{background:var(--dgp-hover)}
+.dgp-option[data-on="1"]{border-color:var(--dgp-accent);background:color-mix(in srgb,var(--dgp-accent) 9%,transparent)}
+.dgp-option input{flex:0 0 auto;accent-color:var(--dgp-accent);margin:0}
+.dgp-option-main{display:flex;flex-direction:column;gap:1px;min-width:0;flex:1 1 auto}
+.dgp-option-title{font-size:12.5px;line-height:18px;color:var(--dgp-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dgp-option-hint{font-size:11px;line-height:16px;color:var(--dgp-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dgp-plan{display:flex;flex-direction:column;gap:5px;margin:0;padding:0;list-style:none}
+.dgp-plan li{display:flex;align-items:flex-start;gap:8px;font-size:12px;line-height:18px;color:var(--dgp-fg2)}
+.dgp-plan li::before{content:"";flex:0 0 auto;width:5px;height:5px;margin-top:6px;border-radius:50%;background:var(--dgp-accent)}
+.dgp-plan[data-tone="error"] li::before{background:var(--dgp-danger)}
+.dgp-init-result{display:flex;flex-direction:column;gap:8px}
+.dgp-init-summary{display:grid;grid-template-columns:88px minmax(0,1fr);gap:6px 12px;font-size:12px;line-height:18px;margin:0}
+.dgp-init-summary dt{color:var(--dgp-muted);margin:0}
+.dgp-init-summary dd{color:var(--dgp-fg2);margin:0;overflow-wrap:anywhere}
+/* ------------------------------------------------------------------ */
+/* 当前分支详情（提交记录）                                            */
+/* ------------------------------------------------------------------ */
+.dgp-branchbtn{appearance:none;display:inline-flex;align-items:center;gap:5px;height:22px;max-width:240px;padding:0 7px;border:0;border-radius:var(--dgp-r-xs);background:transparent;color:var(--dgp-muted);cursor:pointer;font:inherit;font-size:11px;line-height:16px;font-family:var(--dgp-code);white-space:nowrap;overflow:hidden;transition:background var(--dgp-fast) var(--dgp-ease),color var(--dgp-fast) var(--dgp-ease)}
+.dgp-branchbtn:hover:not(:disabled){background:var(--dgp-hover);color:var(--dgp-fg2)}
+.dgp-branchbtn:disabled{opacity:.5;cursor:not-allowed}
+.dgp-branchbtn:focus-visible{outline:2px solid var(--dgp-accent);outline-offset:1px}
+.dgp-branchbtn-name{overflow:hidden;text-overflow:ellipsis}
+.dgp-commits{display:flex;flex-direction:column;min-width:0}
+.dgp-commitrow{display:flex;align-items:flex-start;gap:9px;padding:7px 2px;border-bottom:.5px solid var(--dgp-line);min-width:0}
+.dgp-commitrow:last-child{border-bottom:none}
+.dgp-commitrow-main{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto}
+.dgp-commitrow-subject{font-size:12.5px;line-height:18px;color:var(--dgp-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dgp-commitrow-meta{display:flex;align-items:center;gap:8px;font-size:11px;line-height:16px;color:var(--dgp-muted);flex-wrap:wrap;min-width:0}
+.dgp-commitrow-hash{font-family:var(--dgp-code);color:var(--dgp-accent);flex:0 0 auto}
+.dgp-commitrow-author{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:160px}
+.dgp-commitrow-date{font-family:var(--dgp-code);font-variant-numeric:tabular-nums;color:var(--dgp-faint);flex:0 0 auto}
+.dgp-modal-foot .dgp-btn{min-width:78px}
 `
 
 /** 幂等注入样式（同 id 只更新内容）。 */

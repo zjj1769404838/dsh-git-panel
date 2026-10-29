@@ -1,7 +1,9 @@
 import { randomBytes } from 'node:crypto'
 import type { PanelStore } from './store.js'
+import { normalizeRepo } from './store.js'
 import { ensureRepo, runGit } from './git.js'
 import { fetchRepo, PROVIDERS, providerOf } from './providers.js'
+import { parseRemoteRepo } from './git-ops.js'
 import { redact } from './vault.js'
 
 const OBJECT_SCHEMA = { type: 'object', additionalProperties: true }
@@ -306,7 +308,19 @@ export function registerGitTools(ctx: ToolContext): () => void {
     output: { schema: OBJECT_SCHEMA, render: (_args: any, value: any) => textBlocks(JSON.stringify(value, null, 2)) },
     async execute(args: any) {
       const repo = String(args?.repo ?? '').trim()
-      if (!ctx.store.isRepoAllowed(repo)) {
+      // 远端仓库键：优先按 URL 形态解析，退回 owner/repo 直接归一化。
+      const repoKey = parseRemoteRepo(repo) ?? (normalizeRepo(repo) || null)
+      // 授权判定：优先按「账号 → 仓库」权限表（表内未列出的仓库默认 full）；
+      // 没有权限表的老账号回落到全局 allowedRepos。两条路径都拒绝才报错。
+      const accountId = args?.accountId ? String(args.accountId) : undefined
+      const account0 = accountId ? ctx.store.getAccount(accountId) : ctx.store.activeAccount()
+      if (accountId && !account0) {
+        return fail(`账号 ${accountId} 不存在，请在 Git 面板里重新选择账号后重试。`)
+      }
+      const permitted = account0
+        ? repoKey !== null && ctx.store.isRepoAllowedFor(account0.id, repoKey)
+        : ctx.store.isRepoAllowed(repo)
+      if (!permitted) {
         const allowed = ctx.store.settings().allowedRepos
         return fail(
           `仓库 ${repo} 不在授权范围内。已授权：` +
@@ -314,7 +328,7 @@ export function registerGitTools(ctx: ToolContext): () => void {
             '。请让用户在 Git 面板里添加该仓库后再试。',
         )
       }
-      const found = requireAccount(ctx, args?.accountId ? String(args.accountId) : undefined)
+      const found = requireAccount(ctx, accountId)
       if ('error' in found) return fail(found.error!)
       const account = found.account!
       const meta = PROVIDERS[providerOf(account.provider)]
@@ -324,10 +338,14 @@ export function registerGitTools(ctx: ToolContext): () => void {
         return fail(result.error ?? '查询失败')
       }
       const data = result.repo ?? {}
+      const permission = repoKey ? ctx.store.repoPermission(account.id, repoKey) : 'none'
       return ok({
         provider: meta.label,
         account: account.login,
         repo,
+        repoKey,
+        permission,
+        writable: permission === 'full',
         defaultBranch: data.default_branch ?? data.default_branch ?? '',
         private: data.private ?? data.visibility === 'private',
         description: data.description ?? '',

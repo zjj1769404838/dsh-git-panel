@@ -12,10 +12,12 @@ DSH（DeepSeek Harness）桌面端插件：**Git 账号接入 + 受控仓库操�
 | --- | --- |
 | 配置位置 | **DSH 设置页** → 左侧导航 `Git` 分节（`settings.section` slot，`order: 20`） |
 | 输入区显示 | **opencode 风格分支 chip**：`⎇ <分支名>` + `↑N`/`↓N`/`N*`（ahead/behind/改动数）；游离 HEAD 显示短 SHA；**非 Git 仓库时保留一个灰化的 `Git` 入口**（悬停提示「当前会话目录不是 Git 仓库」），只有取不到会话目录时才整块不渲染 |
-| 点击 chip | **先检测再决定**：弹出插件自绘菜单（不依赖宿主快捷键），菜单随检测结论变化 —— 未初始化时首项是「初始化 Git 项目」（提示只创建 `.git`、不删不改现有文件）；已初始化时只给「刷新状态」，不再出现初始化入口；检测失败时显示失败原因 + 「重新检测」，不给初始化按钮 |
-| 分支拓扑 | 菜单里渲染**车道式提交图**（`/repo/graph`）：每条活跃分支固定车道、8 色循环按车道取色、节点/同车道竖线/跨车道 S 形贝塞尔三种图元，分叉与汇合位置准确；悬停或点选某行高亮并在底部显示 `short · author · date` 与复制按钮；默认最近 30 条（5–100 可调），超出时标注「仅显示最近 N 条」 |
+| 点击 chip | **先检测再决定**：弹出插件自绘菜单（不依赖宿主快捷键），菜单随检测结论变化 —— **未初始化**时只给「初始化 Git 项目」（进入分步向导）；**已初始化**时给「刷新状态 / Git 工作台 / 打开项目目录（工作目录入口） / 打开 Git 设置（设置入口） / 当前分支详情」；检测失败时显示失败原因 + 「重新检测」，不给初始化按钮，也不给分支详情 |
+| 分支拓扑 | 在 **Git 工作台「分支图」tab** 渲染车道式提交图（`/repo/graph`）：每条活跃分支固定车道、8 色循环按车道取色、节点/同车道竖线/跨车道 S 形贝塞尔三种图元，分叉与汇合位置准确；默认最近 30 条（5–100 可调），超出时标注「仅显示最近 N 条」 |
 | 状态跟随项目 | chip 的 cwd 通过 `useSyncExternalStore` 订阅会话列表快照；**切换/加载项目会先清空上一次结果再重新检测**，菜单每次打开也会重新检测一次 |
 | 账号接入 | OAuth 设备码 / 个人访问令牌（PAT）两种方式，支持 GitHub、GitLab、Gitea |
+| 账号 → 远程仓库 | 设置页点某个账号即展开该账号在平台侧的**全部远程仓库**（`GET /account/repos`），逐个设置 `full` / `read` / `none` 三档权限；新账号默认完整权限 |
+| 远端归属闸门 | 远端写端点（fetch/pull/push/remotes-add）按目标 remote 的 `owner/repo` 校验账号权限，非 `full` 直接 403 |
 | 授权状态 | 已连接账号列表、平台、接入方式、scopes、`connected` / `expired` / `error` 状态徽章、最近一次校验时间与错误 |
 | 断开 / 重新授权 | 每个账号可单独「校验」与「断开」；同平台同登录名再次连接视为重新授权并覆盖旧记录 |
 | 仓库范围 | `allowedRepos`（`owner/repo` 白名单，`*` 表示全部）、`allowedRoots`（本机绝对路径白名单，`*` 表示不限制目录） |
@@ -25,8 +27,10 @@ DSH（DeepSeek Harness）桌面端插件：**Git 账号接入 + 受控仓库操�
 | 凭据安全 | AES-256-GCM 落盘，界面与接口一律不回显明文令牌，日志走脱敏规则 |
 | 授权概览 | 设置页顶部四格统计条：账号数（已连接/异常）、授权目录数（`*` 显示 `∞`）、授权仓库数、写操作开关 —— 状态色只落在左侧 2px 色条与副标题上，主数字保持中性 |
 | 默认账号 | 多账号时可指定默认账号（Agent 侧优先使用），账号行显示「默认账号」徽章或「设为默认」按钮 |
-| 重新授权 | 账号行提供「重新授权」：自动切到该账号的平台与接入方式、清空令牌输入，并在连接区顶部显示行内提示条 |
-| 工作区改动明细 | chip 菜单里直接列出未提交文件：状态字母 + 路径 + 增删行数 + 已暂存标记；加载中用骨架屏，空状态用图形化插画 |
+| 重新授权 | 账号行提供「重新授权」：自动切到该账号的平台与接入方式、清空令牌输入，并在连接区顶部显示行内提示条；账号行另有「编辑账号」（回填平台/接入方式/host/apiBase）与「查看仓库」 |
+| 当前分支详情 | chip 旁常驻一个**带分支名的按钮**（`⎇ <分支名>`，aria-label「当前分支详情: <分支名>」）；点击在**页面中央**弹出 Modal，逐条展示该分支的提交记录（提交信息 / 短哈希 / 作者 / 时间），可滚动、不溢出视口；×、遮罩点击、Esc、底部按钮四种方式均可关闭 |
+| 分步初始化向导 | 未初始化目录点「初始化 Git 项目」进入 5 步向导：①选账号 → ②选已有远程仓库（平台列举）或新建/手工填 → ③选分支名（用远程默认分支或新建） → ④确认清单 → ⑤执行结果；每步可返回上一步，失败保留服务端中文原因并允许回退修改 |
+| 工作区改动明细 | 在 **Git 工作台左栏**列出未提交文件：状态字母 + 路径 + 增删行数 + 已暂存标记；加载中用骨架屏，空状态用图形化插画 |
 | 轻提示 toast | 所有动作反馈统一为右下角 toast（成功/失败/信息三态），2.6 秒自动消失；菜单关闭后提示仍保留 |
 
 ---
@@ -87,6 +91,19 @@ node scripts/build.mjs
 
 范围为空 = 全部拒绝（fail-closed）。路径比较按路径段进行，`D:\repo-evil` 不会命中 `D:\repo` 的授权。
 
+**账号级仓库权限（`repoPermissions`）**：设置页「账号」分节里点某个账号，会展开该账号在平台侧可见的**全部远程仓库**，每个仓库可单独设置档位：
+
+| 档位 | 含义 |
+| --- | --- |
+| `full` | 可读可写（可 fetch/pull/push） |
+| `read` | 只读 |
+| `none` | 未授权（远端写操作直接 403） |
+
+- **新账号默认完整权限**（新账号建立一张空权限表，表内未列出的仓库按 `full` 处理）；要收紧就在列表里逐个改成 `read` / `none`。
+- 权限表按 `accountId → owner/repo` 组织，与账号绑定；账号被移除时它那张表一并清除。
+- 老账号（升级前就连好的、还没有权限表）沿用全局 `allowedRepos` 判定，两条路径都拒绝才算未授权。
+- 远端写端点（`/repo/fetch`、`/repo/pull`、`/repo/push`、`/repo/remotes/add`）会解析目标 remote 的 `owner/repo`，**解析得出且该账号不是 `full` 时直接 403**；目标地址解析不出（如 `file://` 本地路径）时跳过归属校验并记一条 warn。
+
 ---
 
 ## 四、数据存放
@@ -134,16 +151,18 @@ node scripts/build.mjs
 | GET | `/health` | 健康检查（status / plugin / version / uptime / accounts） |
 | GET | `/state` | 账号（脱敏）+ 设置 + 平台元数据 |
 | GET | `/providers` | 平台元数据 |
+| GET | `/account/repos?accountId=<id>` | 列出该账号在平台侧可见的全部远程仓库（`{fullName, name, owner, url, private, defaultBranch}`）：GitHub `GET /user/repos`、GitLab `GET /api/v4/projects?membership=true`、Gitea `GET /api/v1/user/repos`；单次最多 100 条、不分页。账号不存在 / 无凭据 / 平台拒绝时返回 `{ok:false,error:'中文原因',repos:[]}`，**不回显令牌** |
 | GET | `/repo/status?cwd=<绝对路径>` | 供输入区分支 chip 使用：`{isRepo, root, branch, detached, head, ahead, behind, changed, authorized, reason}`；`reason` 三态区分结论 —— `repo`（确认是仓库）/ `no-repo`（目录存在但没有 `.git`，**只有这种才允许显示初始化**）/ `invalid`（路径非法、不存在、不可读 —— 属于检测失败，不能当成未初始化）；非仓库不是错误（`isRepo:false`），未授权目录返回 `authorized:false` 且不泄露 ahead/behind |
 | GET | `/repo/graph?cwd=<绝对路径>&limit=<5-100>` | 供 chip 菜单的分支拓扑图使用：`{isRepo, root, branch, head, detached, reason, truncated, laneCount, rows}`；每行 `rows[i]` 含 `{hash, short, parents, author, date, subject, refs, row, lane, segments, through}` —— `lane` 是本行所在车道、`segments` 是向下连到父提交的线（`from === to` 为同车道直落，否则为跨车道转折）、`through` 是穿过本行的其他车道；未授权目录返回 `authorized:false` 且 `rows` 为空、`laneCount:0`（不泄露提交历史） |
 | GET | `/repo/changes?cwd=<绝对路径>` | 供 chip 菜单的「工作区改动明细」使用：`{isRepo, root, branch, dirty, files}`；每个 `files[i]` 含 `{path, index, worktree, added, deleted, staged}` —— `index`/`worktree` 是 git porcelain 两列状态码（`M` 修改 / `A` 新增 / `D` 删除 / `R` 重命名 / `C` 复制 / `??` 未跟踪），`added`/`deleted` 是增删行数（未跟踪二进制无法计数时置 0，界面显示「—」）。未授权目录只回 `{isRepo:true, root:'', branch:'', dirty:false, files:[]}` 空壳（**不泄露路径、分支与文件名**）；非仓库回 `{isRepo:false,…}` |
-| POST | `/repo/init` | 在会话目录执行 `git init -b main`（幂等：已有 `.git` 返回 `created:false`，绝不覆盖，**且不删除/不改动目录里已有文件**）；必须先过同源校验 + `allowedRoots` 授权闸门，未授权目录 403 且不创建任何文件 |
+| POST | `/repo/init` | 在会话目录执行 `git init -b main`（幂等：已有 `.git` 返回 `created:false`，绝不覆盖，**且不删除/不改动目录里已有文件**）；必须先过同源校验 + `allowedRoots` 授权闸门，未授权目录 403 且不创建任何文件；写开关关闭时同样 403 |
+| POST | `/repo/bootstrap` | **一键初始化（分步向导的执行端）**：请求体 `{cwd, accountId, remoteMode:'existing'|'new', repoFullName?, remoteUrl?, branchName, branchMode:'new'|'existing', initialCommitMessage?}`；依次完成 ①账号与凭据校验 → ②解析远程目标（选已有仓库时按 `repoFullName` 在平台列表里匹配出 URL）→ ③远端归属授权（`repoKey` 必须对该账号 `full`，否则 403「未授权写入」）→ ④`git init`（已有仓库则复用）→ ⑤添加远程 `origin`（**已存在且指向不同地址时直接报错，不静默覆盖**）→ ⑥分支（`new` 撞名时降级为切换并在 `steps` 里说明）→ ⑦可选首次提交；成功回 `{ok:true,root,branch,remoteName:'origin',remoteUrl,steps:[中文步骤]}`，失败回 `{ok:false,error:'中文原因'}`（HTTP 200）。**只做本地操作，不 push** |
 | POST | `/pat/connect` | PAT 接入 |
 | POST | `/oauth/start` | 发起设备码流程，返回 `pollKey` 与 `userCode` |
 | POST | `/oauth/poll` | 用 `pollKey` 轮询（不传设备码） |
 | POST | `/accounts/remove` | 断开账号 |
 | POST | `/accounts/recheck` | 重新校验令牌 |
-| POST | `/settings` | 保存仓库范围与写开关 |
+| POST | `/settings` | 保存仓库范围与写开关；也接收 `repoPermissions`（账号 → 仓库 → 权限档位，见下表） |
 
 加固项：请求体上限 256 KiB（超限 413 并断开）；同源校验（跨站 403）；`cache-control: no-store` + `x-content-type-options: nosniff`；未知接口 405/404。
 
@@ -154,10 +173,11 @@ node scripts/build.mjs
 ```bash
 npm run bundle        # 构建 lib/index.js + lib/client.js
 npm run typecheck     # tsc --noEmit
-npm run gates         # 131 项插件契约门禁
-npm run test:hardening# 166 项加固回归（含真实 git 仓库端到端）
+npm run gates         # 151 项插件契约门禁
+npm run test:hardening# 186 项加固回归（含真实 git 仓库端到端 + 仓库权限档位）
 npm run test:e2e      # 13 项设置页 GUI 端到端验证（需要本机 Edge + DSH Web 在跑）
 npm run test:e2e:wb   # 27 项 Git 工作台 GUI 端到端验证（含「点弹窗不消失」回归）
+npm run test:e2e:newui # 19 项新入口体系 GUI 端到端验证（分支详情按钮 + 五入口菜单）
 npm run preview       # 用真实 CSS + 宿主 token 渲染 docs/preview/*.png（需要本机 Edge）
 npm test              # gates + hardening
 ```
@@ -165,6 +185,8 @@ npm test              # gates + hardening
 `test:e2e` 用 `playwright-core` 驱动**本机 Edge**（headless）打开真实 DSH Web GUI，验证「打开 Git 设置」这条链路：认证通过 → chip 存在 → 菜单里有「打开 Git 设置」→ 点击后**设置面板打开**且**智能体团队面板没被误开** → 导航落在 Git 分节 → Git 分节内容渲染 → 进已有会话后「智能体团队」入口自身仍能打开。脚本自己按宿主 `dsh-client-connection` 的规则从 `~/.dsh/.credentials.yaml` 铸造 `dsh-auth-*` cookie（**不打印任何凭据**），URL 可用 `--url` 或 `DSH_WEB_URL` 覆盖。
 
 `test:e2e:wb` 是工作台的点击回归：切到本项目的会话 → chip 显示真实分支 → 打开工作台（断言挂在 `body` 直属层，脱离 composer 的 `container-type:inline-size` 包含块）→ 点分支管理开二级弹窗 → **把弹窗内的标题/正文/输入框/复选框逐个点一遍，每次点完断言「弹窗 + 工作台 + chip」三件套都还在** → Pull / 远程仓库 / 提交详情同样处理 → 切 tab、刷新、勾选改动行都不许关掉工作台。这条链路正是「点一下弹窗就整片消失」的复现路径。
+
+`test:e2e:newui` 验证重构后的入口体系：切到本项目会话 → chip 旁出现**带分支名的「当前分支详情」按钮** → 菜单里五个入口齐全（刷新状态 / Git 工作台 / 打开项目目录 / 打开 Git 设置 / 当前分支详情）→ 点分支详情在**页面中央**弹出 Modal（标题带分支名、挂在 `body` 直属层、视口内不溢出）→ 正文逐条展示提交四要素（提交信息 / 短哈希 / 作者 / 时间）→ 关闭后 chip 与分支按钮仍在且无页面 JS 错误。**node 半边不热重载**，桌面端未重启时端点不可用，提交行断言按 `SKIP` 处理（端点级行为由 `test:hardening` 兜底）。
 
 `test:hardening` 用 mock ctx 驱动**构建产物 `lib/index.js`**，在临时 `DSH_HOME` 下跑，覆盖：路由注册、工具注册、跨站/超大请求拦截、设置归一化、密文不外泄、OAuth 缺 clientId 提示、未授权仓库/目录拒绝、写操作默认拒绝、`/repo/status` 的六种形态（缺 cwd / 非仓库且 `reason=no-repo` / 目录不存在与相对路径 `reason=invalid` / 已授权真实仓库 `reason=repo` / 未授权不泄露 ahead-behind）、`/repo/init` 的十种形态（未授权拒绝且不落 `.git` / 已授权创建 / 回报分支 / 幂等 / 缺 cwd / 目录不存在 / **初始化后原有文件与子目录内容原样保留**）、`/repo/changes` 的七种形态（缺 cwd 400 / 非仓库 `isRepo:false` / **未授权目录只回空壳不泄露路径与分支** / 已授权仓库回报 root+branch+dirty / 工作区修改为 `M` / 已暂存文件标记 `staged` / 未跟踪文件为 `??` / 文件按路径升序）、真实仓库的 status/branches/diff/log 与「确认前不执行、取消不执行、确认后执行、令牌不可复用」。
 
@@ -193,7 +215,9 @@ scripts/
   build.mjs           esbuild 双产物
   gates/run.mjs       契约门禁
   test-hardening.mjs  加固回归
-  e2e-settings.mjs    GUI 端到端验证（playwright-core + 本机 Edge）
+  e2e-settings.mjs    设置页 GUI 端到端验证（playwright-core + 本机 Edge）
+  e2e-workbench.mjs   工作台 GUI 端到端验证（弹窗点击回归）
+  e2e-newui.mjs       新入口体系 GUI 端到端验证（分支详情 + 五入口菜单）
   preview.mjs         设置页预览图渲染
 ```
 

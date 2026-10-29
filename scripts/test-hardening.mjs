@@ -751,6 +751,185 @@ check('工具 name 前缀一致', [...registeredTools.keys()].every((name) => na
   check('wb/branches 只读不受 allowWrite 影响', rOff.status === 200 && rOff.json?.ok === true)
 }
 
+// ---- 重构回归：账号 → 仓库权限三档 + 远端归属闸门 + 初始化向导 ----
+{
+  const { execFileSync } = await import('node:child_process')
+  const { mkdirSync, writeFileSync } = await import('node:fs')
+  const { createCipheriv, randomBytes } = await import('node:crypto')
+
+  const permRepo = join(tmp, 'perm-repo')
+  mkdirSync(permRepo, { recursive: true })
+  const pgit = (...args) => execFileSync('git', args, { cwd: permRepo, stdio: 'ignore' })
+  pgit('init', '-q', '-b', 'main')
+  pgit('config', 'user.email', 'test@example.com')
+  pgit('config', 'user.name', 'Test User')
+  writeFileSync(join(permRepo, 'a.txt'), 'hello')
+  pgit('add', '.')
+  pgit('commit', '-q', '-m', 'init commit')
+
+  // 造一个已连接账号：令牌用测试密钥加密落盘，插件侧只当密文处理。
+  const stateDir = join(tmp, 'git-panel')
+  mkdirSync(stateDir, { recursive: true })
+  const key = randomBytes(32)
+  writeFileSync(join(stateDir, 'key.bin'), key)
+  const iv = randomBytes(12)
+  const cipher = createCipheriv('aes-256-gcm', key, iv)
+  const secretPlain = 'ghp_faketokenforunitest000000000000000000000'
+  const cipherBody = Buffer.concat([cipher.update(secretPlain, 'utf8'), cipher.final()])
+  const sealed = 'v1.' + Buffer.concat([iv, cipher.getAuthTag(), cipherBody]).toString('base64')
+  const acctId = 'acct-test-1'
+  await writeFile(
+    join(stateDir, 'state.json'),
+    JSON.stringify(
+      {
+        version: 1,
+        accounts: [
+          {
+            id: acctId,
+            provider: 'github',
+            kind: 'pat',
+            login: 'tester',
+            displayName: 'Tester',
+            avatarUrl: '',
+            host: 'github.com',
+            apiBase: 'https://api.github.com',
+            scopes: ['repo'],
+            secret: sealed,
+            createdAt: Date.now(),
+            lastCheckedAt: Date.now(),
+            status: 'connected',
+            lastError: '',
+          },
+        ],
+        settings: {
+          allowedRepos: [],
+          allowedRoots: [permRepo],
+          allowWrite: true,
+          requireConfirm: true,
+          defaultAccountId: acctId,
+          // 权限表：显式 none / read；表内未列出的仓库默认 full。
+          repoPermissions: { [acctId]: { 'owner/denied-repo': 'none', 'owner/readonly-repo': 'read' } },
+        },
+      },
+      null,
+      2,
+    ),
+  )
+
+  let handler2 = null
+  const tools2 = new Map()
+  const ctx2 = {
+    logger: { info() {}, warn() {}, error() {} },
+    effect(fn) {
+      fn()
+    },
+    get(name) {
+      if (name !== 'tools') return undefined
+      return {
+        register(tool) {
+          tools2.set(tool.name, tool)
+          return () => tools2.delete(tool.name)
+        },
+      }
+    },
+    webServer: {
+      register(options) {
+        handler2 = options.handler
+      },
+    },
+  }
+  mod.apply(ctx2)
+  check('注入账号状态后重新注册路由', typeof handler2 === 'function')
+
+  // 权限表在 /state 中可见且档位保真
+  const st = await call(handler2, { method: 'GET', url: '/dsh-git-panel/state' })
+  const perms = st.json?.state?.settings?.repoPermissions?.[acctId] ?? {}
+  check('state 返回账号权限表', !!st.json?.state?.settings?.repoPermissions, JSON.stringify(st.json?.state?.settings ?? {}).slice(0, 200))
+  check('权限表 none 档保真', perms['owner/denied-repo'] === 'none', JSON.stringify(perms))
+  check('权限表 read 档保真', perms['owner/readonly-repo'] === 'read', JSON.stringify(perms))
+  check('state 不含令牌明文', !st.body.includes('ghp_faketokenforunitest'), 'state 回显了令牌')
+
+  // 远端归属闸门：none / read 拒绝写，未列出的默认 full 放行
+  const addDenied = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/remotes/add',
+    body: JSON.stringify({ cwd: permRepo, name: 'denied', url: 'https://example.com/owner/denied-repo.git', accountId: acctId }),
+  })
+  check('未授权仓库加远程被拒 403', addDenied.status === 403, String(addDenied.status))
+  check('未授权仓库拒绝原因可读', String(addDenied.json?.error ?? '').includes('未授权写入'), addDenied.json?.error)
+
+  const addReadonly = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/remotes/add',
+    body: JSON.stringify({ cwd: permRepo, name: 'ro', url: 'https://example.com/owner/readonly-repo.git', accountId: acctId }),
+  })
+  check('只读仓库写操作被拒 403', addReadonly.status === 403, String(addReadonly.status))
+
+  const addAllowed = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/remotes/add',
+    body: JSON.stringify({ cwd: permRepo, name: 'allowed', url: 'https://example.com/owner/allowed-repo.git', accountId: acctId }),
+  })
+  check('权限表未列出的仓库默认可写', addAllowed.json?.ok === true, JSON.stringify(addAllowed.json ?? {}).slice(0, 200))
+
+  const addBadAcct = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/remotes/add',
+    body: JSON.stringify({ cwd: permRepo, name: 'x', url: 'https://example.com/owner/other.git', accountId: 'nope' }),
+  })
+  check('指定不存在账号被拒 403', addBadAcct.status === 403, String(addBadAcct.status))
+
+  // 初始化向导：参数校验 + 分支撞名降级 + origin 不静默覆盖
+  const bootBadAcct = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/bootstrap',
+    body: JSON.stringify({ cwd: permRepo, accountId: 'nope', remoteMode: 'new', remoteUrl: 'https://example.com/owner/allowed-repo.git', branchName: 'main', branchMode: 'new' }),
+  })
+  check('bootstrap 指定不存在账号报错', bootBadAcct.json?.ok === false && String(bootBadAcct.json?.error ?? '').includes('账号不存在'), JSON.stringify(bootBadAcct.json ?? {}).slice(0, 200))
+
+  const bootNoUrl = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/bootstrap',
+    body: JSON.stringify({ cwd: permRepo, accountId: acctId, remoteMode: 'new', branchName: 'main' }),
+  })
+  check('bootstrap 新建远程缺地址报错', bootNoUrl.json?.ok === false && String(bootNoUrl.json?.error ?? '').includes('远程仓库地址'), JSON.stringify(bootNoUrl.json ?? {}).slice(0, 200))
+
+  const bootNoRepo = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/bootstrap',
+    body: JSON.stringify({ cwd: permRepo, accountId: acctId, remoteMode: 'existing', branchName: 'main' }),
+  })
+  check('bootstrap 选已有远程缺仓库名报错', bootNoRepo.json?.ok === false && String(bootNoRepo.json?.error ?? '').includes('远程仓库'), JSON.stringify(bootNoRepo.json ?? {}).slice(0, 200))
+
+  const bootDup = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/bootstrap',
+    body: JSON.stringify({ cwd: permRepo, accountId: acctId, remoteMode: 'new', remoteUrl: 'https://example.com/owner/allowed-repo.git', branchName: 'main', branchMode: 'new' }),
+  })
+  check('bootstrap 新建分支撞名降级为切换', bootDup.json?.ok === true, JSON.stringify(bootDup.json ?? {}).slice(0, 240))
+  check('bootstrap 撞名给出可读步骤', (bootDup.json?.steps ?? []).some((item) => String(item).includes('已存在')), JSON.stringify(bootDup.json?.steps ?? []))
+
+  const bootConflict = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/bootstrap',
+    body: JSON.stringify({ cwd: permRepo, accountId: acctId, remoteMode: 'new', remoteUrl: 'https://example.com/owner/other-repo.git', branchName: 'main', branchMode: 'existing' }),
+  })
+  check('bootstrap 不静默覆盖 origin', bootConflict.json?.ok === false && String(bootConflict.json?.error ?? '').includes('origin'), JSON.stringify(bootConflict.json ?? {}).slice(0, 200))
+
+  // 提交历史：按 ref 取 + 非法 ref 可读错误
+  const commitsOk = await call(handler2, { method: 'GET', url: `/dsh-git-panel/repo/commits?cwd=${encodeURIComponent(permRepo)}&ref=main` })
+  check('commits 按 ref 取历史', commitsOk.json?.ok === true && (commitsOk.json?.commits ?? []).length >= 1, JSON.stringify(commitsOk.json ?? {}).slice(0, 200))
+  const commitRow = (commitsOk.json?.commits ?? [])[0] ?? {}
+  check('提交行含哈希/信息/作者/时间', !!commitRow.shortHash && !!commitRow.subject && !!commitRow.author && !!commitRow.date, JSON.stringify(commitRow).slice(0, 200))
+
+  const commitsBad = await call(handler2, { method: 'GET', url: `/dsh-git-panel/repo/commits?cwd=${encodeURIComponent(permRepo)}&ref=no-such-ref-xyz` })
+  check('commits 非法 ref 报可读错误', commitsBad.json?.ok === false && String(commitsBad.json?.error ?? '').includes('无法解析'), JSON.stringify(commitsBad.json ?? {}).slice(0, 200))
+
+  // 账号仓库列表：账号不存在时立即报可读错误（不触网）
+  const reposMissing = await call(handler2, { method: 'GET', url: '/dsh-git-panel/account/repos?accountId=nope' })
+  check('account/repos 账号不存在给可读错误', reposMissing.json?.ok === false && String(reposMissing.json?.error ?? '').length > 0, JSON.stringify(reposMissing.json ?? {}).slice(0, 200))
+}
+
 await rm(tmp, { recursive: true, force: true })
 
 if (failures.length > 0) {

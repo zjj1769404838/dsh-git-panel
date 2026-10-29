@@ -106,7 +106,7 @@ function shortDate(iso: string): string {
 }
 
 /** Modal 骨架：二级弹窗统一容器（遮罩 + 面板 + 标题 + 关闭），层级与 IDEA 对齐。 */
-function Modal({
+export function Modal({
   title,
   onClose,
   children,
