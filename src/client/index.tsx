@@ -6,7 +6,7 @@ export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
 const NS = 'dsh-git-panel'
 const ROUTE = '/dsh-git-panel'
-const BUILD = 'dgp-v8'
+const BUILD = 'dgp-v9'
 
 type Dict = Record<string, string>
 
@@ -103,6 +103,48 @@ const ZH: Dict = {
   helpText:
     '授权边界：Agent 只能读取你在「仓库范围」里列出的仓库与目录；未授权、授权失效、仓库不存在或 git 命令失败时，工具都会返回可读的原因，不会静默失败。令牌只以 AES-256-GCM 加密保存在本机 ~/.dsh/git-panel/state.json，界面与日志中都不会出现明文。',
   removeConfirm: '断开后该账号的令牌会被立即删除，Agent 将无法再使用它。确定断开？',
+  /* ---- 授权概览（统计条） ---- */
+  statsTitle: '授权概览',
+  statsAccounts: '账号',
+  statsAccountsHint: '{n} 个已连接',
+  statsAccountsHintMixed: '{n} 个已连接 · {m} 个异常',
+  statsAccountsHintNone: '尚未连接',
+  statsRoots: '授权目录',
+  statsRootsHint: '{n} 个本地目录',
+  statsRootsHintAll: '不限制目录',
+  statsRootsHintNone: '未授权任何目录',
+  statsRepos: '授权仓库',
+  statsReposHint: '{n} 个远端仓库',
+  statsReposHintAll: '全部仓库',
+  statsReposHintNone: '未授权任何仓库',
+  statsWrite: '写操作',
+  statsWriteOn: '已允许',
+  statsWriteOff: '已关闭',
+  statsWriteHintOn: '需二次确认',
+  statsWriteHintOff: 'Agent 只读',
+  /* ---- 账号卡片增强 ---- */
+  setDefault: '设为默认',
+  isDefault: '默认账号',
+  reauthHint: '用新的令牌覆盖当前账号',
+  scopeCurrent: '当前会话仓库',
+  scopeCurrentHint: '把当前会话目录加入授权范围',
+  scopeCurrentAdded: '已在授权范围内',
+  /* ---- 工作区改动 ---- */
+  changesTitle: '工作区改动',
+  changesCount: '{n} 个文件',
+  changesEmpty: '工作区干净，没有未提交改动',
+  changesLoading: '正在读取改动…',
+  changesFailed: '读取改动失败',
+  changesUnauthorized: '当前目录未在授权范围内',
+  changesStaged: '已暂存',
+  /* ---- 轻提示 ---- */
+  toastSaved: '已保存仓库范围',
+  toastCopied: '已复制到剪贴板',
+  toastCopiedFailed: '复制失败，请手动复制',
+  toastDefault: '已设为默认账号',
+  toastRecheck: '账号校验完成',
+  /* ---- 刷新 ---- */
+  loadingLabel: '正在加载…',
 }
 
 const EN: Dict = {
@@ -198,6 +240,48 @@ const EN: Dict = {
   helpText:
     'Authorization boundary: the agent can only read the repositories and directories listed in “Scope”. Unauthorized repos, expired grants, missing repositories and failing git commands all return a readable reason. Tokens are stored with AES-256-GCM in ~/.dsh/git-panel/state.json and never appear in the UI or logs.',
   removeConfirm: 'Disconnecting deletes this token immediately; the agent will no longer be able to use it. Continue?',
+  /* ---- Authorization overview ---- */
+  statsTitle: 'Authorization overview',
+  statsAccounts: 'Accounts',
+  statsAccountsHint: '{n} connected',
+  statsAccountsHintMixed: '{n} connected · {m} unhealthy',
+  statsAccountsHintNone: 'none connected yet',
+  statsRoots: 'Directories',
+  statsRootsHint: '{n} local directories',
+  statsRootsHintAll: 'any directory',
+  statsRootsHintNone: 'no directory allowed',
+  statsRepos: 'Repositories',
+  statsReposHint: '{n} remote repositories',
+  statsReposHintAll: 'all repositories',
+  statsReposHintNone: 'no repository allowed',
+  statsWrite: 'Writes',
+  statsWriteOn: 'Allowed',
+  statsWriteOff: 'Disabled',
+  statsWriteHintOn: 'confirmation required',
+  statsWriteHintOff: 'agent is read-only',
+  /* ---- Account cards ---- */
+  setDefault: 'Set as default',
+  isDefault: 'Default account',
+  reauthHint: 'Replace this account with a new token',
+  scopeCurrent: 'Current session repository',
+  scopeCurrentHint: 'Allow the current session directory',
+  scopeCurrentAdded: 'Already in scope',
+  /* ---- Workspace changes ---- */
+  changesTitle: 'Workspace changes',
+  changesCount: '{n} files',
+  changesEmpty: 'Working tree is clean — no uncommitted changes',
+  changesLoading: 'Reading changes…',
+  changesFailed: 'Failed to read changes',
+  changesUnauthorized: 'Current directory is outside the authorized scope',
+  changesStaged: 'staged',
+  /* ---- Toasts ---- */
+  toastSaved: 'Scope saved',
+  toastCopied: 'Copied to clipboard',
+  toastCopiedFailed: 'Copy failed — copy it manually',
+  toastDefault: 'Default account updated',
+  toastRecheck: 'Account verification finished',
+  /* ---- Misc ---- */
+  loadingLabel: 'Loading…',
 }
 
 interface AccountView {
@@ -254,6 +338,55 @@ interface RepoStatusView {
   reason?: 'repo' | 'no-repo' | 'invalid'
 }
 
+/** 工作区改动文件（对应 node 半边 GET /repo/changes）。 */
+interface ChangeFileView {
+  path: string
+  index: string
+  worktree: string
+  added: number
+  deleted: number
+  staged: boolean
+}
+
+interface RepoChangesView {
+  isRepo: boolean
+  root: string
+  branch: string
+  dirty: boolean
+  files: ChangeFileView[]
+}
+
+/**
+ * 当前会话目录：composer 的 BranchChip 写入，设置页读取后提供「授权当前目录」快捷入口。
+ * 两组件在同一 bundle 内，用模块级变量 + sessionStorage 双写，避免跨 slot 传参依赖宿主行为。
+ */
+let lastKnownCwd = ''
+
+function rememberCwd(cwd: string): void {
+  lastKnownCwd = cwd
+  try {
+    if (cwd) window.sessionStorage.setItem('dgp:cwd', cwd)
+    else window.sessionStorage.removeItem('dgp:cwd')
+  } catch {
+    /* ignore */
+  }
+}
+
+function recallCwd(): string {
+  if (lastKnownCwd) return lastKnownCwd
+  try {
+    const value = window.sessionStorage.getItem('dgp:cwd')
+    return typeof value === 'string' ? value : ''
+  } catch {
+    return ''
+  }
+}
+
+/** 文案模板插值：把 {n} 之类占位符换成实际数值（宿主 locale 不做插值）。 */
+function fmt(template: string, params: Record<string, string | number>): string {
+  return template.replace(/\{(\w+)\}/g, (match, key) => (key in params ? String(params[key]) : match))
+}
+
 /** 路由基于当前页面 baseURI，避免硬编码端口（GUI 每次重启端口会变）。 */
 function routeUrl(path: string): string {
   const base = document.baseURI || location.href
@@ -301,6 +434,7 @@ const CSS = `
   --dgp-accent:var(--dsw-alias-state-business-primary,#4176e6);
   --dgp-danger:var(--dsw-alias-state-error-primary,#ec1313);
   --dgp-ok:var(--dsw-alias-state-success-primary,#22c55e);
+  --dgp-warn:#b45309;
   --dgp-r-xs:var(--dsw-radius-xs,4px);
   --dgp-r-sm:var(--dsw-radius-sm,8px);
   --dgp-ease:var(--ds-ease-in-out,cubic-bezier(.4,0,.2,1));
@@ -430,6 +564,7 @@ const CSS = `
 body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
   --dgp-lane-0:#7aaaff;--dgp-lane-1:#4ecf9a;--dgp-lane-2:#e9b949;--dgp-lane-3:#b18cff;
   --dgp-lane-4:#56c8f5;--dgp-lane-5:#f57e94;--dgp-lane-6:#f59a63;--dgp-lane-7:#94a3b8;
+  --dgp-warn:#e9b949;
 }
 .dgp-graph{display:flex;flex-direction:column;min-width:0}
 .dgp-graph-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:7px 9px 5px;color:var(--dgp-faint);font-size:11px;line-height:16px;letter-spacing:.02em;text-transform:uppercase}
@@ -458,6 +593,83 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 .dgp-graph-detail-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dgp-code)}
 .dgp-graph-copy{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:0;border-radius:var(--dgp-r-xs);background:transparent;color:var(--dgp-faint);cursor:pointer}
 .dgp-graph-copy:hover{background:var(--dgp-hover);color:var(--dgp-fg2)}
+
+/* ------------------------------------------------------------------ */
+/* 授权概览（统计条）                                                  */
+/* 设计取向：仪表盘而非报表——四个等宽格、细分隔线、数字用等宽字形，    */
+/* 语义色只落在状态点与副标题上，避免整块染色破坏宿主设置页的安静感。  */
+/* ------------------------------------------------------------------ */
+.dgp-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:1px;margin:14px 0 2px;border-radius:var(--dgp-r-sm);overflow:hidden;background:var(--dgp-line)}
+.dgp-stat{position:relative;display:flex;flex-direction:column;gap:2px;padding:11px 13px 12px;background:var(--dsw-alias-bg-layer-1,#fff);min-width:0}
+.dgp-stat-label{font-size:11px;line-height:15px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;color:var(--dgp-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dgp-stat-value{font-family:var(--dgp-code);font-size:22px;line-height:28px;font-weight:600;letter-spacing:-.01em;color:var(--dgp-fg);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dgp-stat-hint{font-size:11px;line-height:15px;color:var(--dgp-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/* 状态色只落在一条左侧色条 + 副标题上，主数字保持中性——避免四色混杂 */
+.dgp-stat::before{content:"";position:absolute;left:0;top:11px;bottom:12px;width:2px;border-radius:0 2px 2px 0;background:var(--dgp-faint);opacity:.55}
+.dgp-stat[data-tone="ok"]::before{background:var(--dgp-ok);opacity:.9}
+.dgp-stat[data-tone="warn"]::before{background:var(--dgp-warn,#b45309);opacity:.9}
+.dgp-stat[data-tone="danger"]::before{background:var(--dgp-danger);opacity:.9}
+.dgp-stat[data-tone="ok"] .dgp-stat-hint{color:var(--dgp-ok)}
+.dgp-stat[data-tone="warn"] .dgp-stat-hint{color:var(--dgp-warn,#b45309)}
+.dgp-stat[data-tone="danger"] .dgp-stat-hint{color:var(--dgp-danger)}
+
+/* ------------------------------------------------------------------ */
+/* 提示条：行内公告（重新授权提示等），弱于卡片但高于纯文本              */
+/* ------------------------------------------------------------------ */
+.dgp-callout{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px;padding:8px 10px 8px 12px;border:.5px solid var(--dgp-line2);border-left:2px solid var(--dgp-accent);border-radius:var(--dgp-r-xs);background:var(--dgp-inset);color:var(--dgp-fg2);font-size:12px;line-height:18px}
+.dgp-callout-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
+
+/* ------------------------------------------------------------------ */
+/* 空状态：几何插画 + 标题 + 说明                                        */
+/* ------------------------------------------------------------------ */
+.dgp-empty{display:flex;flex-direction:column;align-items:center;gap:7px;padding:26px 16px 24px;text-align:center;color:var(--dgp-muted)}
+.dgp-empty-art{color:var(--dgp-faint);opacity:.85}
+.dgp-empty-title{font-size:13px;line-height:19px;font-weight:500;color:var(--dgp-fg2)}
+.dgp-empty-hint{font-size:12px;line-height:18px;color:var(--dgp-muted);max-width:44ch}
+
+/* ------------------------------------------------------------------ */
+/* 骨架屏：加载时占位，避免纯文本 loading 的跳动                        */
+/* ------------------------------------------------------------------ */
+.dgp-skel{display:flex;flex-direction:column;gap:7px;padding:9px 0}
+.dgp-skel-line{height:11px;border-radius:var(--dgp-r-xs);background:linear-gradient(90deg,var(--dgp-inset) 0%,var(--dgp-hover) 42%,var(--dgp-inset) 84%);background-size:220% 100%;animation:dgp-shimmer 1.25s linear infinite}
+@keyframes dgp-shimmer{0%{background-position:120% 0}100%{background-position:-120% 0}}
+@media (prefers-reduced-motion:reduce){.dgp-skel-line{animation:none;background:var(--dgp-inset)}}
+
+/* ------------------------------------------------------------------ */
+/* 工作区改动（chip 菜单内）                                            */
+/* ------------------------------------------------------------------ */
+.dgp-changes{display:flex;flex-direction:column;min-width:0}
+.dgp-changes-head{display:flex;align-items:baseline;justify-content:space-between;gap:8px;padding:5px 9px 6px;color:var(--dgp-faint);font-size:11px;line-height:16px;letter-spacing:.02em;text-transform:uppercase}
+.dgp-changes-count{text-transform:none;letter-spacing:0;font-variant-numeric:tabular-nums;color:var(--dgp-faint)}
+.dgp-change{display:flex;align-items:center;gap:7px;padding:4px 9px;min-width:0;border-radius:var(--dgp-r-xs);transition:background var(--dgp-fast) var(--dgp-ease)}
+.dgp-change:hover{background:var(--dgp-hover)}
+.dgp-change-code{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;min-width:19px;height:16px;padding:0 4px;border-radius:3px;background:var(--dgp-inset);color:var(--dgp-muted);font-family:var(--dgp-code);font-size:10px;line-height:16px;font-weight:600}
+/* 状态码语义色：M 中性、A 新增绿、D 删除红、R/C 重命名紫、?? 未跟踪琥珀 */
+.dgp-change-code[data-code="A"]{color:var(--dgp-ok);background:color-mix(in srgb,var(--dgp-ok) 12%,transparent)}
+.dgp-change-code[data-code="D"]{color:var(--dgp-danger);background:color-mix(in srgb,var(--dgp-danger) 11%,transparent)}
+.dgp-change-code[data-code="R"],.dgp-change-code[data-code="C"]{color:var(--dgp-lane-3);background:color-mix(in srgb,var(--dgp-lane-3) 12%,transparent)}
+.dgp-change-code[data-code="??"]{color:var(--dgp-warn,#b45309);background:color-mix(in srgb,var(--dgp-warn,#b45309) 12%,transparent)}
+.dgp-change-path{flex:1 1 auto;min-width:0;color:var(--dgp-fg2);font-family:var(--dgp-code);font-size:11px;line-height:16px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:rtl;text-align:left}
+.dgp-change[data-staged="1"] .dgp-change-path{color:var(--dgp-fg)}
+.dgp-change-stat{flex:0 0 auto;font-family:var(--dgp-code);font-size:10.5px;line-height:15px;font-variant-numeric:tabular-nums}
+.dgp-change-stat[data-sign="add"]{color:var(--dgp-ok)}
+.dgp-change-stat[data-sign="del"]{color:var(--dgp-danger)}
+.dgp-change-stat[data-sign="staged"]{color:var(--dgp-accent)}
+.dgp-changes-note{padding:6px 9px 8px;color:var(--dgp-faint);font-size:11px;line-height:16px}
+.dgp-changes-note[data-tone="error"]{color:var(--dgp-danger)}
+
+/* ------------------------------------------------------------------ */
+/* 轻提示 toast（右下角浮层，脱离 composer 的包含块）                   */
+/* ------------------------------------------------------------------ */
+.dgp-toast-wrap{position:fixed;right:18px;bottom:18px;z-index:1300;pointer-events:none}
+.dgp-toast{display:flex;align-items:center;gap:8px;max-width:340px;padding:9px 13px;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-sm);background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:var(--dsw-elevation-prominent,0 8px 28px #00000026);color:var(--dgp-fg);font-size:12px;line-height:18px;animation:dgp-toast-in .18s var(--dgp-ease) both}
+.dgp-toast-dot{flex:0 0 auto;width:6px;height:6px;border-radius:50%;background:var(--dgp-faint)}
+.dgp-toast[data-tone="ok"] .dgp-toast-dot{background:var(--dgp-ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--dgp-ok) 16%,transparent)}
+.dgp-toast[data-tone="error"] .dgp-toast-dot{background:var(--dgp-danger);box-shadow:0 0 0 3px color-mix(in srgb,var(--dgp-danger) 16%,transparent)}
+.dgp-toast[data-tone="info"] .dgp-toast-dot{background:var(--dgp-accent);box-shadow:0 0 0 3px color-mix(in srgb,var(--dgp-accent) 16%,transparent)}
+.dgp-toast-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
+@keyframes dgp-toast-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.dgp-toast{animation:none}}
 `
 
 function useStyles(): void {
@@ -488,6 +700,158 @@ function BranchIcon() {
       <path d="M4.8 5.1v5.8" />
       <path d="M11.2 7.7v.5a2.5 2.5 0 0 1-2.5 2.5H6.3" />
     </svg>
+  )
+}
+
+/**
+ * 空状态：几何插画 + 标题 + 说明。
+ * 不用大面积灰底，用留白与线稿表达「还没有内容」，避免设置页出现一块死色。
+ */
+function EmptyState({ title, hint }: { title: string; hint: string }) {
+  return (
+    <div className="dgp-empty">
+      <svg className="dgp-empty-art" width="88" height="60" viewBox="0 0 88 60" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="6" y="8" width="34" height="44" rx="6" />
+        <path d="M15 22h16M15 30h16M15 38h10" />
+        <path d="M52 30h14M59 23v14" />
+        <circle cx="66" cy="30" r="13" strokeDasharray="3 4" />
+      </svg>
+      <div className="dgp-empty-title">{title}</div>
+      <div className="dgp-empty-hint">{hint}</div>
+    </div>
+  )
+}
+
+/** 骨架屏：加载时占位，避免纯文本 loading 造成的布局跳动。 */
+function Skeleton({ rows = 3 }: { rows?: number }) {
+  const widths = ['62%', '44%', '78%', '55%', '70%']
+  return (
+    <div className="dgp-skel" aria-hidden="true">
+      {Array.from({ length: rows }, (_, index) => (
+        <div className="dgp-skel-line" key={index} style={{ width: widths[index % widths.length] }} />
+      ))}
+    </div>
+  )
+}
+
+/** 轻提示 toast：右下角浮层，2.6s 后自动消失；成功/失败用色点区分。 */
+function Toast({ tone, text, onDone }: { tone: 'ok' | 'error' | 'info'; text: string; onDone: () => void }) {
+  useEffect(() => {
+    const timer = window.setTimeout(onDone, 2600)
+    return () => window.clearTimeout(timer)
+  }, [onDone])
+  return createPortal(
+    // dgp-portal 必须带上：浮层挂在 document.body 上，脱离 .dgp-root 后
+    // --dgp-* 变量只在 .dgp-root/.dgp-portal 上定义，缺了会整套样式失效。
+    <div className="dgp-portal dgp-toast-wrap">
+      <div className="dgp-toast" data-tone={tone} role="status" aria-live="polite">
+        <span className="dgp-toast-dot" aria-hidden="true" />
+        <span className="dgp-toast-text">{text}</span>
+      </div>
+    </div>,
+    document.body,
+  )
+}
+
+/**
+ * 工作区改动明细：把「哪些文件还没提交」压缩成一列状态字母 + 路径 + 增删行数。
+ * 状态字母沿用 git porcelain 的两列语义（A 新增 / M 修改 / D 删除 / R 重命名 / C 复制 / U 冲突 / ? 未跟踪），
+ * 未跟踪二进制没有真实行数，此时显示「—」而不是编造一个数字。
+ */
+function ChangesList({
+  t,
+  changes,
+  loading,
+  error,
+}: {
+  t: (key: string) => string
+  changes: RepoChangesView | null
+  loading: boolean
+  error: string
+}) {
+  if (loading) {
+    return (
+      <div className="dgp-changes">
+        <div className="dgp-changes-head">
+          <span>{t('changesTitle')}</span>
+        </div>
+        <Skeleton rows={3} />
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="dgp-changes">
+        <div className="dgp-changes-head">
+          <span>{t('changesTitle')}</span>
+        </div>
+        <div className="dgp-changes-note" data-tone="error">
+          {t('changesFailed')}：{error}
+        </div>
+      </div>
+    )
+  }
+
+  // 未授权目录时 node 只回空壳（root/branch 为空），这里明确告诉用户「在范围外」而不是假装干净。
+  if (!changes || !changes.root) {
+    return (
+      <div className="dgp-changes">
+        <div className="dgp-changes-head">
+          <span>{t('changesTitle')}</span>
+        </div>
+        <div className="dgp-changes-note">{t('changesUnauthorized')}</div>
+      </div>
+    )
+  }
+
+  const files = changes.files ?? []
+  if (files.length === 0) {
+    return (
+      <div className="dgp-changes">
+        <div className="dgp-changes-head">
+          <span>{t('changesTitle')}</span>
+          <span className="dgp-changes-count">{fmt(t('changesCount'), { n: 0 })}</span>
+        </div>
+        <div className="dgp-changes-note">{t('changesEmpty')}</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="dgp-changes">
+      <div className="dgp-changes-head">
+        <span>{t('changesTitle')}</span>
+        <span className="dgp-changes-count">{fmt(t('changesCount'), { n: files.length })}</span>
+      </div>
+      {files.map((file) => {
+        const staged = file.index && file.index !== ' ' && file.index !== '??'
+        const worktree = file.worktree && file.worktree !== ' ' ? file.worktree : '??'
+        const code = worktree === '??' ? '??' : worktree
+        // node 侧对未跟踪二进制只能给出字节流估算，超过上限即视为不可计数。
+        const addedText = file.added > 2000 ? '—' : file.added > 0 ? `+${file.added}` : ''
+        const deletedText = file.deleted > 0 ? `-${file.deleted}` : ''
+        return (
+          <div className="dgp-change" key={file.path} title={file.path}>
+            <span className="dgp-change-code" data-code={code}>
+              {code}
+            </span>
+            <span className="dgp-change-path">{file.path}</span>
+            {staged ? <span className="dgp-change-stat" data-sign="staged">{t('changesStaged')}</span> : null}
+            {addedText ? (
+              <span className="dgp-change-stat" data-sign="add">
+                {addedText}
+              </span>
+            ) : null}
+            {deletedText ? (
+              <span className="dgp-change-stat" data-sign="del">
+                {deletedText}
+              </span>
+            ) : null}
+          </div>
+        )
+      })}
+    </div>
   )
 }
 
@@ -761,8 +1125,31 @@ function GitSection({ t }: SectionProps) {
   const [allowWrite, setAllowWrite] = useState(false)
   const [requireConfirm, setRequireConfirm] = useState(true)
   const [savedTick, setSavedTick] = useState(0)
+  const [toast, setToast] = useState<{ tone: 'ok' | 'error' | 'info'; text: string } | null>(null)
+  /** 正在重新授权的账号（provider+login）；非空时连接表单上方显示提示。 */
+  const [reauthTarget, setReauthTarget] = useState<{ provider: string; login: string } | null>(null)
+  /** 当前会话目录（由 composer 的 BranchChip 写入），用于「一键授权当前仓库」。 */
+  const [currentCwd, setCurrentCwd] = useState('')
+
+  useEffect(() => {
+    if (tab !== 'scope') return
+    setCurrentCwd(recallCwd())
+  }, [tab, state])
 
   const timerRef = useRef<number | null>(null)
+  const toastTimerRef = useRef<number | null>(null)
+
+  const showToast = useCallback((tone: 'ok' | 'error' | 'info', text: string) => {
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
+    setToast({ tone, text })
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 2600)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
+    }
+  }, [])
 
   const applyState = useCallback((next: PanelState) => {
     setState(next)
@@ -872,8 +1259,10 @@ function GitSection({ t }: SectionProps) {
       setToken('')
       setFlowMsg('')
       if (data.state) applyState(data.state)
+      showToast('ok', t('toastSaved'))
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+      showToast('error', err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
     }
@@ -885,9 +1274,15 @@ function GitSection({ t }: SectionProps) {
     try {
       const data = await api<any>('/accounts/remove', { id })
       if (data.state) applyState(data.state)
-      if (!data.ok && data.error) setError(data.error)
+      if (!data.ok && data.error) {
+        setError(data.error)
+        showToast('error', data.error)
+      } else {
+        showToast('ok', t('toastSaved'))
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+      showToast('error', err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
     }
@@ -898,10 +1293,36 @@ function GitSection({ t }: SectionProps) {
     try {
       const data = await api<any>('/accounts/recheck', { id })
       if (data.state) applyState(data.state)
-      if (!data.ok && data.error) setError(data.error)
-      else setError('')
+      if (!data.ok && data.error) {
+        setError(data.error)
+        showToast('error', data.error)
+      } else {
+        setError('')
+        showToast('ok', t('toastRecheck'))
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+      showToast('error', err instanceof Error ? err.message : String(err))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** 设为默认账号：Agent 侧多账号时优先使用它。 */
+  const setDefaultAccount = async (id: string) => {
+    setBusy(true)
+    try {
+      const data = await api<any>('/settings', { defaultAccountId: id })
+      if (data.state) applyState(data.state)
+      if (data.ok) {
+        showToast('ok', t('toastDefault'))
+      } else {
+        setError(data.error ?? '')
+        showToast('error', data.error ?? t('errLoad'))
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+      showToast('error', err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
     }
@@ -917,10 +1338,16 @@ function GitSection({ t }: SectionProps) {
         requireConfirm,
       })
       if (data.state) applyState(data.state)
-      if (data.ok) setSavedTick((value) => value + 1)
-      else setError(data.error ?? '保存失败')
+      if (data.ok) {
+        setSavedTick((value) => value + 1)
+        showToast('ok', t('toastSaved'))
+      } else {
+        setError(data.error ?? '')
+        showToast('error', data.error ?? t('errLoad'))
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
+      showToast('error', err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
     }
@@ -929,6 +1356,16 @@ function GitSection({ t }: SectionProps) {
   const currentProvider = useMemo(() => providers.find((item) => item.id === provider), [providers, provider])
   const accounts = state?.accounts ?? []
   const primaryState = accounts.find((item) => item.status === 'connected')?.status ?? accounts[0]?.status
+
+  // 统计条：把「授权到什么程度」压缩成一眼可读的四格，避免用户逐行读表单。
+  const settings = state?.settings
+  const connectedCount = accounts.filter((item) => item.status === 'connected').length
+  const unhealthyCount = accounts.filter((item) => item.status !== 'connected').length
+  const roots = settings?.allowedRoots ?? []
+  const repos = settings?.allowedRepos ?? []
+  const allowAllRoots = roots.includes('*')
+  const allowAllRepos = repos.includes('*')
+  const defaultAccountId = settings?.defaultAccountId ?? ''
 
   const statusText = (value: string) =>
     value === 'connected' ? t('connected') : value === 'expired' ? t('expired') : t('errored')
@@ -957,6 +1394,40 @@ function GitSection({ t }: SectionProps) {
       </div>
 
       {error ? <div className="dgp-err">{error}</div> : null}
+
+      {/* 授权概览：四个数字把「授权到什么程度」一次说清，避免用户逐行读表单。 */}
+      <div className="dgp-stats" role="group" aria-label={t('statsTitle')}>
+        <div className="dgp-stat" data-tone={unhealthyCount > 0 ? 'warn' : connectedCount > 0 ? 'ok' : 'neutral'}>
+          <span className="dgp-stat-label">{t('statsAccounts')}</span>
+          <span className="dgp-stat-value">{accounts.length}</span>
+          <span className="dgp-stat-hint">
+            {accounts.length === 0
+              ? t('statsAccountsHintNone')
+              : unhealthyCount > 0
+                ? fmt(t('statsAccountsHintMixed'), { n: connectedCount, m: unhealthyCount })
+                : fmt(t('statsAccountsHint'), { n: connectedCount })}
+          </span>
+        </div>
+        <div className="dgp-stat" data-tone={allowAllRoots ? 'warn' : roots.length > 0 ? 'ok' : 'neutral'}>
+          <span className="dgp-stat-label">{t('statsRoots')}</span>
+          <span className="dgp-stat-value">{allowAllRoots ? '∞' : roots.length}</span>
+          <span className="dgp-stat-hint">
+            {allowAllRoots ? t('statsRootsHintAll') : roots.length > 0 ? fmt(t('statsRootsHint'), { n: roots.length }) : t('statsRootsHintNone')}
+          </span>
+        </div>
+        <div className="dgp-stat" data-tone={allowAllRepos ? 'warn' : repos.length > 0 ? 'ok' : 'neutral'}>
+          <span className="dgp-stat-label">{t('statsRepos')}</span>
+          <span className="dgp-stat-value">{allowAllRepos ? '∞' : repos.length}</span>
+          <span className="dgp-stat-hint">
+            {allowAllRepos ? t('statsReposHintAll') : repos.length > 0 ? fmt(t('statsReposHint'), { n: repos.length }) : t('statsReposHintNone')}
+          </span>
+        </div>
+        <div className="dgp-stat" data-tone={settings?.allowWrite ? 'warn' : 'ok'}>
+          <span className="dgp-stat-label">{t('statsWrite')}</span>
+          <span className="dgp-stat-value">{settings?.allowWrite ? t('statsWriteOn') : t('statsWriteOff')}</span>
+          <span className="dgp-stat-hint">{settings?.allowWrite ? t('statsWriteHintOn') : t('statsWriteHintOff')}</span>
+        </div>
+      </div>
 
       {tab === 'accounts' ? (
         <>
@@ -995,6 +1466,35 @@ function GitSection({ t }: SectionProps) {
                     {account.lastError ? <div className="dgp-err">{account.lastError}</div> : null}
                   </div>
                   <div className="dgp-line-side">
+                    {defaultAccountId === account.id ? (
+                      <span className="dgp-badge" data-tone="mono">
+                        {t('isDefault')}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        className="dgp-btn ghost"
+                        disabled={busy}
+                        onClick={() => void setDefaultAccount(account.id)}
+                      >
+                        {t('setDefault')}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="dgp-btn ghost"
+                      disabled={busy}
+                      title={t('reauthHint')}
+                      onClick={() => {
+                        setProvider(account.provider)
+                        setMethod(account.kind === 'oauth' ? 'oauth' : 'pat')
+                        setReauthTarget({ provider: account.provider, login: account.login || '' })
+                        setToken('')
+                        setTab('accounts')
+                      }}
+                    >
+                      {t('reauth')}
+                    </button>
                     <button type="button" className="dgp-btn ghost" disabled={busy} onClick={() => void recheck(account.id)}>
                       {t('recheck')}
                     </button>
@@ -1009,6 +1509,18 @@ function GitSection({ t }: SectionProps) {
 
           <div className="dgp-group">
             <div className="dgp-group-title">{t('groupConnect')}</div>
+
+            {reauthTarget ? (
+              <div className="dgp-callout">
+                <span className="dgp-callout-text">
+                  {t('reauthHint')} · {reauthTarget.provider}
+                  {reauthTarget.login ? ` / ${reauthTarget.login}` : ''}
+                </span>
+                <button type="button" className="dgp-btn ghost" onClick={() => setReauthTarget(null)}>
+                  {t('cancel')}
+                </button>
+              </div>
+            ) : null}
 
             <div className="dgp-field">
               <label className="dgp-label">{t('provider')}</label>
@@ -1153,6 +1665,26 @@ function GitSection({ t }: SectionProps) {
               <label className="dgp-label">{t('scopeRoots')}</label>
               <textarea className="dgp-area" value={rootsText} onChange={(event) => setRootsText(event.target.value)} placeholder={'D:\\work\\my-repo'} />
               <div className="dgp-hint">{t('scopeRootsHint')}</div>
+              {currentCwd ? (
+                <div className="dgp-line" style={{ borderBottom: 'none', justifyContent: 'flex-start', gap: 10, marginTop: 8 }}>
+                  <button
+                    type="button"
+                    className="dgp-btn"
+                    disabled={busy || roots.some((root) => root === '*' || currentCwd.toLowerCase() === root.toLowerCase() || currentCwd.toLowerCase().startsWith(root.toLowerCase().replace(/[\\/]+$/, '') + '\\'))}
+                    onClick={() => {
+                      const next = roots.includes(currentCwd) ? roots : [...roots, currentCwd]
+                      setRootsText(next.join('\n'))
+                      showToast('ok', t('scopeCurrentAdded'))
+                    }}
+                  >
+                    {t('scopeCurrent')}
+                  </button>
+                  <span className="dgp-hint" style={{ marginTop: 0 }}>
+                    {t('scopeCurrentHint')}
+                  </span>
+                  <code className="dgp-code">{currentCwd}</code>
+                </div>
+              ) : null}
             </div>
           </div>
 
@@ -1202,6 +1734,8 @@ function GitSection({ t }: SectionProps) {
           </div>
         </div>
       ) : null}
+
+      {toast ? <Toast tone={toast.tone} text={toast.text} onDone={() => setToast(null)} /> : null}
     </div>
   )
 }
@@ -1489,11 +2023,6 @@ interface MenuAnchor {
   bottom?: number
 }
 
-interface Note {
-  tone: 'error' | 'ok' | 'plain'
-  text: string
-}
-
 function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
   useStyles()
   const [status, setStatus] = useState<RepoStatusView | null>(null)
@@ -1504,7 +2033,11 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
   const [checking, setChecking] = useState(false)
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [note, setNote] = useState<Note | null>(null)
+  const [toast, setToast] = useState<{ tone: 'ok' | 'error' | 'info'; text: string } | null>(null)
+  const [changes, setChanges] = useState<RepoChangesView | null>(null)
+  const [changesLoading, setChangesLoading] = useState(false)
+  const [changesError, setChangesError] = useState('')
+  const toastTimerRef = useRef<number | null>(null)
   const [anchor, setAnchor] = useState<MenuAnchor>({ left: 0, bottom: 0 })
   const wrapRef = useRef<HTMLSpanElement | null>(null)
   const menuRef = useRef<HTMLSpanElement | null>(null)
@@ -1588,13 +2121,58 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
     }
   }, [cwd, t])
 
+  /** 工作区改动：只读明细，用于在 chip 菜单里一眼看到「哪些文件还没提交」。 */
+  const loadChanges = useCallback(async (): Promise<void> => {
+    if (!cwd) {
+      setChanges(null)
+      setChangesError('')
+      return
+    }
+    setChangesLoading(true)
+    try {
+      const data = await api<{ ok: boolean; changes?: RepoChangesView; error?: string }>(
+        `/repo/changes?cwd=${encodeURIComponent(cwd)}`,
+      )
+      if (data.ok && data.changes) {
+        setChanges(data.changes)
+        setChangesError('')
+      } else {
+        setChanges(null)
+        setChangesError(data.error || t('changesFailed'))
+      }
+    } catch (error) {
+      setChanges(null)
+      setChangesError((error as Error).message || t('changesFailed'))
+    } finally {
+      setChangesLoading(false)
+    }
+  }, [cwd, t])
+
+  /** 轻提示：操作结果用 toast 反馈，不再往菜单里塞文字行。 */
+  const showToast = useCallback((tone: 'ok' | 'error' | 'info', text: string) => {
+    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
+    setToast({ tone, text })
+    toastTimerRef.current = window.setTimeout(() => setToast(null), 2600)
+  }, [])
+
   useEffect(() => {
-    // 切换项目/会话时立刻丢弃上一个项目的检测结果，避免沿用旧状态。
+    return () => {
+      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
+    }
+  }, [])
+
+  // 把当前目录记给设置页（跨 slot 通道），供「授权当前会话仓库」快捷按钮使用。
+  useEffect(() => {
+    rememberCwd(cwd)
+  }, [cwd])
+
+  useEffect(() => {
     setStatus(null)
     setDetectError('')
     setGraph(null)
     setGraphError('')
-    setNote(null)
+    setChanges(null)
+    setChangesError('')
     if (!cwd) return
     let alive = true
     const load = () => {
@@ -1618,6 +2196,17 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
     if (!status || !status.isRepo) return
     void loadGraph()
   }, [cwd, status?.isRepo, loadGraph])
+
+  // 改动明细只在确认是仓库后拉取；与提交图解耦，互不拖累。
+  useEffect(() => {
+    if (!cwd) {
+      setChanges(null)
+      setChangesError('')
+      return
+    }
+    if (!status || !status.isRepo) return
+    void loadChanges()
+  }, [cwd, status?.isRepo, loadChanges])
 
   // 点空白 / Esc 关闭菜单
   useEffect(() => {
@@ -1708,18 +2297,20 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
     if (next) {
       // portal + fixed 定位：脱离 composer 容器（含 container-type 形成的包含块），避免被裁。
       placeMenu()
-      setNote(null)
       // 每次打开菜单都重新检测，避免用上一次的结果（尤其切换项目后）。
       void reload()
-      // 已确认是仓库时同时刷新提交图（切项目后图也要跟着换）。
-      if (status?.isRepo) void loadGraph()
+      // 已确认是仓库时同时刷新提交图与改动明细（切项目后也要跟着换）。
+      if (status?.isRepo) {
+        void loadGraph()
+        void loadChanges()
+      }
     }
     setOpen(next)
   }
 
   const runInit = async () => {
     setBusy(true)
-    setNote({ tone: 'plain', text: t('initRunning') })
+    showToast('info', t('initRunning'))
     try {
       const data = await api<{ ok: boolean; error?: string; result?: { created?: boolean; branch?: string } }>('/repo/init', {
         cwd,
@@ -1728,18 +2319,15 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
       if (data.ok) {
         const branch = data.result?.branch ? ' · ' + data.result.branch : ''
         // created=false 说明这里本来就有仓库（并发/已被别处初始化），不能说成「刚初始化」。
-        setNote({
-          tone: 'ok',
-          text: data.result?.created === false ? `${t('alreadyRepo')}${branch}` : `${t('initDone')}${branch}`,
-        })
+        showToast('ok', data.result?.created === false ? `${t('alreadyRepo')}${branch}` : `${t('initDone')}${branch}`)
         await reload()
       } else {
-        setNote({ tone: 'error', text: data.error || t('initFailed') })
+        showToast('error', data.error || t('initFailed'))
         // 失败后重查一次，避免界面停留在过期状态（例如目录已被别人初始化）。
         await reload()
       }
     } catch (error) {
-      setNote({ tone: 'error', text: `${t('initFailed')}：${(error as Error).message}` })
+      showToast('error', `${t('initFailed')}：${(error as Error).message}`)
     } finally {
       setBusy(false)
     }
@@ -1748,9 +2336,9 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
   const copyPath = async () => {
     try {
       await navigator.clipboard.writeText(cwd)
-      setNote({ tone: 'ok', text: t('copied') })
+      showToast('ok', t('toastCopied'))
     } catch {
-      setNote({ tone: 'error', text: cwd })
+      showToast('error', t('toastCopiedFailed'))
     }
   }
 
@@ -1785,6 +2373,9 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
         {warn ? <Dot state="error" /> : null}
       </button>
 
+      {/* toast 放在菜单 portal 之外：菜单关闭后提示仍要留下。 */}
+      {toast ? <Toast tone={toast.tone} text={toast.text} onDone={() => setToast(null)} /> : null}
+
       {open
         ? createPortal(
             <span
@@ -1808,6 +2399,14 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
             <>
               <span className="dgp-menu-sep" />
               <GraphView t={t} graph={graph} loading={graphLoading} error={graphError} />
+            </>
+          ) : null}
+
+          {/* 工作区改动明细：让用户不进终端也知道「现在到底改了什么」。 */}
+          {isRepo ? (
+            <>
+              <span className="dgp-menu-sep" />
+              <ChangesList t={t} changes={changes} loading={changesLoading} error={changesError} />
             </>
           ) : null}
 
@@ -1894,15 +2493,6 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
               <span className="dgp-menu-item-title">{t('menuSettings')}</span>
             </span>
           </button>
-
-          {note ? (
-            <>
-              <span className="dgp-menu-sep" />
-              <span className="dgp-menu-note" data-tone={note.tone}>
-                {note.text}
-              </span>
-            </>
-          ) : null}
             </span>,
             document.body,
           )

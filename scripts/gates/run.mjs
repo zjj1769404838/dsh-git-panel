@@ -129,6 +129,25 @@ if (clientOut) {
   check('client 打开设置走宿主账号菜单（账号菜单）', clientOut.includes('账号菜单'))
   check('client 账号菜单里找「设置」菜单项', clientOut.includes('role="menu"') && clientOut.includes('menuitem'))
   check('client 快捷键兜底同时试 Ctrl+, 与 Ctrl+Alt+,', clientOut.includes('altKey'))
+  // ---- 2026-10-29 UI 增强：统计条 / toast / 骨架屏 / 空状态 / 改动明细 / 默认账号 / 重新授权 / 当前目录授权 ----
+  check('client 渲染统计条（dgp-stats）', clientOut.includes('dgp-stats'))
+  check('client 统计条带语义色档（data-tone=ok|warn|danger）', clientOut.includes('dgp-stat') && clientOut.includes('data-tone'))
+  check('client 统计条用等宽数字（tabular-nums）', clientOut.includes('tabular-nums'))
+  check('client 提供 toast 组件（dgp-toast）', clientOut.includes('dgp-toast'))
+  check('client toast 用 aria-live 播报', clientOut.includes('aria-live'))
+  check('client toast 用 portal 挂在 body', clientOut.includes('createPortal') && clientOut.includes('dgp-toast-wrap'))
+  check('client 提供骨架屏（dgp-skel）', clientOut.includes('dgp-skel'))
+  check('client 骨架屏尊重 reduced-motion', clientOut.includes('prefers-reduced-motion'))
+  check('client 提供图形化空状态（dgp-empty）', clientOut.includes('dgp-empty'))
+  check('client 渲染工作区改动明细（dgp-changes）', clientOut.includes('dgp-changes'))
+  check('client 拉取改动明细接口（/repo/changes）', clientOut.includes('/repo/changes'))
+  check('client 改动明细区分增删（data-sign=add|del）', clientOut.includes('data-sign'))
+  check('client 支持设定默认账号（defaultAccountId）', clientOut.includes('defaultAccountId'))
+  check('client 支持重新授权（reauthTarget）', clientOut.includes('reauthTarget'))
+  check('client 重新授权有提示条（dgp-callout）', clientOut.includes('dgp-callout'))
+  check('client 支持授权当前会话目录（dgp:cwd 通道）', clientOut.includes('dgp:cwd') && clientOut.includes('sessionStorage'))
+  check('client 旧 note 动态反馈机制已移除（改用 toast）', !clientOut.includes('setNote'))
+  check('client 菜单静态提示行仍保留（dgp-menu-note）', clientOut.includes('dgp-menu-note'))
 }
 
 if (failures.length > 0) {

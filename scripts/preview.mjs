@@ -258,10 +258,173 @@ const graphSample = `
   </div>
 </div>`
 
-// ---- 4. 拼页面 ------------------------------------------------------------
+// ---- 4. 新增样张的兜底 CSS -------------------------------------------------
+// 本次 UI 增强的新 class（dgp-stats / dgp-changes / dgp-toast / dgp-empty / dgp-skel）
+// 由 Lead 在 src/client/index.tsx 里实现，产物 lib/client.js 里的 CSS 可能还没同步。
+// 这里先写一份中性兜底样式，且**放在产物 CSS 之前**：产物里一旦出现同规则，以后者为准。
+// 兜底只用宿主 token 与中性色，不臆造品牌色，避免和最终实现打架。
+const FALLBACK_CSS = `
+.dgp-stats{display:flex;flex-wrap:wrap;gap:10px}
+.dgp-stat{flex:1 1 150px;min-width:0;padding:10px 12px;border-radius:var(--dsw-radius-sm);
+  background:var(--dsw-alias-bg-layer-1);border:.5px solid var(--dsw-alias-border-l2)}
+.dgp-stat-label{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary)}
+.dgp-stat-value{font-size:20px;font-weight:600;line-height:26px;color:var(--dsw-alias-label-primary)}
+.dgp-stat-hint{font-size:11px;line-height:16px;color:var(--dsw-alias-label-caption);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dgp-stat[data-tone="ok"] .dgp-stat-value{color:var(--dsw-alias-state-success-primary)}
+.dgp-stat[data-tone="warn"] .dgp-stat-value{color:#d29922}
+.dgp-stat[data-tone="danger"] .dgp-stat-value{color:var(--dsw-alias-state-error-primary)}
+
+.dgp-changes{display:flex;flex-direction:column}
+.dgp-changes-head{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  padding:6px 2px;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary);
+  border-bottom:.5px solid var(--dsw-alias-border-l2)}
+.dgp-changes-count{flex:0 0 auto;color:var(--dsw-alias-label-caption)}
+.dgp-change{display:flex;align-items:center;gap:8px;padding:5px 2px;
+  font-size:12px;line-height:18px;border-bottom:.5px solid var(--dsw-alias-border-l2)}
+.dgp-change:last-child{border-bottom:none}
+.dgp-change-code{flex:0 0 auto;width:20px;text-align:center;
+  font-family:var(--ds-font-family-code);font-size:11px;color:var(--dsw-alias-label-secondary)}
+.dgp-change-code[data-code="M"]{color:var(--dsw-alias-state-business-primary)}
+.dgp-change-code[data-code="A"]{color:var(--dsw-alias-state-success-primary)}
+.dgp-change-code[data-code="D"]{color:var(--dsw-alias-state-error-primary)}
+.dgp-change-code[data-code="??"]{color:var(--dsw-alias-label-caption)}
+.dgp-change-path{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:var(--ds-font-family-code);font-size:11.5px;color:var(--dsw-alias-label-primary)}
+.dgp-change-stat{flex:0 0 auto;font-family:var(--ds-font-family-code);font-size:11px}
+.dgp-change-stat[data-sign="add"]{color:var(--dsw-alias-state-success-primary)}
+.dgp-change-stat[data-sign="del"]{color:var(--dsw-alias-state-error-primary)}
+.dgp-change[data-staged="1"]{background:var(--dsw-alias-interactive-bg-hover)}
+
+.dgp-toast-wrap{display:flex;justify-content:flex-end}
+.dgp-toast{display:flex;align-items:center;gap:8px;margin:4px 0;padding:8px 12px;max-width:100%;
+  border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);
+  border:.5px solid var(--dsw-alias-border-l3);box-shadow:var(--dsw-shadow-lv1);
+  font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary)}
+.dgp-toast-dot{flex:0 0 auto;width:6px;height:6px;border-radius:50%;
+  background:var(--dsw-alias-label-tertiary)}
+.dgp-toast[data-tone="ok"] .dgp-toast-dot{background:var(--dsw-alias-state-success-primary)}
+.dgp-toast[data-tone="error"] .dgp-toast-dot{background:var(--dsw-alias-state-error-primary)}
+.dgp-toast[data-tone="info"] .dgp-toast-dot{background:var(--dsw-alias-state-business-primary)}
+.dgp-toast-text{min-width:0}
+
+.dgp-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;
+  padding:28px 20px;text-align:center;color:var(--dsw-alias-label-tertiary)}
+.dgp-empty-art{color:var(--dsw-alias-label-caption)}
+.dgp-empty-title{font-size:13px;font-weight:600;line-height:20px;color:var(--dsw-alias-label-secondary)}
+.dgp-empty-hint{font-size:12px;line-height:19px;color:var(--dsw-alias-label-caption);max-width:420px}
+
+.dgp-skel{display:flex;flex-direction:column;gap:8px;padding:6px 2px}
+.dgp-skel-line{height:10px;border-radius:5px;background:var(--dsw-alias-interactive-bg-hover)}
+`
+
+// ---- 5. 本次 UI 增强新增的样张 ---------------------------------------------
+// 类名契约与 Lead 的实现一一对应；这里只负责把静态结构摆出来供肉眼验收。
+
+// 设置页顶部「授权概览」统计条
+const statsSample = `
+<div class="dgp-stats">
+  <div class="dgp-stat">
+    <div class="dgp-stat-label">已连接账号</div>
+    <div class="dgp-stat-value">2</div>
+    <div class="dgp-stat-hint">1 个已失效</div>
+  </div>
+  <div class="dgp-stat" data-tone="warn">
+    <div class="dgp-stat-label">授权目录</div>
+    <div class="dgp-stat-value">3</div>
+    <div class="dgp-stat-hint">D:\\work</div>
+  </div>
+  <div class="dgp-stat" data-tone="ok">
+    <div class="dgp-stat-label">授权仓库</div>
+    <div class="dgp-stat-value">*</div>
+    <div class="dgp-stat-hint">全部仓库</div>
+  </div>
+  <div class="dgp-stat" data-tone="danger">
+    <div class="dgp-stat-label">写操作</div>
+    <div class="dgp-stat-value">关</div>
+    <div class="dgp-stat-hint">需二次确认</div>
+  </div>
+</div>`
+
+// chip 菜单里的「工作区改动」区块（含一条已暂存项）
+const changesSample = `
+<div class="dgp-changes">
+  <div class="dgp-changes-head">
+    <span>工作区改动</span>
+    <span class="dgp-changes-count">4 个文件</span>
+  </div>
+  <div class="dgp-change">
+    <span class="dgp-change-code" data-code="M">M</span>
+    <span class="dgp-change-path">src/client/index.tsx</span>
+    <span class="dgp-change-stat" data-sign="add">+128</span>
+    <span class="dgp-change-stat" data-sign="del">-36</span>
+  </div>
+  <div class="dgp-change" data-staged="1">
+    <span class="dgp-change-code" data-code="A">A</span>
+    <span class="dgp-change-path">docs/enhancement-plan.md</span>
+    <span class="dgp-change-stat" data-sign="add">+412</span>
+  </div>
+  <div class="dgp-change">
+    <span class="dgp-change-code" data-code="??">??</span>
+    <span class="dgp-change-path">.work/tmp.log</span>
+    <span class="dgp-change-stat" data-sign="add">+17</span>
+  </div>
+  <div class="dgp-change">
+    <span class="dgp-change-code" data-code="D">D</span>
+    <span class="dgp-change-path">scripts/legacy.mjs</span>
+    <span class="dgp-change-stat" data-sign="del">-88</span>
+  </div>
+</div>`
+
+// 右下角轻量通知（成功 / 失败两种）
+const toastSample = `
+<div class="dgp-portal dgp-toast-wrap">
+  <div class="dgp-toast" data-tone="ok">
+    <span class="dgp-toast-dot"></span>
+    <span class="dgp-toast-text">已保存仓库范围</span>
+  </div>
+</div>
+<div class="dgp-portal dgp-toast-wrap">
+  <div class="dgp-toast" data-tone="error">
+    <span class="dgp-toast-dot"></span>
+    <span class="dgp-toast-text">令牌已过期（HTTP 401）：请重新授权后再试。</span>
+  </div>
+</div>`
+
+// 空状态（图形化 + 文案 + 次要说明）
+const emptySample = `
+<div class="dgp-empty">
+  <svg class="dgp-empty-art" width="88" height="60" viewBox="0 0 88 60" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="6" y="8" width="34" height="44" rx="6"/>
+    <path d="M15 22h16M15 30h16M15 38h10"/>
+    <path d="M52 30h14M59 23v14"/>
+    <circle cx="66" cy="30" r="13" stroke-dasharray="3 4"/>
+  </svg>
+  <div class="dgp-empty-title">尚未连接任何 Git 账号</div>
+  <div class="dgp-empty-hint">连接后，Agent 才能在授权范围内读取仓库信息、分支、差异与提交记录。</div>
+</div>`
+
+// 骨架屏（改动列表加载中）
+const skeletonSample = `
+<div class="dgp-skel">
+  <div class="dgp-skel-line" style="width:62%"></div>
+  <div class="dgp-skel-line" style="width:44%"></div>
+  <div class="dgp-skel-line" style="width:78%"></div>
+</div>`
+
+// ---- 6. 拼页面 ------------------------------------------------------------
 // 宿主设置面板 800px - 导航 188px - 左右 padding 24px×2 = 612px 内容宽
 const CONTENT_WIDTH = 612
-function page(dark, body, { width = CONTENT_WIDTH } = {}) {
+// 新增样张按「设置页宽档」出图（720px 画布），toast 用小画布
+const WIDE_WIDTH = 720
+const TOAST_WIDTH = 360
+// toast 在真实页面里是 fixed 定位（右下角），预览时改成静态流式排版，否则会被画布裁掉。
+const TOAST_PREVIEW_CSS = `
+.dgp-toast-wrap{position:static;display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.dgp-toast{max-width:100%;white-space:normal;animation:none}
+.dgp-toast-text{white-space:normal}`
+
+function page(dark, body, { width = CONTENT_WIDTH, extraCss = '' } = {}) {
   const tokens = dark ? DARK : LIGHT
   const bg = dark ? '#151517' : '#ffffff'
   return `<!doctype html><meta charset="utf-8"><style>
@@ -269,7 +432,10 @@ function page(dark, body, { width = CONTENT_WIDTH } = {}) {
 html,body{margin:0;background:${bg};font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
 .wrap{width:${width}px;padding:0 24px 24px;box-sizing:border-box;background:var(--dsw-alias-bg-layer-2)}
 h3{font:500 11px/16px inherit;letter-spacing:.06em;text-transform:uppercase;color:var(--dsw-alias-label-caption);margin:0;padding:20px 0 6px}
+/* 兜底 CSS 放在产物 CSS 之前：产物里有同规则时以产物为准 */
+${FALLBACK_CSS}
 ${css}
+${extraCss}
 </style><div class="wrap">${body}</div>`
 }
 
@@ -302,6 +468,65 @@ const shots = [
     height: 1500,
     body: `<h3>authorization tab</h3>${helpTab}<h3>composer chip</h3>${chipSample}<h3>chip menu</h3>${menuSample}<h3>branch topology</h3>${graphSample}`,
   },
+  // ---- 本次 UI 增强新增样张：每个都出浅色 / 深色两版 ----
+  {
+    name: 'stats-light',
+    dark: false,
+    width: WIDE_WIDTH,
+    height: 320,
+    body: `<h3>授权概览</h3>${statsSample}`,
+  },
+  {
+    name: 'stats-dark',
+    dark: true,
+    width: WIDE_WIDTH,
+    height: 320,
+    body: `<h3>授权概览</h3>${statsSample}`,
+  },
+  {
+    name: 'changes-light',
+    dark: false,
+    width: WIDE_WIDTH,
+    height: 480,
+    body: `<h3>工作区改动</h3>${changesSample}<h3>骨架屏</h3>${skeletonSample}`,
+  },
+  {
+    name: 'changes-dark',
+    dark: true,
+    width: WIDE_WIDTH,
+    height: 480,
+    body: `<h3>工作区改动</h3>${changesSample}<h3>骨架屏</h3>${skeletonSample}`,
+  },
+  {
+    name: 'toast-light',
+    dark: false,
+    width: TOAST_WIDTH,
+    height: 240,
+    extraCss: TOAST_PREVIEW_CSS,
+    body: `<h3>通知</h3>${toastSample}`,
+  },
+  {
+    name: 'toast-dark',
+    dark: true,
+    width: TOAST_WIDTH,
+    height: 240,
+    extraCss: TOAST_PREVIEW_CSS,
+    body: `<h3>通知</h3>${toastSample}`,
+  },
+  {
+    name: 'empty-light',
+    dark: false,
+    width: WIDE_WIDTH,
+    height: 400,
+    body: `<h3>空状态</h3>${emptySample}`,
+  },
+  {
+    name: 'empty-dark',
+    dark: true,
+    width: WIDE_WIDTH,
+    height: 400,
+    body: `<h3>空状态</h3>${emptySample}`,
+  },
 ]
 
 // ---- 5. 渲染 + 截图 -------------------------------------------------------
@@ -332,7 +557,7 @@ mkdirSync(workDir, { recursive: true })
 
 for (const shot of shots) {
   const htmlPath = join(workDir, `${shot.name}.html`)
-  writeFileSync(htmlPath, page(shot.dark, shot.body, { width: shot.width }))
+  writeFileSync(htmlPath, page(shot.dark, shot.body, { width: shot.width, extraCss: shot.extraCss ?? '' }))
   if (!browser) continue
   execFileSync(
     browser,

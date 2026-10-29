@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { existsSync, statSync } from 'node:fs'
+import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
 import { isAbsolute, join, resolve } from 'node:path'
 import { redact } from './vault.js'
 
@@ -152,6 +152,274 @@ export async function readRepoStatus(cwd: string): Promise<RepoStatus> {
     changed,
     error: '',
     reason: 'repo',
+  }
+}
+
+/** 单个文件的改动明细。 */
+export interface ChangeFile {
+  /** 相对仓库根的路径，POSIX 分隔符 */
+  path: string
+  /** 暂存区状态码：'' | 'M' | 'A' | 'D' | 'R' | 'C' | 'U' 等，取自 git status porcelain v1 第一列 */
+  index: string
+  /** 工作区状态码：第二列 */
+  worktree: string
+  /** 相对 HEAD 的新增行数（无则为 0） */
+  added: number
+  /** 相对 HEAD 的删除行数（无则为 0） */
+  deleted: number
+  /** 是否已暂存（index 列非空） */
+  staged: boolean
+}
+
+/** 仓库工作区改动汇总。 */
+export interface RepoChanges {
+  /** 是否是 git 仓库 */
+  isRepo: boolean
+  /** 仓库根绝对路径（非仓库时为 ''） */
+  root: string
+  /** 当前分支（非仓库或游离时为 ''） */
+  branch: string
+  /** 是否有未提交的改动 */
+  dirty: boolean
+  /** 改动文件列表 */
+  files: ChangeFile[]
+}
+
+/** 改动明细最多返回多少条文件。 */
+const MAX_CHANGE_FILES = 500
+/** 未跟踪文件统计行数时的上限（避免大文件拖慢扫描）。 */
+const MAX_UNTRACKED_LINES = 2000
+
+/**
+ * 还原 git 的 C 风格引号路径（core.quotepath 触发时出现）。
+ * 无法还原时保留原样，不抛错。
+ */
+function decodeGitPath(raw: string): string {
+  if (raw.length < 2 || !raw.startsWith('"') || !raw.endsWith('"')) return raw
+  const body = raw.slice(1, -1)
+  const bytes: number[] = []
+  let i = 0
+  while (i < body.length) {
+    const ch = body[i]
+    if (ch !== '\\') {
+      for (const byte of Buffer.from(ch, 'utf8')) bytes.push(byte)
+      i += 1
+      continue
+    }
+    i += 1
+    const next = body[i] ?? ''
+    if (next >= '0' && next <= '7') {
+      const oct = body.slice(i, i + 3)
+      if (/^[0-7]{3}$/.test(oct)) {
+        bytes.push(Number.parseInt(oct, 8))
+        i += 3
+        continue
+      }
+    }
+    switch (next) {
+      case 'n':
+        bytes.push(0x0a)
+        i += 1
+        break
+      case 't':
+        bytes.push(0x09)
+        i += 1
+        break
+      case 'r':
+        bytes.push(0x0d)
+        i += 1
+        break
+      case 'a':
+        bytes.push(0x07)
+        i += 1
+        break
+      case 'b':
+        bytes.push(0x08)
+        i += 1
+        break
+      case 'f':
+        bytes.push(0x0c)
+        i += 1
+        break
+      case 'v':
+        bytes.push(0x0b)
+        i += 1
+        break
+      case '"':
+        bytes.push(0x22)
+        i += 1
+        break
+      case '\\':
+        bytes.push(0x5c)
+        i += 1
+        break
+      default:
+        // 无法识别的转义：原样保留反斜杠
+        bytes.push(0x5c)
+        break
+    }
+  }
+  return Buffer.from(bytes).toString('utf8')
+}
+
+/** 找到引号字符串的结束位置（跳过转义），找不到返回 -1。 */
+function findQuoteEnd(text: string): number {
+  let i = 1
+  while (i < text.length) {
+    if (text[i] === '\\') {
+      i += 2
+      continue
+    }
+    if (text[i] === '"') return i
+    i += 1
+  }
+  return -1
+}
+
+/**
+ * 解析 porcelain v1 状态行里 `XY ` 之后的路径部分。
+ * 重命名（`old -> new`）取箭头右侧的新路径。
+ */
+function splitStatusPath(rest: string): string {
+  if (rest.startsWith('"')) {
+    const end = findQuoteEnd(rest)
+    if (end > 0) {
+      const first = rest.slice(0, end + 1)
+      const remainder = rest.slice(end + 1)
+      if (remainder.startsWith(' -> ')) return decodeGitPath(remainder.slice(4))
+      return decodeGitPath(first)
+    }
+  }
+  const arrow = rest.indexOf(' -> ')
+  if (arrow >= 0) return decodeGitPath(rest.slice(arrow + 4))
+  return decodeGitPath(rest)
+}
+
+/** numstat 里的路径：可能是 `old => new` 或 `{old => new}`，统一取新路径。 */
+function normalizeNumstatPath(raw: string): string {
+  let text = decodeGitPath(raw)
+  const arrow = text.lastIndexOf(' => ')
+  if (arrow >= 0) {
+    text = text.slice(arrow + 4)
+  } else if (text.includes('{') && text.includes('=>')) {
+    const start = text.lastIndexOf('{')
+    const end = text.lastIndexOf('}')
+    if (start >= 0 && end > start) text = text.slice(start + 1, end)
+  }
+  return text.trim()
+}
+
+/** 统计文件行数（上限 cap），失败返回 0。 */
+function countFileLines(absPath: string, cap = MAX_UNTRACKED_LINES): number {
+  let fd: number | null = null
+  try {
+    const info = statSync(absPath)
+    if (!info.isFile()) return 0
+    fd = openSync(absPath, 'r')
+    const buffer = Buffer.alloc(64 * 1024)
+    let count = 0
+    let lastByte = -1
+    for (;;) {
+      const read = readSync(fd, buffer, 0, buffer.length, null)
+      if (read <= 0) break
+      for (let i = 0; i < read; i += 1) {
+        if (buffer[i] === 0x0a) count += 1
+        lastByte = buffer[i]
+      }
+      if (count >= cap) break
+    }
+    if (lastByte !== -1 && lastByte !== 0x0a) count += 1
+    return Math.min(count, cap)
+  } catch {
+    return 0
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd)
+      } catch {
+        /* 忽略关闭失败 */
+      }
+    }
+  }
+}
+
+/**
+ * 读取仓库工作区改动明细。
+ * 非仓库/非法路径不抛错，返回 isRepo:false 的空结果（与 readRepoStatus 一致的容错风格）。
+ */
+export async function readRepoChanges(cwd: string): Promise<RepoChanges> {
+  const empty: RepoChanges = { isRepo: false, root: '', branch: '', dirty: false, files: [] }
+  const repo = ensureRepo(cwd)
+  if (!repo.ok) return empty
+  const root = repo.root as string
+
+  const top = await runGit(root, ['rev-parse', '--show-toplevel'])
+  const repoRoot = top.ok && top.stdout.trim().length > 0 ? top.stdout.trim() : root
+
+  const branchRes = await runGit(root, ['rev-parse', '--abbrev-ref', 'HEAD'])
+  const rawBranch = branchRes.ok ? branchRes.stdout.trim() : ''
+  const branch = rawBranch && rawBranch !== 'HEAD' ? rawBranch : ''
+
+  const files = new Map<string, ChangeFile>()
+  const status = await runGit(root, ['status', '--porcelain', '--untracked-files=all'])
+  if (status.ok) {
+    for (const line of status.stdout.split('\n')) {
+      if (line.trim().length === 0) continue
+      if (line.length < 4) continue
+      const code = line.slice(0, 2)
+      const path = splitStatusPath(line.slice(3))
+      if (path.length === 0) continue
+      let index = ''
+      let worktree = ''
+      let staged = false
+      if (code === '??') {
+        // 未跟踪文件：不在暂存区
+        index = ''
+        worktree = '?'
+        staged = false
+      } else {
+        index = code[0] === ' ' ? '' : code[0]
+        worktree = code[1] === ' ' ? '' : code[1]
+        staged = index.length > 0
+      }
+      files.set(path, { path, index, worktree, added: 0, deleted: 0, staged })
+    }
+  }
+
+  // 增删行数：优先 diff HEAD（暂存区+工作区合计）；仓库没有提交时退回 diff --cached。
+  const numstat = await runGit(root, ['diff', '--numstat', 'HEAD'])
+  const diffRes = numstat.ok ? numstat : await runGit(root, ['diff', '--numstat', '--cached'])
+  if (diffRes.ok) {
+    for (const line of diffRes.stdout.split('\n')) {
+      if (line.trim().length === 0) continue
+      const parts = line.split('\t')
+      if (parts.length < 3) continue
+      const added = Number.parseInt(parts[0], 10)
+      const deleted = Number.parseInt(parts[1], 10)
+      const path = normalizeNumstatPath(parts.slice(2).join('\t'))
+      if (path.length === 0) continue
+      const target = files.get(path)
+      if (!target) continue
+      target.added = Number.isFinite(added) && added > 0 ? added : 0
+      target.deleted = Number.isFinite(deleted) && deleted > 0 ? deleted : 0
+    }
+  }
+
+  // 未跟踪文件按实际行数计入 added（超长文件截断）。
+  for (const file of files.values()) {
+    if (file.worktree !== '?' || file.added > 0) continue
+    file.added = countFileLines(join(repoRoot, file.path))
+  }
+
+  const list = Array.from(files.values()).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+  const limited = list.slice(0, MAX_CHANGE_FILES)
+
+  return {
+    isRepo: true,
+    root: repoRoot,
+    branch,
+    dirty: limited.length > 0,
+    files: limited,
   }
 }
 

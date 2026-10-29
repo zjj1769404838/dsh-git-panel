@@ -23,6 +23,12 @@ DSH（DeepSeek Harness）桌面端插件：**Git 账号接入 + 受控仓库操�
 | 写操作闸门 | `allowWrite` 默认关闭；开启后仍默认 `requireConfirm`，需二次确认才真正执行 |
 | Agent 工具 | 8 个 `git_*` 工具，见第五节 |
 | 凭据安全 | AES-256-GCM 落盘，界面与接口一律不回显明文令牌，日志走脱敏规则 |
+| 授权概览 | 设置页顶部四格统计条：账号数（已连接/异常）、授权目录数（`*` 显示 `∞`）、授权仓库数、写操作开关 —— 状态色只落在左侧 2px 色条与副标题上，主数字保持中性 |
+| 默认账号 | 多账号时可指定默认账号（Agent 侧优先使用），账号行显示「默认账号」徽章或「设为默认」按钮 |
+| 重新授权 | 账号行提供「重新授权」：自动切到该账号的平台与接入方式、清空令牌输入，并在连接区顶部显示行内提示条 |
+| 一键授权当前仓库 | 仓库范围页提供「当前会话仓库」快捷按钮 —— 直接把当前会话目录加入 `allowedRoots`（已授权时按钮禁用） |
+| 工作区改动明细 | chip 菜单里直接列出未提交文件：状态字母 + 路径 + 增删行数 + 已暂存标记；加载中用骨架屏，空状态用图形化插画 |
+| 轻提示 toast | 所有动作反馈统一为右下角 toast（成功/失败/信息三态），2.6 秒自动消失；菜单关闭后提示仍保留 |
 
 ---
 
@@ -131,6 +137,7 @@ node scripts/build.mjs
 | GET | `/providers` | 平台元数据 |
 | GET | `/repo/status?cwd=<绝对路径>` | 供输入区分支 chip 使用：`{isRepo, root, branch, detached, head, ahead, behind, changed, authorized, reason}`；`reason` 三态区分结论 —— `repo`（确认是仓库）/ `no-repo`（目录存在但没有 `.git`，**只有这种才允许显示初始化**）/ `invalid`（路径非法、不存在、不可读 —— 属于检测失败，不能当成未初始化）；非仓库不是错误（`isRepo:false`），未授权目录返回 `authorized:false` 且不泄露 ahead/behind |
 | GET | `/repo/graph?cwd=<绝对路径>&limit=<5-100>` | 供 chip 菜单的分支拓扑图使用：`{isRepo, root, branch, head, detached, reason, truncated, laneCount, rows}`；每行 `rows[i]` 含 `{hash, short, parents, author, date, subject, refs, row, lane, segments, through}` —— `lane` 是本行所在车道、`segments` 是向下连到父提交的线（`from === to` 为同车道直落，否则为跨车道转折）、`through` 是穿过本行的其他车道；未授权目录返回 `authorized:false` 且 `rows` 为空、`laneCount:0`（不泄露提交历史） |
+| GET | `/repo/changes?cwd=<绝对路径>` | 供 chip 菜单的「工作区改动明细」使用：`{isRepo, root, branch, dirty, files}`；每个 `files[i]` 含 `{path, index, worktree, added, deleted, staged}` —— `index`/`worktree` 是 git porcelain 两列状态码（`M` 修改 / `A` 新增 / `D` 删除 / `R` 重命名 / `C` 复制 / `??` 未跟踪），`added`/`deleted` 是增删行数（未跟踪二进制无法计数时置 0，界面显示「—」）。未授权目录只回 `{isRepo:true, root:'', branch:'', dirty:false, files:[]}` 空壳（**不泄露路径、分支与文件名**）；非仓库回 `{isRepo:false,…}` |
 | POST | `/repo/init` | 在会话目录执行 `git init -b main`（幂等：已有 `.git` 返回 `created:false`，绝不覆盖，**且不删除/不改动目录里已有文件**）；必须先过同源校验 + `allowedRoots` 授权闸门，未授权目录 403 且不创建任何文件 |
 | POST | `/pat/connect` | PAT 接入 |
 | POST | `/oauth/start` | 发起设备码流程，返回 `pollKey` 与 `userCode` |
@@ -148,8 +155,8 @@ node scripts/build.mjs
 ```bash
 npm run bundle        # 构建 lib/index.js + lib/client.js
 npm run typecheck     # tsc --noEmit
-npm run gates         # 63 项插件契约门禁
-npm run test:hardening# 112 项加固回归（含真实 git 仓库端到端）
+npm run gates         # 81 项插件契约门禁
+npm run test:hardening# 133 项加固回归（含真实 git 仓库端到端）
 npm run test:e2e      # 13 项 GUI 端到端验证（需要本机 Edge + DSH Web 在跑）
 npm run preview       # 用真实 CSS + 宿主 token 渲染 docs/preview/*.png（需要本机 Edge）
 npm test              # gates + hardening
@@ -157,7 +164,7 @@ npm test              # gates + hardening
 
 `test:e2e` 用 `playwright-core` 驱动**本机 Edge**（headless）打开真实 DSH Web GUI，验证「打开 Git 设置」这条链路：认证通过 → chip 存在 → 菜单里有「打开 Git 设置」→ 点击后**设置面板打开**且**智能体团队面板没被误开** → 导航落在 Git 分节 → Git 分节内容渲染 → 进已有会话后「智能体团队」入口自身仍能打开。脚本自己按宿主 `dsh-client-connection` 的规则从 `~/.dsh/.credentials.yaml` 铸造 `dsh-auth-*` cookie（**不打印任何凭据**），URL 可用 `--url` 或 `DSH_WEB_URL` 覆盖。
 
-`test:hardening` 用 mock ctx 驱动**构建产物 `lib/index.js`**，在临时 `DSH_HOME` 下跑，覆盖：路由注册、工具注册、跨站/超大请求拦截、设置归一化、密文不外泄、OAuth 缺 clientId 提示、未授权仓库/目录拒绝、写操作默认拒绝、`/repo/status` 的六种形态（缺 cwd / 非仓库且 `reason=no-repo` / 目录不存在与相对路径 `reason=invalid` / 已授权真实仓库 `reason=repo` / 未授权不泄露 ahead-behind）、`/repo/init` 的十种形态（未授权拒绝且不落 `.git` / 已授权创建 / 回报分支 / 幂等 / 缺 cwd / 目录不存在 / **初始化后原有文件与子目录内容原样保留**）、真实仓库的 status/branches/diff/log 与「确认前不执行、取消不执行、确认后执行、令牌不可复用」。
+`test:hardening` 用 mock ctx 驱动**构建产物 `lib/index.js`**，在临时 `DSH_HOME` 下跑，覆盖：路由注册、工具注册、跨站/超大请求拦截、设置归一化、密文不外泄、OAuth 缺 clientId 提示、未授权仓库/目录拒绝、写操作默认拒绝、`/repo/status` 的六种形态（缺 cwd / 非仓库且 `reason=no-repo` / 目录不存在与相对路径 `reason=invalid` / 已授权真实仓库 `reason=repo` / 未授权不泄露 ahead-behind）、`/repo/init` 的十种形态（未授权拒绝且不落 `.git` / 已授权创建 / 回报分支 / 幂等 / 缺 cwd / 目录不存在 / **初始化后原有文件与子目录内容原样保留**）、`/repo/changes` 的七种形态（缺 cwd 400 / 非仓库 `isRepo:false` / **未授权目录只回空壳不泄露路径与分支** / 已授权仓库回报 root+branch+dirty / 工作区修改为 `M` / 已暂存文件标记 `staged` / 未跟踪文件为 `??` / 文件按路径升序）、真实仓库的 status/branches/diff/log 与「确认前不执行、取消不执行、确认后执行、令牌不可复用」。
 
 ---
 
@@ -228,5 +235,9 @@ scripts/
 | --- | --- |
 | ![浅色设置页](docs/preview/light.png) | ![深色设置页](docs/preview/dark.png) |
 | ![浅色说明与 chip](docs/preview/tail-light.png) | ![深色说明与 chip](docs/preview/tail-dark.png) |
+| ![浅色授权概览](docs/preview/stats-light.png) | ![深色授权概览](docs/preview/stats-dark.png) |
+| ![浅色工作区改动](docs/preview/changes-light.png) | ![深色工作区改动](docs/preview/changes-dark.png) |
+| ![浅色轻提示](docs/preview/toast-light.png) | ![深色轻提示](docs/preview/toast-dark.png) |
+| ![浅色空状态](docs/preview/empty-light.png) | ![深色空状态](docs/preview/empty-dark.png) |
 
-重新生成预览：`node scripts/preview.mjs`（需要本机 Edge；从 `lib/client.js` 抽真实 CSS 渲染 HTML 再无头截图到 `docs/preview/`）。
+重新生成预览：`node scripts/preview.mjs`（需要本机 Edge；从 `lib/client.js` 抽真实 CSS 渲染 HTML 再无头截图到 `docs/preview/`）。增强方案与设计取舍见 [`docs/enhancement-plan.md`](docs/enhancement-plan.md)。

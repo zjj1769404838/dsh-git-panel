@@ -534,6 +534,75 @@ check('工具 name 前缀一致', [...registeredTools.keys()].every((name) => na
   check('repo/graph 非仓库时 rows 为空', (graphNotRepo.json?.graph?.rows ?? []).length === 0)
 }
 
+// ---- 工作区改动明细：/repo/changes（chip 菜单里的改动列表） ----
+{
+  const { execFileSync } = await import('node:child_process')
+  const { mkdirSync, writeFileSync } = await import('node:fs')
+  const chRepo = join(tmp, 'changes-repo')
+  mkdirSync(chRepo, { recursive: true })
+  const cgit = (...args) => execFileSync('git', args, { cwd: chRepo, stdio: 'ignore' })
+  cgit('init', '-q', '-b', 'main')
+  cgit('config', 'user.email', 'test@example.com')
+  cgit('config', 'user.name', 'Test User')
+  writeFileSync(join(chRepo, 'keep.txt'), 'a\n')
+  cgit('add', '.')
+  cgit('commit', '-q', '-m', 'init')
+
+  // 参数校验
+  const changesNoCwd = await call(handler, { method: 'GET', url: '/dsh-git-panel/repo/changes' })
+  check('repo/changes 缺 cwd 返回 400', changesNoCwd.status === 400, String(changesNoCwd.status))
+  check('repo/changes 缺 cwd 给可读错误', String(changesNoCwd.json?.error ?? '').includes('cwd'), JSON.stringify(changesNoCwd.json ?? {}))
+
+  // 非仓库目录
+  const notRepoDir = join(tmp, 'changes-not-repo')
+  await mkdir(notRepoDir, { recursive: true })
+  const changesNotRepo = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/changes?cwd=${encodeURIComponent(notRepoDir)}` })
+  check('repo/changes 非仓库返回 200', changesNotRepo.status === 200, String(changesNotRepo.status))
+  check('repo/changes 非仓库 isRepo=false', changesNotRepo.json?.changes?.isRepo === false, JSON.stringify(changesNotRepo.json ?? {}).slice(0, 200))
+  check('repo/changes 非仓库文件列表为空', (changesNotRepo.json?.changes?.files ?? []).length === 0)
+
+  // 未授权目录：不能泄露文件名与分支名
+  await call(handler, {
+    method: 'POST',
+    url: '/dsh-git-panel/settings',
+    body: JSON.stringify({ allowedRoots: [join(tmp, 'nowhere-2')], allowWrite: true, requireConfirm: true }),
+  })
+  const changesDenied = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/changes?cwd=${encodeURIComponent(chRepo)}` })
+  check('repo/changes 未授权时不泄露路径', changesDenied.json?.changes?.root === '', JSON.stringify(changesDenied.json ?? {}).slice(0, 200))
+  check('repo/changes 未授权时不泄露分支', changesDenied.json?.changes?.branch === '', JSON.stringify(changesDenied.json ?? {}).slice(0, 200))
+  check('repo/changes 未授权时不泄露文件名', (changesDenied.json?.changes?.files ?? []).length === 0, JSON.stringify(changesDenied.json ?? {}).slice(0, 200))
+
+  // 授权后：已修改文件 + 未跟踪文件 + 已暂存文件
+  await call(handler, {
+    method: 'POST',
+    url: '/dsh-git-panel/settings',
+    body: JSON.stringify({ allowedRoots: [chRepo], allowWrite: true, requireConfirm: true }),
+  })
+  writeFileSync(join(chRepo, 'keep.txt'), 'a\nb\nc\n')
+  writeFileSync(join(chRepo, 'new.txt'), 'x\ny\n')
+  writeFileSync(join(chRepo, 'staged.txt'), 's\n')
+  cgit('add', 'staged.txt')
+
+  const changesRes = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/changes?cwd=${encodeURIComponent(chRepo)}` })
+  const changes = changesRes.json?.changes ?? {}
+  check('repo/changes 已授权返回 ok', changesRes.status === 200 && changesRes.json?.ok === true, JSON.stringify(changesRes.json ?? {}).slice(0, 200))
+  check('repo/changes 报出仓库根', String(changes.root ?? '').length > 0, String(changes.root ?? ''))
+  check('repo/changes 报出当前分支', changes.branch === 'main', String(changes.branch ?? ''))
+  check('repo/changes 标记 dirty', changes.dirty === true, String(changes.dirty))
+  const changed = (changes.files ?? []).find((f) => f.path === 'keep.txt')
+  check('repo/changes 含已修改文件', !!changed, JSON.stringify((changes.files ?? []).map((f) => f.path)).slice(0, 200))
+  check('repo/changes 已修改文件工作区状态为 M', changed?.worktree === 'M', String(changed?.worktree))
+  check('repo/changes 已修改文件增行数为 2', changed?.added === 2, String(changed?.added))
+  check('repo/changes 已修改文件未暂存', changed?.staged === false, String(changed?.staged))
+  const staged = (changes.files ?? []).find((f) => f.path === 'staged.txt')
+  check('repo/changes 含已暂存文件', !!staged, JSON.stringify((changes.files ?? []).map((f) => f.path)).slice(0, 200))
+  check('repo/changes 已暂存文件标记 staged=true', staged?.staged === true, String(staged?.staged))
+  const untracked = (changes.files ?? []).find((f) => f.path === 'new.txt')
+  check('repo/changes 含未跟踪文件', !!untracked, JSON.stringify((changes.files ?? []).map((f) => f.path)).slice(0, 200))
+  check('repo/changes 未跟踪文件状态为 ?', untracked?.worktree === '?', String(untracked?.worktree))
+  check('repo/changes 文件按路径升序', (changes.files ?? []).map((f) => f.path).join('|') === [...(changes.files ?? [])].map((f) => f.path).sort().join('|'))
+}
+
 await rm(tmp, { recursive: true, force: true })
 
 if (failures.length > 0) {

@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { PanelStore } from './store.js'
 import { normalizeRepos, normalizeRoots } from './store.js'
-import { initRepo, readRepoStatus } from './git.js'
+import { initRepo, readRepoChanges, readRepoStatus } from './git.js'
 import { readRepoGraph } from './graph.js'
 import { pollDeviceFlow, PROVIDERS, providerOf, startDeviceFlow, verifyToken } from './providers.js'
 import { redact } from './vault.js'
@@ -179,6 +179,25 @@ export function createHandler(deps: HandlerDeps) {
           return
         }
         sendJson(res, 200, { ok: true, graph: { ...graph, authorized: true } })
+        return
+      }
+
+      // 工作区改动明细：只读。未授权目录不返回任何文件名与分支名。
+      if (method === 'GET' && path === '/repo/changes') {
+        const cwd = str(url.searchParams.get('cwd')).trim()
+        if (!cwd) {
+          sendJson(res, 400, { ok: false, error: '缺少 cwd 参数', changes: null })
+          return
+        }
+        const changes = await readRepoChanges(cwd)
+        if (changes.isRepo && !deps.store.isRootAllowed(cwd)) {
+          sendJson(res, 200, {
+            ok: true,
+            changes: { isRepo: true, root: '', branch: '', dirty: false, files: [] },
+          })
+          return
+        }
+        sendJson(res, 200, { ok: true, changes })
         return
       }
 
