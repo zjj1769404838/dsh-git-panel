@@ -132,6 +132,7 @@ const ZH: Dict = {
   changesEmpty: '工作区干净，没有未提交改动',
   changesLoading: '正在读取改动…',
   changesFailed: '读取改动失败',
+  changesStaleNode: '插件服务端是旧版本（DSH 的 node 半边不热重载），重启 DSH 桌面端后恢复',
   changesUnauthorized: '当前目录未在授权范围内',
   changesStaged: '已暂存',
   /* ---- 轻提示 ---- */
@@ -266,6 +267,7 @@ const EN: Dict = {
   changesEmpty: 'Working tree is clean — no uncommitted changes',
   changesLoading: 'Reading changes…',
   changesFailed: 'Failed to read changes',
+  changesStaleNode: 'Plugin backend is stale (DSH node side does not hot-reload) — restart the DSH desktop app to fix',
   changesUnauthorized: 'Current directory is outside the authorized scope',
   changesStaged: 'staged',
   /* ---- Toasts ---- */
@@ -2079,7 +2081,12 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
         setChangesError('')
       } else {
         setChanges(null)
-        setChangesError(data.error || t('changesFailed'))
+        // 405 = 运行中的 node 半边还是旧产物（node 侧不热重载），给出可操作的提示而不是干巴巴的失败。
+        setChangesError(
+          String(data.error ?? '').includes('不支持的请求方法')
+            ? t('changesStaleNode')
+            : data.error || t('changesFailed'),
+        )
       }
     } catch (error) {
       setChanges(null)
