@@ -111,6 +111,14 @@ if (clientOut) {
   check('client 图区超宽时横向滚动（overflow:auto）', clientOut.includes('dgp-graph-body'))
   check('client 节点悬浮/选中反馈（data-active）', clientOut.includes('data-active'))
   check('client ref chip 区分 local/remote/tag/head', clientOut.includes('data-kind') && clientOut.includes('graphHead'))
+  // 「打开 Git 设置」：桌面端快捷键走原生 IPC，合成 keydown 到不了 settings.open，
+  // 必须点宿主设置触发按钮 / 调 shortcuts.invoke，两条路都要在产物里。
+  check('client 打开设置不依赖合成快捷键（点宿主触发按钮）', clientOut.includes('aria-haspopup') && clientOut.includes('aria-keyshortcuts'))
+  check('client 打开设置走 shortcuts.invoke 兜底', clientOut.includes('settings.open') && clientOut.includes('invoke'))
+  check('client 设置面板锚点用 data-shortcut-modal', clientOut.includes('data-shortcut-modal'))
+  // 打开设置后要落在 Git 分节，而不是停在默认页；靠导航行 aria-current 判断当前分节。
+  check('client 打开设置后定位到 Git 分节（aria-current）', clientOut.includes('aria-current'))
+  check('client 设置触发按钮排除已展开态（aria-expanded）', clientOut.includes('aria-expanded'))
 }
 
 if (failures.length > 0) {

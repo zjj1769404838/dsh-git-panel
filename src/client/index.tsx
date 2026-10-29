@@ -491,22 +491,143 @@ function BranchIcon() {
   )
 }
 
-/** 打开 DSH 设置页。宿主只暴露快捷键命令 settings.open，故派发 Ctrl/Cmd+, */
-function openSettingsSection(): void {
+/** 设置面板在 DOM 里的稳定锚点（宿主 SettingsPanel 上写死）。 */
+const SETTINGS_PANEL_SELECTOR = '[data-shortcut-modal="settings"]'
+
+/**
+ * 设置入口按钮的候选选择器，按可信度排序。
+ * 宿主 SettingsRoot 的 trigger 恒带 `aria-haspopup="dialog"`；`aria-keyshortcuts`
+ * 只在快捷键目录里有 settings.open 这一行时才渲染，所以不能只依赖后者。
+ */
+const SETTINGS_TRIGGER_SELECTORS = [
+  'button[aria-haspopup="dialog"][aria-keyshortcuts]',
+  'button[aria-haspopup="dialog"]',
+]
+
+/** 兜底时按可见文案认设置按钮（宿主 locale 可能给中文或英文）。 */
+const SETTINGS_TRIGGER_LABEL = /设置|設定|Settings|Preferences/i
+
+function isSettingsOpen(): boolean {
+  return document.querySelector(SETTINGS_PANEL_SELECTOR) !== null
+}
+
+/** 找到宿主的设置入口按钮；已展开的不算（再点会把它关掉）。 */
+function findSettingsTrigger(): HTMLButtonElement | undefined {
+  for (const selector of SETTINGS_TRIGGER_SELECTORS) {
+    const nodes = Array.from(document.querySelectorAll<HTMLButtonElement>(selector))
+    const usable = nodes.filter((node) => !node.disabled && node.getAttribute('aria-expanded') !== 'true')
+    if (usable.length === 0) continue
+    const labeled = usable.find((node) => SETTINGS_TRIGGER_LABEL.test(node.getAttribute('aria-label') ?? node.textContent ?? ''))
+    return labeled ?? usable[0]
+  }
+  return undefined
+}
+
+/** 等一帧，让 React 把 state 刷到 DOM 上再判定。 */
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      window.requestAnimationFrame(() => resolve())
+    } catch {
+      window.setTimeout(resolve, 16)
+    }
+  })
+}
+
+/** 跑一次动作，等两帧后看设置面板有没有出现。 */
+async function attempt(open: () => void): Promise<boolean> {
+  if (isSettingsOpen()) return true
   try {
-    document.dispatchEvent(
+    open()
+  } catch {
+    return false
+  }
+  await nextFrame()
+  if (isSettingsOpen()) return true
+  await nextFrame()
+  return isSettingsOpen()
+}
+
+/**
+ * 面板已打开后，把左侧导航切到 Git 分节。
+ * 宿主导航行结构固定：`nav > div.navList > button[aria-current] > span.<navLabel 文案>`，
+ * 文案来自我们注册 settings.section 时给的 `label`，即 t('navLabel')。
+ */
+async function selectSettingsSection(label: string): Promise<void> {
+  const panel = document.querySelector(SETTINGS_PANEL_SELECTOR)
+  if (panel === null) return
+  const rows = Array.from(panel.querySelectorAll<HTMLButtonElement>('nav button'))
+  const target = rows.find((row) => {
+    const text = (row.textContent ?? '').trim()
+    return text === label
+  })
+  if (target === undefined) return
+  if (target.getAttribute('aria-current') === 'true') return
+  target.click()
+  await nextFrame()
+}
+
+/**
+ * 打开 DSH 设置页并切到 Git 分节。
+ *
+ * 不能只靠派发合成键盘事件：桌面端 `installNativeKeyboard` 接管快捷键后走原生 IPC，
+ * 且 `installKeyboard` 里 `if (native) return` 直接跳过 DOM keydown 分支，
+ * 合成的 Ctrl/Cmd+, 在桌面端永远到不了 `settings.open`。
+ *
+ * 按可信度依次尝试，任一成功即止：
+ * 1) 点宿主自己的设置触发按钮（走宿主 onClick，最稳）；
+ * 2) `shortcuts.registry.invoke('settings.open', ...)`（原生菜单走的同一条路，不校验 isTrusted）；
+ * 3) 兜底派发 keydown（Web 端 runtime 无原生桥接，这条路有效）。
+ */
+async function openSettingsSection(
+  ctx?: { shortcuts?: { registry?: { invoke?: (id: string, context: any) => void } } },
+  sectionLabel?: string,
+): Promise<void> {
+  if (!isSettingsOpen()) {
+    // 1) 点宿主的设置触发按钮。
+    const trigger = findSettingsTrigger()
+    if (trigger !== undefined) {
+      const opened = await attempt(() => trigger.click())
+      if (!opened) await openSettingsFallback(ctx)
+    } else {
+      await openSettingsFallback(ctx)
+    }
+  }
+  if (sectionLabel !== undefined && sectionLabel !== '') await selectSettingsSection(sectionLabel)
+}
+
+/** 触发按钮不可用时的两条兜底路径。 */
+async function openSettingsFallback(ctx?: {
+  shortcuts?: { registry?: { invoke?: (id: string, context: any) => void } }
+}): Promise<void> {
+  // 2) 直接调 ShortcutRegistry.invoke：与原生菜单调用完全一致。
+  const invoke = ctx?.shortcuts?.registry?.invoke
+  if (typeof invoke === 'function') {
+    const opened = await attempt(() =>
+      invoke('settings.open', {
+        region: 'page',
+        modal: null,
+        target: document.activeElement,
+        source: 'menu',
+      }),
+    )
+    if (opened) return
+  }
+
+  // 3) 兜底：Web 端 runtime 没有原生键盘桥接，keydown 分支可用。
+  await attempt(() => {
+    window.dispatchEvent(
       new KeyboardEvent('keydown', {
         key: ',',
         code: 'Comma',
+        // 宿主默认绑定是 modifiers:['primary']；Windows 上 primary = control，
+        // 不能同时置 metaKey，否则 bindingKey 匹配不上。
         ctrlKey: true,
-        metaKey: true,
         bubbles: true,
         cancelable: true,
       }),
     )
-  } catch {
-    /* ignore */
-  }
+  })
 }
 
 /* ------------------------------------------------------------------ */
@@ -1259,6 +1380,7 @@ interface ChipProps {
   t: (key: string) => string
   sessionId?: string
   sessions?: any
+  shortcuts?: { registry?: { invoke?: (id: string, context: any) => void } }
 }
 
 interface MenuAnchor {
@@ -1273,7 +1395,7 @@ interface Note {
   text: string
 }
 
-function BranchChip({ t, sessionId, sessions }: ChipProps) {
+function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
   useStyles()
   const [status, setStatus] = useState<RepoStatusView | null>(null)
   const [graph, setGraph] = useState<RepoGraphView | null>(null)
@@ -1665,7 +1787,7 @@ function BranchChip({ t, sessionId, sessions }: ChipProps) {
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => {
               setOpen(false)
-              openSettingsSection()
+              void openSettingsSection({ shortcuts }, t('navLabel'))
             }}
           >
             <GearIcon />
@@ -1733,6 +1855,10 @@ interface ClientContext {
   }
   locale?: { register?: (namespace: string, dicts: Record<string, Dict>) => void; bind?: (namespace: string) => (key: string) => string }
   sessions?: any
+  /** 可选服务软取：取不到返回 undefined，不会抛错。 */
+  get?: (name: string) => any
+  /** 可选服务：宿主快捷键服务，用于程序化触发 settings.open。 */
+  shortcuts?: { registry?: { invoke?: (id: string, context: any) => void } }
   logger?: { info?: (msg: string) => void; warn?: (msg: string) => void; error?: (msg: string) => void }
   effect?: (fn: () => void, label?: string) => void
 }
@@ -1753,6 +1879,8 @@ export function apply(ctx: ClientContext): void {
   }
 
   const sessions = ctx.sessions
+  // shortcuts 是可选服务：软取，取不到也不影响 chip 渲染，只是「打开 Git 设置」少一条路径。
+  const shortcuts = typeof ctx.get === 'function' ? ctx.get('shortcuts') : undefined
 
   // 1) 设置页分节：全部配置都放这里（账号 / 仓库范围 / 授权说明）。
   try {
@@ -1789,7 +1917,7 @@ export function apply(ctx: ClientContext): void {
             id: 'dsh-git-panel-branch',
             order: 30,
             locale: NS,
-            inject: (sessionId: string) => ({ t, sessionId, sessions }),
+            inject: (sessionId: string) => ({ t, sessionId, sessions, shortcuts }),
           },
           BranchChip,
         )
