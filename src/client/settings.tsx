@@ -12,7 +12,7 @@
  *   - 没有常驻连接长表单：连接/编辑账号走弹窗，主界面不再被表单撑长。
  *   - 权限三档从 <select> 换成三段式按钮：三档同时可见，点一下即改。
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
   api,
   useStyles,
@@ -22,7 +22,17 @@ import {
   Skeleton,
   Toast,
   fmt,
+  readPref,
+  writePref,
+  subscribePref,
+  PREF_DIFF_LAYOUT,
+  PREF_HIGHLIGHT,
+  PREF_CHIP_HIDDEN,
+  PREF_GRAPH_LIMIT,
+  PREF_GRAPH_LANES,
+  PREF_AI_MODEL,
   REPO_PERMISSIONS,
+  type DiffLayout,
   type AccountRepoView,
   type AccountView,
   type PanelState,
@@ -654,6 +664,198 @@ function AdvancedPanel({
   )
 }
 
+/** 差异视图四档，顺序即分段控件的显示顺序。 */
+const LAYOUT_KEYS: DiffLayout[] = ['split', 'unified', 'before', 'after']
+
+/** 把 localStorage 里的裸字符串收敛成合法档位，脏值回落到并排。 */
+function asLayout(raw: string): DiffLayout {
+  return LAYOUT_KEYS.includes(raw as DiffLayout) ? (raw as DiffLayout) : 'split'
+}
+
+/** 档位 → 字典键（与差异视图内的按钮同一套键）。 */
+function layoutKeyOf(layout: DiffLayout): string {
+  return layout === 'split' ? 'diffSplit' : layout === 'unified' ? 'diffUnified' : layout === 'before' ? 'diffBefore' : 'diffAfter'
+}
+
+/** 分支图行数收敛到 20~200，非法值回落到 60。 */
+function clampLimit(raw: string): string {
+  const value = Number.parseInt(raw, 10)
+  if (!Number.isFinite(value)) return '60'
+  return String(Math.min(200, Math.max(20, value)))
+}
+
+/**
+ * 界面分节：差异视图默认呈现、语法高亮、输入框旁的 Git 按钮、历史泳道、分支图行数。
+ *
+ * 与「高级设置」的区别：这一节全部存在本机浏览器（localStorage），不进服务端设置，
+ * 也不影响 Agent 能做什么——换台机器就要重新选。所以单独一节，不塞进权限那一堆里。
+ * 读写走 subscribePref，工作台里改了同一份偏好的控件会跟着更新，不需要刷新页面。
+ */
+function InterfacePanel({ t }: { t: (key: string) => string }) {
+  const layout = asLayout(useSyncExternalStore(subscribePref, () => readPref(PREF_DIFF_LAYOUT, 'split'), () => 'split'))
+  const highlightOn = useSyncExternalStore(subscribePref, () => readPref(PREF_HIGHLIGHT, '1') !== '0', () => true)
+  const chipShown = useSyncExternalStore(subscribePref, () => readPref(PREF_CHIP_HIDDEN, '0') !== '1', () => true)
+  const laneOn = useSyncExternalStore(subscribePref, () => readPref(PREF_GRAPH_LANES, '1') !== '0', () => true)
+  const savedLimit = clampLimit(useSyncExternalStore(subscribePref, () => readPref(PREF_GRAPH_LIMIT, '60'), () => '60'))
+
+  /** 输入框允许中途是空串或半截数字，失焦时才收敛写盘。 */
+  const [limitText, setLimitText] = useState(savedLimit)
+  useEffect(() => {
+    setLimitText(savedLimit)
+  }, [savedLimit])
+
+  // 模型目录：进面板才拉一次，拉不到就退回「跟随会话默认」，不挡住其余偏好。
+  const aiModel = useSyncExternalStore(subscribePref, () => readPref(PREF_AI_MODEL, ''), () => '')
+  const [catalog, setCatalog] = useState<Array<{ provider: string; id: string; name: string; value: string }>>([])
+  const [catalogError, setCatalogError] = useState('')
+  const [modelsLoading, setModelsLoading] = useState(true)
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const data = await api<{ ok: boolean; error?: string; models?: Array<{ provider: string; id: string; name: string; value: string }> }>('/llm/models')
+        if (!alive) return
+        if (data.ok) setCatalog(data.models ?? [])
+        else setCatalogError(data.error || t('prefAiUnavailable'))
+      } catch (error) {
+        if (alive) setCatalogError(`${t('prefAiUnavailable')}：${(error as Error).message}`)
+      } finally {
+        if (alive) setModelsLoading(false)
+      }
+    })()
+    return () => {
+      alive = false
+    }
+  }, [t])
+
+  return (
+    <div className="dgp-adv">
+      <div className="dgp-group">
+        <div className="dgp-group-title">{t('groupInterface')}</div>
+        <div className="dgp-hint" style={{ marginTop: 0 }}>
+          {t('interfaceHint')}
+        </div>
+      </div>
+
+      <div className="dgp-group">
+        <div className="dgp-group-title">{t('prefDiffLayout')}</div>
+        <div className="dgp-seg" role="group" aria-label={t('prefDiffLayout')}>
+          {LAYOUT_KEYS.map((key) => (
+            <button
+              key={key}
+              type="button"
+              data-on={layout === key ? '1' : '0'}
+              onClick={() => writePref(PREF_DIFF_LAYOUT, key)}
+            >
+              {t(layoutKeyOf(key))}
+            </button>
+          ))}
+        </div>
+        <div className="dgp-hint">{t('prefDiffLayoutHint')}</div>
+      </div>
+
+      <div className="dgp-group">
+        <div className="dgp-group-title">{t('prefBehavior')}</div>
+        <label className="dgp-check">
+          <input type="checkbox" checked={highlightOn} onChange={(event) => writePref(PREF_HIGHLIGHT, event.target.checked ? '1' : '0')} />
+          <span className="dgp-check-body">
+            <span className="dgp-check-title">{t('prefHighlight')}</span>
+            <span className="dgp-hint" style={{ marginTop: 0 }}>
+              {t('prefHighlightHint')}
+            </span>
+          </span>
+        </label>
+        <label className="dgp-check">
+          <input type="checkbox" checked={chipShown} onChange={(event) => writePref(PREF_CHIP_HIDDEN, event.target.checked ? '0' : '1')} />
+          <span className="dgp-check-body">
+            <span className="dgp-check-title">{t('prefChip')}</span>
+            <span className="dgp-hint" style={{ marginTop: 0 }}>
+              {t('prefChipHint')}
+            </span>
+          </span>
+        </label>
+        <label className="dgp-check">
+          <input type="checkbox" checked={laneOn} onChange={(event) => writePref(PREF_GRAPH_LANES, event.target.checked ? '1' : '0')} />
+          <span className="dgp-check-body">
+            <span className="dgp-check-title">{t('prefLanes')}</span>
+            <span className="dgp-hint" style={{ marginTop: 0 }}>
+              {t('prefLanesHint')}
+            </span>
+          </span>
+        </label>
+      </div>
+
+      <div className="dgp-group">
+        <div className="dgp-group-title">{t('prefAiModel')}</div>
+        <div className="dgp-field">
+          <select
+            className="dgp-input"
+            value={aiModel}
+            disabled={modelsLoading}
+            onChange={(event) => writePref(PREF_AI_MODEL, event.target.value)}
+          >
+            <option value="">{t('prefAiDefault')}</option>
+            {catalog.map((item) => (
+              <option key={item.value} value={item.value}>
+                {item.provider} / {item.name}
+              </option>
+            ))}
+            {aiModel !== '' && !catalog.some((item) => item.value === aiModel) ? (
+              <option value={aiModel}>{aiModel}</option>
+            ) : null}
+          </select>
+          <div className="dgp-hint">
+            {catalogError !== '' ? catalogError : modelsLoading ? t('prefAiLoading') : t('prefAiModelHint')}
+          </div>
+        </div>
+      </div>
+
+      <div className="dgp-group">
+        <div className="dgp-group-title">{t('prefGraphLimit')}</div>
+        <div className="dgp-field">
+          <label className="dgp-label">{t('prefGraphLimit')}</label>
+          <div className="dgp-row">
+            <input
+              className="dgp-input dgp-num"
+              type="number"
+              min={20}
+              max={200}
+              step={10}
+              value={limitText}
+              onChange={(event) => setLimitText(event.target.value)}
+              onBlur={() => {
+                const next = clampLimit(limitText)
+                setLimitText(next)
+                writePref(PREF_GRAPH_LIMIT, next)
+              }}
+            />
+            <span className="dgp-hint" style={{ marginTop: 0 }}>
+              {t('prefGraphLimitHint')}
+            </span>
+          </div>
+        </div>
+        <div className="dgp-row" style={{ paddingTop: 10 }}>
+          <button
+            type="button"
+            className="dgp-btn ghost"
+            onClick={() => {
+              writePref(PREF_DIFF_LAYOUT, 'split')
+              writePref(PREF_HIGHLIGHT, '1')
+              writePref(PREF_CHIP_HIDDEN, '0')
+              writePref(PREF_GRAPH_LANES, '1')
+              writePref(PREF_GRAPH_LIMIT, '60')
+              writePref(PREF_AI_MODEL, '')
+              setLimitText('60')
+            }}
+          >
+            {t('prefReset')}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function GitSection({ t }: SectionProps) {
   useStyles()
   const [state, setState] = useState<PanelState | null>(null)
@@ -661,6 +863,8 @@ export function GitSection({ t }: SectionProps) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [advanced, setAdvanced] = useState(false)
+  /** 界面偏好分节（只影响本机显示，与服务端权限设置无关）。 */
+  const [interfaceOpen, setInterfaceOpen] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   /** 正在编辑的账号（非空时弹窗以「编辑账号」模式打开，回填平台与主机）。 */
   const [editTarget, setEditTarget] = useState<{ provider: string; host: string; apiBase: string; method: 'oauth' | 'pat'; login: string } | null>(null)
@@ -1051,6 +1255,14 @@ export function GitSection({ t }: SectionProps) {
         <button
           type="button"
           className="dgp-btn ghost"
+          aria-expanded={interfaceOpen}
+          onClick={() => setInterfaceOpen((value) => !value)}
+        >
+          {interfaceOpen ? t('interfaceHide') : t('interfaceShow')}
+        </button>
+        <button
+          type="button"
+          className="dgp-btn ghost"
           aria-expanded={advanced}
           onClick={() => setAdvanced((value) => !value)}
         >
@@ -1114,6 +1326,8 @@ export function GitSection({ t }: SectionProps) {
           onUseRoot={addRoot}
         />
       ) : null}
+
+      {interfaceOpen ? <InterfacePanel t={t} /> : null}
 
       <div className="dgp-adv">
         <div className="dgp-card">

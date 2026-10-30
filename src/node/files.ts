@@ -19,6 +19,44 @@ const MAX_FILE_BYTES = 512 * 1024
 const SNIFF_BYTES = 8 * 1024
 /** 单目录最多返回条目数。 */
 const MAX_ENTRIES = 2000
+/** 图片预览最多读这么多字节（base64 后约 1.37x，够看 4MB 以内的图）。 */
+const MAX_IMAGE_BYTES = 4 * 1024 * 1024
+
+/** 扩展名 → image MIME。未知返回空串（不是可预览图片）。 */
+const IMAGE_BY_EXT: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  gif: 'image/gif',
+  webp: 'image/webp',
+  bmp: 'image/bmp',
+  ico: 'image/x-icon',
+  avif: 'image/avif',
+  svg: 'image/svg+xml',
+}
+
+export interface ImageReadResult {
+  ok: boolean
+  root: string
+  path: string
+  /** 文件总字节数。 */
+  size: number
+  /** image/png 之类；不可预览时为空串。 */
+  mime: string
+  /** data: URL（base64）。失败或过大为空串。 */
+  dataUrl: string
+  /** 超过 MAX_IMAGE_BYTES 被截断（此时 dataUrl 为空，只报体积）。 */
+  truncated: boolean
+  error: string
+}
+
+/** 按扩展名判断能否当图片预览；能就返回 MIME，否则空串。 */
+export function imageMimeOf(filePath: string): string {
+  const name = filePath.split('/').pop() ?? filePath
+  const dot = name.lastIndexOf('.')
+  if (dot < 0) return ''
+  return IMAGE_BY_EXT[name.slice(dot + 1).toLowerCase()] ?? ''
+}
 
 export interface FileEntry {
   name: string
@@ -285,6 +323,46 @@ export async function readTextFile(root: string, relPath: string): Promise<FileR
     return { ok: true, root, path: rel, content, size, truncated, binary: false, lang, error: '' }
   } catch (error) {
     return { ...empty, path: rel, error: redact(error) }
+  }
+}
+
+/**
+ * 读图片并编码成 data: URL。
+ *
+ * 为什么不复用 readTextFile：文本通道对二进制直接返回空内容，
+ * 图片需要原始字节；但两者共用同一套路径校验与越界判定（resolveInside）。
+ * SVG 走 <img> 渲染时脚本不执行，所以按图片处理是安全的。
+ */
+export async function readImageFile(root: string, relPath: string): Promise<ImageReadResult> {
+  const rel = normalizeRel(relPath)
+  const empty: ImageReadResult = { ok: false, root, path: '', size: 0, mime: '', dataUrl: '', truncated: false, error: '' }
+  if (rel === null || rel.length === 0) {
+    return { ...empty, error: `路径不合法：${String(relPath)}` }
+  }
+  const mime = imageMimeOf(rel)
+  if (mime === '') {
+    return { ...empty, path: rel, error: `不是可预览的图片：${rel}` }
+  }
+  const file = await resolveInside(root, rel)
+  if (!file) {
+    return { ...empty, path: rel, mime, error: `文件不可访问或不在授权范围内：${rel}` }
+  }
+  let size = 0
+  try {
+    const info = statSync(file)
+    if (!info.isFile()) return { ...empty, path: rel, mime, error: `不是文件：${rel}` }
+    size = info.size
+  } catch (error) {
+    return { ...empty, path: rel, mime, error: redact(error) }
+  }
+  if (size > MAX_IMAGE_BYTES) {
+    return { ok: true, root, path: rel, size, mime, dataUrl: '', truncated: true, error: '' }
+  }
+  try {
+    const buffer = await readFile(file)
+    return { ok: true, root, path: rel, size, mime, dataUrl: `data:${mime};base64,${buffer.toString('base64')}`, truncated: false, error: '' }
+  } catch (error) {
+    return { ...empty, path: rel, mime, error: redact(error) }
   }
 }
 

@@ -85,6 +85,7 @@ if (nodeOut) {
   check('node 产物注册了 webServer 路由', nodeOut.includes('/dsh-git-panel'))
 }
 
+const EXTRA_LABELS = ['日本語', 'Español', 'Français', 'Deutsch', 'Русский', 'Português']
 const clientOut = await readText(resolve(root, 'lib/client.js'))
 const clientSrc = await readText(resolve(root, 'src/client/index.tsx'))
 // client 源文件的合并文本：重构后的新能力落在 shared.tsx / workbench.tsx / settings.tsx。
@@ -99,8 +100,17 @@ const clientSrcAll = [
   await readText(resolve(root, 'src/client/highlight.ts')),
   await readText(resolve(root, 'src/client/prism-env.ts')),
   await readText(resolve(root, 'src/client/graphview.tsx')),
+  await readText(resolve(root, 'src/client/markdown.ts')),
+  await readText(resolve(root, 'src/client/locales/index.ts')),
+  await readText(resolve(root, 'src/client/locales/ja.ts')),
+  await readText(resolve(root, 'src/client/locales/es.ts')),
+  await readText(resolve(root, 'src/client/locales/fr.ts')),
+  await readText(resolve(root, 'src/client/locales/de.ts')),
+  await readText(resolve(root, 'src/client/locales/ru.ts')),
+  await readText(resolve(root, 'src/client/locales/pt.ts')),
 ].join('\n')
 const sharedSrc = await readText(resolve(root, 'src/client/shared.tsx'))
+const markdownSrc = await readText(resolve(root, 'src/client/markdown.ts'))
 check('client 产物非空', (clientOut?.length ?? 0) > 1000, `${clientOut?.length ?? 0} 字节`)
 if (clientOut) {
   check('client 产物带 ModuleLoader banner', clientOut.includes('__ModuleLoader__.load'))
@@ -127,12 +137,12 @@ if (clientOut) {
   check('client 菜单层级高于宿主浮层（z-index:1200）', clientOut.includes('z-index:1200'))
   check('client 菜单自带主题变量（portal 后不继承 dgp-root）', clientOut.includes('dgp-portal'))
   // 分支拓扑图：车道式 DAG（节点 + 同车道竖线 + 跨车道贝塞尔转折线）
-  check('client 渲染分支拓扑图（dgp-graph）', clientOut.includes('dgp-graph'))
+  check('client 渲染分支拓扑泳道（dgp-graph-svg）', clientOut.includes('dgp-graph-svg'))
   check('client 用 SVG 画车道与节点', clientOut.includes('"svg"') && clientOut.includes('viewBox'))
   check('client 转折线用三次贝塞尔（C 命令）', /C\$\{|" C"|C\$/.test(clientOut) || clientOut.includes(' C'))
   check('client 按车道取色（laneColor + --dgp-lane）', clientOut.includes('laneColor') && clientOut.includes('--dgp-lane'))
   check('client 拉取提交图接口（/repo/graph）', clientOut.includes('/repo/graph'))
-  check('client 图区超宽时横向滚动（overflow:auto）', clientOut.includes('dgp-graph-body'))
+  check('client 历史行内联泳道列（dgp-gw-lanecell）', clientOut.includes('dgp-gw-lanecell') && sharedSrc.includes('.dgp-gw-lanecell'))
   check('client 节点悬浮/选中反馈（data-active）', clientOut.includes('data-active'))
   check('client ref chip 区分 local/remote/tag/head', clientOut.includes('data-kind') && sharedSrc.includes('[data-kind="head"]'))
   // 「打开 Git 设置」：桌面端快捷键走原生 IPC，合成 keydown 到不了 settings.open，
@@ -207,7 +217,7 @@ if (clientOut) {
   check('client 一级菜单不再内嵌分支拓扑（index.tsx 不再引用 GraphView）', !clientSrc.includes('GraphView'))
   check('client 一级菜单不再内嵌改动明细（index.tsx 不再有 ChangesList）', !clientSrc.includes('ChangesList'))
   check('client 工作台 portal 到 body（createPortal + document.body）', clientOut.includes('document.body') && portalImported >= 2)
-  check('client BUILD 版本已推进（dgp-v19）', clientOut.includes('dgp-v19'))
+  check('client BUILD 版本已推进（dgp-v20）', clientOut.includes('dgp-v20'))
   // ---- i18n 键完整性：任何 t('x') 用到的键都必须在 ZH/EN 字典里存在（防 wbCancel 类漏键） ----
   const clientNorm = clientSrc.replace(/\r\n/g, '\n')
   const dictStart = clientNorm.indexOf('const ZH: Dict = {')
@@ -215,7 +225,7 @@ if (clientOut) {
   const zhBlock = dictStart >= 0 && dictEnd > dictStart ? clientNorm.slice(dictStart, dictEnd) : ''
   const definedKeys = new Set([...zhBlock.matchAll(/^\s{2}([A-Za-z][A-Za-z0-9_]*):/gmu)].map((m) => m[1]))
   const usedKeys = new Set()
-  for (const file of ['index.tsx', 'workbench.tsx', 'graphview.tsx', 'settings.tsx', 'onboard.tsx', 'diffview.tsx', 'filebrowser.tsx']) {
+  for (const file of ['index.tsx', 'workbench.tsx', 'graphview.tsx', 'settings.tsx', 'onboard.tsx', 'diffview.tsx', 'filebrowser.tsx', 'markdown.ts']) {
     const src = await readText(resolve(root, 'src/client', file))
     if (!src) continue
     for (const m of src.replace(/\r\n/g, '\n').matchAll(/t\(\s*'([A-Za-z0-9_]+)'\s*\)/gu)) usedKeys.add(m[1])
@@ -289,7 +299,68 @@ if (clientOut) {
   check('概览授权仓库只数可访问档位（排除 none）', clientSrcAll.includes("perm !== 'none'") && clientSrcAll.includes('statsReposHintDefault'))
   check('死字典键已清（抽查 8 个不再出现）', ['scopeGrantAll', 'graphHead', 'statsReposHintAll', 'initStepConfirm', 'loadingLabel', 'toastCopiedFailed', 'wbDiffTab', 'branchDetailLoading'].every((key) => !clientSrcAll.includes(`  ${key}:`)))
   check('client 分支详情不单独做按钮（Git 只有一个 chip 入口）', !clientSrcAll.includes('dgp-branchbtn'))
-  // ---- dgp-v19：差异视图 / 文件浏览 / 历史搜索 / 标签 / 贮藏 / AI 提交信息 ----
+  // ---- dgp-v20：历史合并泳道 / 差异四视图 / 偏好键 / 界面分节 ----
+  check('client 车道列可复用（graphview 导出 LaneColumn + laneWidth）', clientSrcAll.includes('export function LaneColumn') && clientSrcAll.includes('export function laneWidth'))
+  check('client 历史视图复用车道列（按 hash 对齐后重排 row）', clientSrcAll.includes('<LaneColumn rows={laneRows}') && clientSrcAll.includes('byHash'))
+  check('client 不再有独立「分支图」导航项（rail 收敛为 5 项）', !clientSrcAll.includes("key: 'graph'") && !clientSrcAll.includes("'graph' |"))
+  check('client 历史视图有列表/泳道两档并记忆（PREF_GRAPH_LANES）', clientSrcAll.includes('PREF_GRAPH_LANES') && clientSrcAll.includes('wbHistoryLane'))
+  check('client 分支图行数走偏好（PREF_GRAPH_LIMIT，20~200 夹取）', clientSrcAll.includes('PREF_GRAPH_LIMIT') && clientSrcAll.includes('Math.min(100, Math.max(20'))
+  // ---- dgp-v20 第二批：图片 / Markdown / 620 断点 / 回退撤销 / 界面偏好 ----
+  check('client 图片预览支持点图切原尺寸（data-zoom）', clientSrcAll.includes('data-zoom') && sharedSrc.includes('.dgp-fb-imgbox'))
+  check('client Markdown 渲染器自带转义（不引第三方解析库）', markdownSrc.includes('escapeHtml') && markdownSrc.includes('export function renderMarkdown') && !markdownSrc.includes('marked('))
+  check('client Markdown 可切回源码（fbRendered + dgp-fb-md）', clientSrcAll.includes('fbRendered') && sharedSrc.includes('.dgp-fb-md'))
+  check('client 620 窄屏断点存在（一次只干一件事）', sharedSrc.includes('@media (max-width:620px)'))
+  check('client 提交详情提供回退/撤销入口（reset + revert）', clientSrcAll.includes('wbResetSoft') && clientSrcAll.includes('wbRevert') && clientSrcAll.includes('confirmHard'))
+  check('client 设置页可固定 AI 模型（PREF_AI_MODEL + /llm/models 下拉）', clientSrcAll.includes('PREF_AI_MODEL') && clientSrcAll.includes('prefAiModel') && clientSrcAll.includes('/llm/models'))
+  check('client 无上游时 Push 变成「发布分支」（git push -u）', clientSrcAll.includes('needsPublish') && clientSrcAll.includes('wbPublish') && clientSrcAll.includes('doPush(needsPublish)'))
+  check('client 偏好变更即时广播（subscribePref 监听自定义事件）', sharedSrc.includes('PREF_EVENT') && sharedSrc.includes('export function subscribePref'))
+  check('client 改动视图有汇总统计条（dgp-gw-summary）', clientSrcAll.includes('changeSummary') && sharedSrc.includes('.dgp-gw-summary'))
+  check('client 设置页有「界面」分节（InterfacePanel）', clientSrcAll.includes('function InterfacePanel') && clientSrcAll.includes('interfaceShow'))
+// ---- dgp-v20：8 语言（zh / en 内置，ja/es/fr/de/ru/pt 由插件 addLanguage 注册） ----
+{
+  const langFiles = ['ja', 'es', 'fr', 'de', 'ru', 'pt']
+  // ZH 在 index.tsx 里是局部常量（`const ZH`），语言字典是具名导出（`export const ja`），两种都认。
+  const dictKey = (text, name) => {
+    const head = `const ${name}: Dict = {`
+    let start = text.indexOf(`export ${head}`)
+    if (start === -1) start = text.indexOf(head)
+    if (start === -1) return null
+    const stop = text.indexOf('\n}', start)
+    return new Set([...text.slice(start, stop).matchAll(/^  ([A-Za-z0-9_]+):/gmu)].map((m) => m[1]))
+  }
+  const zhKeys = dictKey(clientSrc, 'ZH')
+  check('client 6 个语言字典文件存在且导出具名常量', langFiles.every((lang) => clientSrcAll.includes(`export const ${lang}: Dict = {`)))
+  const mismatched = langFiles.filter((lang) => {
+    const keys = dictKey(clientSrcAll, lang)
+    if (!keys || !zhKeys) return true
+    return keys.size !== zhKeys.size || [...zhKeys].some((key) => !keys.has(key))
+  })
+  check('client 6 个语言字典键集合与 ZH 完全一致', mismatched.length === 0, mismatched.join(', '))
+  check(
+    'client 语言目录通过 addLanguage 注册且 fallback 落到 en',
+    clientSrcAll.includes('addLanguage') &&
+      clientSrcAll.includes("fallback: 'en'") &&
+      clientSrcAll.includes('EXTRA_LANGUAGES') &&
+      EXTRA_LABELS.every((label) => clientSrcAll.includes(label)),
+  )
+  check('client 注册时把 6 语言并入 register 字典', clientSrc.includes('...EXTRA_LOCALES'))
+}
+  // ---- dgp-v20：类名与样式表一致性（此前踩过 dgp-gw-searchbar / dgp-repomenu* 裸渲染） ----
+  const cssDefined = new Set()
+  for (const m of sharedSrc.matchAll(/\.(dgp-[a-zA-Z0-9_-]+)/gu)) cssDefined.add(m[1])
+  const cssUsed = new Set()
+  for (const m of clientSrcAll.matchAll(/className="([^"]*)"/gu)) {
+    for (const token of m[1].split(/\s+/u)) if (token.startsWith('dgp-')) cssUsed.add(token)
+  }
+  for (const m of clientSrcAll.matchAll(/className=\{`([^`]*)`\}/gu)) {
+    for (const token of m[1].split(/[\s$]+/u)) {
+      if (token.startsWith('dgp-') && !token.includes('{')) cssUsed.add(token.replace(/[{}]/gu, ''))
+    }
+  }
+  const cssMissing = [...cssUsed].filter((token) => !cssDefined.has(token)).sort()
+  check('client 用到的 dgp- 类名都在样式表里有定义', cssMissing.length === 0, cssMissing.join(', '))
+
+  // ---- dgp-v20：差异视图 / 文件浏览 / 历史搜索 / 标签 / 贮藏 / AI 提交信息 ----
   check('client 差异视图拆到独立模块（diffview.tsx 导出 DiffView）', clientSrcAll.includes('export function DiffView'))
   check('client 差异视图解析 hunk 行号（parseDiff 返回 oldNo/newNo）', clientSrcAll.includes('export function parseDiff') && clientSrcAll.includes('oldNo') && clientSrcAll.includes('newNo'))
   check('client 差异视图支持并排/统一两种布局（buildSplit + DiffLayout）', clientSrcAll.includes('export function buildSplit') && clientSrcAll.includes("'split'") && clientSrcAll.includes("'unified'"))
@@ -312,7 +383,7 @@ if (clientOut) {
   check('client chip 有干净/脏二态（data-dirty）', clientSrcAll.includes('data-dirty') && clientSrcAll.includes('.dgp-chip[data-dirty="1"]'))
   check('client 有版本检查（GitHub releases/latest + 5 秒超时）', clientSrcAll.includes('/releases/latest') && clientSrcAll.includes('5000') && clientSrcAll.includes('export function isNewer') && clientSrcAll.includes('export function parseVersion'))
   check('client 版本提示不打扰（预发布不提示 + 只在打开菜单时查）', clientSrcAll.includes('prerelease') && clientSrcAll.includes('useLatestVersion(open)') && clientSrcAll.includes('menuNewVersion'))
-  check('client BUILD 版本已推进（dgp-v19）', clientOut.includes('dgp-v19'))
+  check('client BUILD 版本已推进（dgp-v20）', clientOut.includes('dgp-v20'))
 }
 // ---- node 半边：git-ops 命令层与工作台端点 ----
 {
@@ -366,12 +437,14 @@ if (clientOut) {
     if (gitOpsSrc2) {
       check('git-ops 提供 remote URL → owner/repo 解析（parseRemoteRepo）', gitOpsSrc2.includes('export function parseRemoteRepo'))
       check('git-ops readCommits 支持按 ref 取日志', /readCommits[\s\S]{0,200}ref\??:/.test(gitOpsSrc2))
-      // ---- dgp-v19：标签 / 贮藏 / 提交搜索 ----
+      // ---- dgp-v20：标签 / 贮藏 / 提交搜索 ----
       check('git-ops 标签读写（readTags/createTag/deleteTag/pushTag）', ['readTags', 'createTag', 'deleteTag', 'pushTag'].every((name) => gitOpsSrc2.includes(`export async function ${name}`)))
       check('git-ops 标签读取走 for-each-ref 并标注附注', gitOpsSrc2.includes('for-each-ref') && gitOpsSrc2.includes('annotated'))
       check('git-ops 贮藏读写（readStashes/stashSave/stashAction）', ['readStashes', 'stashSave', 'stashAction'].every((name) => gitOpsSrc2.includes(`export async function ${name}`)))
       check('git-ops 贮藏序号做白名单校验（stashIndex 0..999）', /function stashIndex[\s\S]{0,400}999/u.test(gitOpsSrc2))
       check('git-ops readCommits 支持关键词搜索（--grep）', gitOpsSrc2.includes('--grep=') && gitOpsSrc2.includes('--fixed-strings'))
+      check('git-ops 提供回退（resetToCommit，soft/mixed/hard）', gitOpsSrc2.includes('export async function resetToCommit') && gitOpsSrc2.includes('ResetMode'))
+      check('git-ops 提供撤销（revertCommit，--no-edit + 冲突人话）', gitOpsSrc2.includes('export async function revertCommit') && gitOpsSrc2.includes('--no-edit'))
     }
     const filesSrc = await readText(resolve(root, 'src/node/files.ts'))
     if (filesSrc) {
@@ -380,6 +453,8 @@ if (clientOut) {
       check('files 拒绝 .. 与 .git 段（normalizeRel）', /function normalizeRel[\s\S]{0,600}\.\./u.test(filesSrc) && filesSrc.includes("'.git'"))
       check('files 二进制文件按 NUL 嗅探判定', filesSrc.includes('includes(0)'))
       check('files 提供扩展名 → 语言标识映射（langOf）', filesSrc.includes('export function langOf'))
+      check('files 有图片通道（readImageFile + 4MB 上限）', filesSrc.includes('export async function readImageFile') && filesSrc.includes('MAX_IMAGE_BYTES'))
+      check('files 图片 MIME 由扩展名判定（IMAGE_BY_EXT + imageMimeOf）', filesSrc.includes('IMAGE_BY_EXT') && filesSrc.includes('export function imageMimeOf'))
     }
     for (const route of ['/repo/tags', '/repo/stash', '/repo/tree', '/repo/file', '/repo/tags/create', '/repo/tags/delete', '/repo/tags/push', '/repo/stash/save', '/repo/stash/action', '/repo/suggest-message']) {
       check(`handler 挂载 v19 端点 ${route}`, handlerSrc.includes(`'${route}'`))
@@ -387,12 +462,23 @@ if (clientOut) {
     check('handler /repo/tags/push 走远端归属闸门', /\/repo\/tags\/push[\s\S]{0,600}requireRemoteWritable/u.test(handlerSrc))
     check('handler /repo/suggest-message 只读（requireRead，不落盘）', /\/repo\/suggest-message[\s\S]{0,400}requireRead/u.test(handlerSrc))
     check('handler /repo/stash/action 校验 action 白名单', handlerSrc.includes('不支持的贮藏操作'))
+    // ---- dgp-v20 第二批：图片通道 / 回退撤销 / 模型目录 ----
+    for (const route of ['/repo/reset', '/repo/revert', '/repo/image', '/llm/models']) {
+      check(`handler 挂载 v20 端点 ${route}`, handlerSrc.includes(`'${route}'`))
+    }
+    check('handler /repo/reset 校验回退模式白名单', handlerSrc.includes('不支持的回退模式'))
+    check('handler /repo/reset 与 /repo/revert 走 requireWrite 闸门', /\/repo\/reset[\s\S]{0,200}requireWrite/u.test(handlerSrc) && /\/repo\/revert[\s\S]{0,200}requireWrite/u.test(handlerSrc))
+    check('handler /repo/image 走 requireRead 闸门', /\/repo\/image[\s\S]{0,200}requireRead/u.test(handlerSrc))
+    check('handler /repo/suggest-message 透传固定模型', handlerSrc.includes('str(body.model)'))
+    check('handler /repo/file 返回图片 MIME 供前端分流', handlerSrc.includes('imageMimeOf'))
     const suggestSrc = await readText(resolve(root, 'src/node/suggest.ts'))
     if (suggestSrc) {
       check('suggest 用宿主 llm.prepareCall + stream（不静态依赖 dsh-llm）', suggestSrc.includes('prepareCall') && suggestSrc.includes('call.stream'))
       check('suggest 模型取当前会话默认（currentSelection）', suggestSrc.includes('currentSelection'))
       check('suggest 有超时保护（AbortController）', suggestSrc.includes('AbortController'))
       check('suggest 只输出一行并清洗围栏/引号（cleanMessage）', suggestSrc.includes('cleanMessage'))
+      check('suggest 支持固定模型（parsePinnedRoute 优先于会话默认）', suggestSrc.includes('export function parsePinnedRoute') && suggestSrc.includes('pinned'))
+      check('suggest 提供模型目录（listModelCatalog，只读宿主 provider/model）', suggestSrc.includes('export async function listModelCatalog') && suggestSrc.includes('listProviders'))
     }
   }
 }

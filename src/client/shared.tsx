@@ -216,15 +216,37 @@ export interface FileReadView {
   truncated: boolean
   binary: boolean
   lang: string
+  /** 非空表示这是可预览图片，值是 MIME（image/png 等）。 */
+  image?: string
   error?: string
 }
 
-/** 差异视图呈现方式：并排 / 统一。用户选择记忆在 localStorage。 */
-export type DiffLayout = 'split' | 'unified'
+/** /repo/image 结果。 */
+export interface ImageReadView {
+  ok: boolean
+  root: string
+  path: string
+  size: number
+  mime: string
+  dataUrl: string
+  truncated: boolean
+  error?: string
+}
+
+/** 差异视图呈现方式：对照（并排）/ 统一 / 变更前 / 变更后。用户选择记忆在 localStorage。 */
+export type DiffLayout = 'split' | 'unified' | 'before' | 'after'
 
 /** 差异呈现偏好与语法高亮的本地记忆键。 */
 export const PREF_DIFF_LAYOUT = 'dgp.diffLayout'
 export const PREF_HIGHLIGHT = 'dgp.highlight'
+/** 输入框旁 chip 是否隐藏（对标插件的「标记开关」）。 */
+export const PREF_CHIP_HIDDEN = 'dgp.chipHidden'
+/** 分支图一次拉多少行（20~200）。 */
+export const PREF_GRAPH_LIMIT = 'dgp.graphLimit'
+/** 历史视图是否显示左侧泳道（列表 / 泳道两档）。 */
+export const PREF_GRAPH_LANES = 'dgp.graphLanes'
+/** 「生成提交信息」固定的模型路由（`provider/model`）；空表示跟随会话默认。 */
+export const PREF_AI_MODEL = 'dgp.aiModel'
 
 /** 读本地偏好（localStorage 不可用时回退默认值，不抛）。 */
 export function readPref(key: string, fallback: string): string {
@@ -236,12 +258,31 @@ export function readPref(key: string, fallback: string): string {
   }
 }
 
-/** 写本地偏好（隐私模式 / 配额满时静默忽略）。 */
+/** 偏好变更事件名：同一标签页内 writePref 之后用它通知订阅者（storage 事件只在别的标签页触发）。 */
+export const PREF_EVENT = 'dgp:pref-changed'
+
+/** 写本地偏好（隐私模式 / 配额满时静默忽略），写完广播一次让界面即时跟随。 */
 export function writePref(key: string, value: string): void {
   try {
     window.localStorage.setItem(key, value)
   } catch {
     /* 偏好写不进去不影响功能 */
+  }
+  try {
+    window.dispatchEvent(new Event(PREF_EVENT))
+  } catch {
+    /* 广播失败不影响写入结果 */
+  }
+}
+
+/** 订阅偏好变更（本页写入 + 其它标签页写入都算）。给 useSyncExternalStore 用。 */
+export function subscribePref(onChange: () => void): () => void {
+  const handler = () => onChange()
+  window.addEventListener(PREF_EVENT, handler)
+  window.addEventListener('storage', handler)
+  return () => {
+    window.removeEventListener(PREF_EVENT, handler)
+    window.removeEventListener('storage', handler)
   }
 }
 
@@ -465,12 +506,24 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 @media (prefers-reduced-motion:reduce){.dgp-gw{animation:none}}
 .dgp-gw-top{display:flex;align-items:center;gap:6px;padding:9px 12px;border-bottom:.5px solid var(--dgp-line);flex:0 0 auto;flex-wrap:wrap}
 .dgp-gw-crumb{font-weight:500;color:var(--dgp-fg)}
-.dgp-gw-repo{display:inline-flex;align-items:center;gap:5px;font-weight:500;color:var(--dgp-fg);min-width:0;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dgp-gw-repo{display:inline-flex;align-items:center;gap:5px;font-weight:500;color:var(--dgp-fg);min-width:0;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;appearance:none;border:0;border-radius:var(--dgp-r-xs);background:transparent;font:inherit;font-weight:500;padding:2px 4px;cursor:pointer;text-align:left}
+.dgp-gw-repo:hover{background:var(--dgp-hover)}
+.dgp-gw-repo[aria-expanded="true"]{background:var(--dgp-hover);color:var(--dgp-accent)}
 .dgp-gw-branch{appearance:none;display:inline-flex;align-items:center;gap:4px;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-xs);background:transparent;color:var(--dgp-fg2);height:24px;padding:0 8px;font:inherit;font-size:11.5px;font-family:var(--dgp-code);cursor:pointer;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dgp-gw-branch:hover{background:var(--dgp-hover);color:var(--dgp-fg)}
 .dgp-gw-branch[data-current="1"]{color:var(--dgp-fg);border-color:color-mix(in srgb,var(--dgp-accent) 40%,var(--dgp-line2))}
 .dgp-gw-caret{color:var(--dgp-faint);font-size:9px}
 .dgp-gw-aux{font-family:var(--dgp-code);font-size:11px;color:var(--dgp-muted);font-variant-numeric:tabular-nums;white-space:nowrap}
+/* 顶栏仓库下拉：portal 到 body，脱离 .dgp-root 也要能取到视觉 token。 */
+.dgp-repomenu{display:flex;flex-direction:column;position:fixed;z-index:1250;min-width:260px;max-width:360px;max-height:min(360px,60vh);overflow-y:auto;padding:4px;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-md);background:var(--dsw-alias-bg-layer-1,var(--dgp-bg,#fff));box-shadow:var(--dsw-elevation-prominent,0 8px 28px #00000026);font-family:var(--dsw-font-family,inherit);font-size:12px;line-height:18px;color:var(--dgp-fg2);box-sizing:border-box}
+.dgp-repomenu-head{padding:4px 8px 6px;color:var(--dgp-faint);font-size:10.5px;letter-spacing:.02em;text-transform:uppercase}
+.dgp-repomenu-row{display:flex;align-items:center;gap:8px;width:100%;appearance:none;border:0;border-radius:var(--dgp-r-xs);background:transparent;color:inherit;font:inherit;text-align:left;padding:5px 8px;cursor:pointer;min-width:0}
+.dgp-repomenu-row:hover{background:var(--dgp-hover)}
+.dgp-repomenu-row[data-on="1"]{background:var(--dgp-hover)}
+.dgp-repomenu-row[data-on="1"] .dgp-repomenu-name{color:var(--dgp-accent)}
+.dgp-repomenu-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dgp-fg)}
+.dgp-repomenu-meta{flex:0 0 auto;font-family:var(--dgp-code);font-size:10px;color:var(--dgp-muted)}
+.dgp-repomenu-foot{padding:6px 8px 4px;border-top:.5px solid var(--dgp-line);margin-top:4px;color:var(--dgp-faint);font-size:10.5px;line-height:15px}
 .dgp-gw-spacer{flex:1 1 auto}
 .dgp-gw-btnbar{display:inline-flex;align-items:center;gap:4px;flex:0 0 auto}
 .dgp-gw .dgp-btn{height:24px;padding:0 9px;font-size:11px}
@@ -530,10 +583,19 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 .dgp-gw-rowact[data-danger="1"]:hover{color:var(--dgp-danger)}
 .dgp-gw-batch{display:flex;align-items:center;gap:6px;padding:8px 12px;border-top:.5px solid var(--dgp-line);flex:0 0 auto;flex-wrap:wrap}
 .dgp-gw-batch-count{font-family:var(--dgp-code);font-size:11px;color:var(--dgp-muted);font-variant-numeric:tabular-nums}
+/* 搜索行（历史 / 标签 / 贮藏共用） */
+.dgp-gw-searchbar{display:flex;align-items:center;gap:6px;padding:8px 12px;border-bottom:.5px solid var(--dgp-line);flex:0 0 auto;flex-wrap:wrap}
+.dgp-gw-search{flex:1 1 160px;min-width:120px;height:26px;font-size:12px;padding:0 8px}
+.dgp-gw-more{display:flex;justify-content:center;padding:6px 12px 12px;flex:0 0 auto}
 /* 历史 / 分支图视图 */
 .dgp-gw-scroll{flex:1 1 auto;overflow-y:auto;overscroll-behavior:contain;min-height:0}
 .dgp-gw-log{display:flex;flex-direction:column;padding:4px 0 10px}
 .dgp-gw-logrow{display:flex;align-items:center;gap:7px;width:100%;padding:5px 12px;border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;min-width:0}
+.dgp-gw-lanecell{flex:0 0 auto;display:flex;align-items:flex-start;overflow:hidden;align-self:stretch}
+.dgp-gw-lanecell svg{display:block}
+.dgp-gw-logview{display:flex;align-items:stretch;padding:4px 0 10px}
+.dgp-gw-logview .dgp-gw-log{flex:1 1 auto;min-width:0;padding:0}
+.dgp-gw-logrow[data-lane="1"]{padding-left:0}
 .dgp-gw-logrow:hover{background:var(--dgp-hover)}
 .dgp-gw-loghash{flex:0 0 auto;font-family:var(--dgp-code);font-size:10.5px;color:var(--dgp-accent)}
 .dgp-gw-logmsg{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dgp-fg2)}
@@ -584,6 +646,13 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 .dgp-acct .dgp-repos{margin-top:8px;padding-left:0;border-left:0}
 /* 高级设置折叠区：本地目录白名单 + 全局兜底仓库 + 写开关。 */
 .dgp-adv{margin:2px 0 12px;padding:11px 12px 12px;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-sm);background:var(--dgp-inset)}
+.dgp-gw-summary{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:8px 12px;border-bottom:.5px solid var(--dgp-line);flex:0 0 auto}
+.dgp-gw-summary-item{display:inline-flex;align-items:baseline;gap:5px;font-size:12px;line-height:18px;color:var(--dgp-muted)}
+.dgp-gw-summary-item b{font-family:var(--dgp-code);font-size:11.5px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--dgp-fg2)}
+.dgp-gw-summary-item[data-sign="add"] b{color:var(--dgp-ok)}
+.dgp-gw-summary-item[data-sign="del"] b{color:var(--dgp-danger)}
+.dgp-gw-summary-label{color:var(--dgp-faint)}
+.dgp-num{max-width:96px;flex:0 0 auto;text-align:center;font-variant-numeric:tabular-nums}
 /* ------------------------------------------------------------------ */
 /* 初始化向导（单页表单 + 右侧实时计划）                                */
 /* ------------------------------------------------------------------ */
@@ -661,6 +730,8 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 .dgp-dv-row[data-kind="fold"]:hover{color:var(--dgp-fg)}
 .dgp-dv-side{display:flex;min-width:0;flex:1 1 0;border-right:.5px solid var(--dgp-line)}
 .dgp-dv-side:last-child{border-right:0}
+.dgp-dv-table[data-layout="before"] .dgp-dv-side,.dgp-dv-table[data-layout="after"] .dgp-dv-side{flex:1 1 100%;border-right:0}
+.dgp-dv-table[data-layout="before"] .dgp-dv-sign,.dgp-dv-table[data-layout="after"] .dgp-dv-sign{display:none}
 .dgp-dv-no{flex:0 0 auto;width:38px;padding:0 6px;text-align:right;color:var(--dgp-faint);font-variant-numeric:tabular-nums;user-select:none;background:color-mix(in srgb,#000 3%,transparent)}
 .dgp-dv-sign{flex:0 0 auto;width:10px;text-align:center;color:var(--dgp-muted);user-select:none}
 .dgp-dv-code{flex:1 1 auto;min-width:0;padding:0 6px 0 2px;white-space:pre;overflow:hidden;text-overflow:clip}
@@ -685,12 +756,36 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 .dgp-fb-row[data-ignored="1"]{opacity:.5}
 .dgp-fb-caret{flex:0 0 auto;width:9px;color:var(--dgp-faint);font-size:9px;line-height:1}
 .dgp-fb-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dgp-fb-list{display:flex;flex-direction:column;min-height:0}
+.dgp-fb-size{flex:0 0 auto;font-family:var(--dgp-code);font-size:10px;color:var(--dgp-faint);font-variant-numeric:tabular-nums;margin-left:auto;padding-left:6px}
+.dgp-fb-back{display:none;flex:0 0 auto}
 .dgp-fb-view{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:auto;background:var(--dgp-bg,#fff)}
 .dgp-fb-head{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:.5px solid var(--dgp-line);position:sticky;top:0;background:inherit;flex:0 0 auto}
 .dgp-fb-path{flex:1 1 auto;min-width:0;font-family:var(--dgp-code);font-size:11px;color:var(--dgp-fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dgp-fb-code{margin:0;padding:8px 10px;font-family:var(--dgp-code);font-size:11px;line-height:17px;color:var(--dgp-fg2);white-space:pre;overflow:auto;flex:1 1 auto;min-height:0}
 .dgp-fb-code[data-wrap="1"]{white-space:pre-wrap;overflow-wrap:anywhere}
-.dgp-fb-img{max-width:100%;max-height:100%;object-fit:contain;padding:10px}
+.dgp-fb-md{flex:1 1 auto;min-height:0;overflow:auto;padding:12px 16px;font-size:13px;line-height:1.7;color:var(--dgp-fg2)}
+.dgp-fb-md h1,.dgp-fb-md h2,.dgp-fb-md h3,.dgp-fb-md h4,.dgp-fb-md h5,.dgp-fb-md h6{margin:16px 0 8px;font-weight:600;line-height:1.35;color:var(--dgp-fg)}
+.dgp-fb-md h1{font-size:19px;padding-bottom:6px;border-bottom:.5px solid var(--dgp-line)}
+.dgp-fb-md h2{font-size:16px;padding-bottom:4px;border-bottom:.5px solid var(--dgp-line)}
+.dgp-fb-md h3{font-size:14px}
+.dgp-fb-md h4,.dgp-fb-md h5,.dgp-fb-md h6{font-size:13px}
+.dgp-fb-md p{margin:8px 0}
+.dgp-fb-md ul,.dgp-fb-md ol{margin:8px 0;padding-left:22px}
+.dgp-fb-md li{margin:3px 0}
+.dgp-fb-md li.dgp-md-task{list-style:none;margin-left:-18px}
+.dgp-fb-md li.dgp-md-task[data-done="1"]{color:var(--dgp-faint)}
+.dgp-fb-md code{padding:1px 4px;border-radius:3px;background:var(--dgp-inset);font-family:var(--dgp-code);font-size:11.5px}
+.dgp-fb-md pre.dgp-md-code{margin:10px 0;padding:9px 11px;border-radius:var(--dgp-r-xs);background:var(--dgp-inset);overflow:auto}
+.dgp-fb-md pre.dgp-md-code code{padding:0;background:transparent;font-size:11.5px;line-height:17px;white-space:pre}
+.dgp-fb-md blockquote{margin:10px 0;padding:2px 12px;border-left:2px solid var(--dgp-line2);color:var(--dgp-muted)}
+.dgp-fb-md hr{margin:14px 0;border:0;border-top:.5px solid var(--dgp-line)}
+.dgp-fb-md a{color:var(--dgp-accent);text-decoration:none}
+.dgp-fb-md a:hover{text-decoration:underline}
+.dgp-fb-img{display:block;max-width:100%;max-height:100%;object-fit:contain;padding:10px;cursor:zoom-in;transition:transform var(--dgp-fast) var(--dgp-ease)}
+.dgp-fb-img[data-zoom="1"]{max-width:none;max-height:none;cursor:zoom-out}
+.dgp-fb-imgbox{flex:1 1 auto;min-height:0;overflow:auto;display:flex;align-items:flex-start;justify-content:center;background:repeating-conic-gradient(var(--dgp-inset) 0% 25%,transparent 0% 50%) 50%/16px 16px}
+.dgp-fb-imgmeta{flex:0 0 auto;display:flex;align-items:center;gap:8px;padding:5px 10px;border-top:.5px solid var(--dgp-line);font-family:var(--dgp-code);font-size:10.5px;color:var(--dgp-faint)}
 /* ------------------------------------------------------------------ */
 /* 窄屏（dgp-v19：≤760px 单栏钻取；宿主侧栏面板常在此宽度）             */
 /* ------------------------------------------------------------------ */
@@ -706,6 +801,7 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
   .dgp-fb-tree{border-right:0;border-bottom:.5px solid var(--dgp-line);max-height:40%}
   .dgp-fb[data-focus="1"] .dgp-fb-tree{display:none}
   .dgp-fb[data-focus="0"] .dgp-fb-view{display:none}
+  .dgp-fb-back{display:inline-flex}
   .dgp-dv-side[data-role="right"]{display:none}
   .dgp-dv-row[data-kind="add"] .dgp-dv-side[data-role="left"],.dgp-dv-row[data-kind="del"] .dgp-dv-side[data-role="right"]{flex:1 1 100%}
   .dgp-modal{width:calc(100vw - 20px) !important;max-height:calc(100vh - 20px)}
@@ -714,6 +810,29 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
   .dgp-iw-grid2{grid-template-columns:minmax(0,1fr)}
   .dgp-gw-commitbar{flex-wrap:wrap}
   .dgp-gw-batch{flex-wrap:wrap}
+}
+/* 极窄屏（dgp-v20）：760 只是「收窄」，620 才是「一次只干一件事」——
+   列表与详情互斥、差异对照强制切成单侧、泳道列让位给提交信息。 */
+@media (max-width:620px){
+  .dgp-gw{width:calc(100vw - 8px);height:calc(100vh - 8px);border-radius:var(--dgp-r-sm,8px)}
+  .dgp-gw-top{padding:6px 8px}
+  .dgp-gw-rail{overflow-x:auto;scrollbar-width:none}
+  .dgp-gw-railbtn{padding:5px 8px;font-size:11.5px}
+  .dgp-gw-railbtn-count{display:none}
+  .dgp-gw-searchbar{padding:6px 8px}
+  .dgp-gw-search{flex:1 1 100%;order:-1}
+  .dgp-gw-summary{gap:10px;padding:6px 8px;font-size:11px}
+  .dgp-gw-logrow{padding:5px 8px;gap:5px}
+  .dgp-gw-logmeta{display:none}
+  .dgp-gw-lanecell{display:none}
+  .dgp-gw-diff{font-size:10px}
+  .dgp-fb-tree{max-height:34%}
+  .dgp-fb-img-meta{flex-wrap:wrap}
+  .dgp-fb-md{padding:10px 12px}
+  .dgp-dv-side[data-role="left"]{display:none}
+  .dgp-dv-layout,.dgp-dv-find{display:none}
+  .dgp-modal{width:calc(100vw - 8px) !important;max-height:calc(100vh - 8px)}
+  .dgp-gw-summary-staged{display:none}
 }
 ${TOKEN_CSS}
 `

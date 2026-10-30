@@ -248,9 +248,10 @@ export function DiffView({
   lang?: string
 }) {
   useStyles()
-  const [layout, setLayout] = useState<DiffLayout>(
-    () => (readPref(PREF_DIFF_LAYOUT, 'split') === 'unified' ? 'unified' : 'split'),
-  )
+  const [layout, setLayout] = useState<DiffLayout>(() => {
+    const saved = readPref(PREF_DIFF_LAYOUT, 'split')
+    return saved === 'unified' || saved === 'before' || saved === 'after' ? saved : 'split'
+  })
   const [highlightOn, setHighlightOn] = useState<boolean>(() => readPref(PREF_HIGHLIGHT, '1') !== '0')
   const [query, setQuery] = useState('')
   const [active, setActive] = useState(0)
@@ -396,8 +397,10 @@ export function DiffView({
     <div className="dgp-dv">
       <div className="dgp-dv-bar">
         <span className="dgp-seg" role="group" aria-label={t('diffLayout')}>
-          <button type="button" data-on={layout === 'split' ? '1' : '0'} onClick={() => pickLayout('split')}>{t('diffSplit')}</button>
           <button type="button" data-on={layout === 'unified' ? '1' : '0'} onClick={() => pickLayout('unified')}>{t('diffUnified')}</button>
+          <button type="button" data-on={layout === 'split' ? '1' : '0'} onClick={() => pickLayout('split')}>{t('diffSplit')}</button>
+          <button type="button" data-on={layout === 'before' ? '1' : '0'} onClick={() => pickLayout('before')}>{t('diffBefore')}</button>
+          <button type="button" data-on={layout === 'after' ? '1' : '0'} onClick={() => pickLayout('after')}>{t('diffAfter')}</button>
         </span>
         <span className="dgp-dv-find">
           <input
@@ -444,6 +447,16 @@ export function DiffView({
               const kind = pairKind(item.pair)
               const hitHere = position === activeRow
               const span = spans[position] ?? NO_SPAN
+              if (layout === 'before' || layout === 'after') {
+                // 变更前 / 变更后：只保留同一侧，另一侧不存在的行整体跳过。
+                const solo = layout === 'before' ? item.pair.left : item.pair.right
+                if (!solo) return null
+                return (
+                  <div key={`o-${item.index}`} className="dgp-dv-row" data-kind={kind} data-hitrow={hitHere ? '1' : '0'}>
+                    {renderCell(solo, layout === 'before' ? 'left' : 'right', span)}
+                  </div>
+                )
+              }
               if (layout === 'unified') {
                 // 统一视图：成对的删/增拆成两行按原序排，其余单行铺满。
                 if (item.pair.left?.kind === 'del' && item.pair.right?.kind === 'add') {

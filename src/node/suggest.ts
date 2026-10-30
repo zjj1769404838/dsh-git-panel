@@ -9,6 +9,9 @@
  *   1. 只读仓库内容，不落盘、不暂存、不提交——生成结果是给用户编辑的草稿；
  *   2. 模型不可用时明确回「未接入」而不是编一条假信息（宁可不生成）；
  *   3. 发给模型的内容做长度上限裁剪，避免大仓库把整份 diff 送出去。
+ *
+ * dgp-v20 起支持「固定模型」：设置页可把一个 `provider/model` 存成偏好，生成时优先
+ * 用它，取不到才回落会话默认——换会话、切默认模型都不会动到这条固定选择。
  */
 import { readCommits, readDiff } from './git-ops.js'
 
@@ -32,6 +35,26 @@ export interface SuggestResult {
 /** 宿主 llm 服务的最小面（避免静态 import @deepseek-ai/*，profile 里不可见）。 */
 export interface LlmLike {
   prepareCall: (config: Record<string, unknown>, signal?: unknown, configure?: unknown) => Promise<any>
+  /** 可选：模型目录（设置页「AI 模型」下拉用；缺失时下拉只留「跟随会话默认」）。 */
+  listProviders?: () => Array<{ id: string; name: string }>
+  listModels?: (provider: string) => Promise<Array<{ provider: string; id: string; name: string }>>
+}
+
+/** 插件内固定的模型路由（`provider/model`），为空表示跟随会话默认。 */
+export interface PinnedRoute {
+  provider: string
+  model: string
+}
+
+/** 把 `provider/model` 解析成路由；格式不对返回 null（不猜、不试）。 */
+export function parsePinnedRoute(raw: string): PinnedRoute | null {
+  const text = raw.trim()
+  const at = text.indexOf('/')
+  if (at <= 0 || at === text.length - 1) return null
+  const provider = text.slice(0, at).trim()
+  const model = text.slice(at + 1).trim()
+  if (provider.length === 0 || model.length === 0) return null
+  return { provider, model }
 }
 
 export interface DefaultModelLike {
@@ -81,6 +104,7 @@ export async function suggestCommitMessage(
   deps: SuggestDeps,
   cwd: string,
   hint: string,
+  pinned = '',
 ): Promise<SuggestResult> {
   const none = (error: string): SuggestResult => ({
     ok: false, message: '', error, source: 'none', provider: '', model: '',
@@ -91,18 +115,22 @@ export async function suggestCommitMessage(
     return none('当前 DSH 未提供模型服务，无法生成提交信息')
   }
 
-  // 模型跟随会话默认；取不到就明确说，不猜一个 provider 去试。
-  let route: { provider: string; model: string } | null = null
+  // 模型优先级：插件内固定的路由 → 会话默认。两者都没有就明确说，不猜一个 provider 去试。
+  let route: { provider: string; model: string } | null = parsePinnedRoute(pinned)
   try {
-    const selection = deps.defaultModel?.currentSelection?.()
-    if (selection && typeof selection.provider === 'string' && typeof selection.model === 'string'
-      && selection.provider.length > 0 && selection.model.length > 0) {
-      route = { provider: selection.provider, model: selection.model }
+    if (route) {
+      // 固定路由已给出，不再问默认模型，避免会话切换把用户的固定选择盖掉。
+    } else {
+      const selection = deps.defaultModel?.currentSelection?.()
+      if (selection && typeof selection.provider === 'string' && typeof selection.model === 'string'
+        && selection.provider.length > 0 && selection.model.length > 0) {
+        route = { provider: selection.provider, model: selection.model }
+      }
     }
   } catch {
     route = null
   }
-  if (!route) return none('未读取到当前会话的默认模型，请先在 DSH 里选择模型')
+  if (!route) return none('未读取到可用的模型，请在 DSH 里选择模型或在插件设置里固定一个模型')
 
   // 改动内容以暂存区为准；没有暂存就退回工作区，让「还没 stage 也想写信息」也能用。
   const staged = await readDiff(cwd, 'staged', '', '')
@@ -182,3 +210,42 @@ export async function suggestCommitMessage(
 
 /** 供门禁断言：文本块拼接（不依赖宿主 BlockAssembler）。 */
 export const __testTextOfBlocks = textOfBlocks
+
+/**
+ * 模型目录：把宿主 llm 的 provider / model 摊平成设置页下拉要的形状。
+ * 任一环节缺失或抛错都退化为空列表，绝不因为查目录失败挡住生成。
+ */
+export async function listModelCatalog(llm: LlmLike | undefined): Promise<{
+  ok: boolean
+  error: string
+  models: Array<{ provider: string; id: string; name: string; value: string }>
+}> {
+  if (!llm || typeof llm.listProviders !== 'function' || typeof llm.listModels !== 'function') {
+    return { ok: false, error: '当前 DSH 未提供模型目录', models: [] }
+  }
+  const out: Array<{ provider: string; id: string; name: string; value: string }> = []
+  let providers: Array<{ id: string; name: string }> = []
+  try {
+    providers = llm.listProviders()
+  } catch {
+    return { ok: false, error: '读取模型供应商失败', models: [] }
+  }
+  for (const provider of providers) {
+    if (!provider || typeof provider.id !== 'string' || provider.id.length === 0) continue
+    try {
+      const models = await llm.listModels(provider.id)
+      for (const model of models) {
+        if (!model || typeof model.id !== 'string' || model.id.length === 0) continue
+        out.push({
+          provider: provider.id,
+          id: model.id,
+          name: typeof model.name === 'string' && model.name.length > 0 ? model.name : model.id,
+          value: `${provider.id}/${model.id}`,
+        })
+      }
+    } catch {
+      // 单个 provider 查不到不算失败：其余供应商的模型仍然可用。
+    }
+  }
+  return { ok: true, error: '', models: out }
+}

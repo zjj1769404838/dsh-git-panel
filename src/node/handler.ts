@@ -26,6 +26,8 @@ import {
   readStashes,
   readTags,
   removeRemote,
+  resetToCommit,
+  revertCommit,
   renameBranch,
   stageAll,
   stagePaths,
@@ -36,8 +38,8 @@ import {
   pushTag,
   unstagePaths,
 } from './git-ops.js'
-import { listDir, readTextFile } from './files.js'
-import { suggestCommitMessage, type DefaultModelLike, type LlmLike } from './suggest.js'
+import { imageMimeOf, listDir, readImageFile, readTextFile } from './files.js'
+import { listModelCatalog, suggestCommitMessage, type DefaultModelLike, type LlmLike } from './suggest.js'
 import { pollDeviceFlow, PROVIDERS, providerOf, startDeviceFlow, verifyToken, listAccountRepos, createAccountRepo } from './providers.js'
 import { redact } from './vault.js'
 
@@ -421,6 +423,30 @@ export function createHandler(deps: HandlerDeps) {
           truncated: result.truncated,
           binary: result.binary,
           lang: result.lang,
+          // 图片扩展名由 node 判定，前端据此决定走 <img> 还是文本预览。
+          image: imageMimeOf(result.path),
+        })
+        return
+      }
+
+      // 文件浏览：读图片（base64 data URL，供预览与缩放）。与 /repo/file 共用路径校验。
+      if (method === 'GET' && path === '/repo/image') {
+        const cwd = str(url.searchParams.get('cwd')).trim()
+        const dir = requireRead(cwd, { dataUrl: '' })
+        if (!dir) return
+        const result = await readImageFile(dir, str(url.searchParams.get('path')).trim())
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error, dataUrl: '' })
+          return
+        }
+        sendJson(res, 200, {
+          ok: true,
+          root: result.root,
+          path: result.path,
+          size: result.size,
+          mime: result.mime,
+          dataUrl: result.dataUrl,
+          truncated: result.truncated,
         })
         return
       }
@@ -485,6 +511,13 @@ export function createHandler(deps: HandlerDeps) {
           return
         }
         sendJson(res, 200, { ok: true, root: result.root })
+        return
+      }
+
+      // 模型目录：设置页「AI 模型」下拉用。只读宿主的 provider/model 列表，不外发。
+      if (method === 'GET' && path === '/llm/models') {
+        const catalog = await listModelCatalog(deps.llm)
+        sendJson(res, 200, { ok: catalog.ok, error: catalog.error, models: catalog.models })
         return
       }
 
@@ -631,6 +664,7 @@ export function createHandler(deps: HandlerDeps) {
           { llm: deps.llm, defaultModel: deps.defaultModel, log: deps.log },
           dir,
           str(body.hint),
+          str(body.model),
         )
         sendJson(res, 200, {
           ok: result.ok,
@@ -893,6 +927,37 @@ export function createHandler(deps: HandlerDeps) {
           return
         }
         sendJson(res, 200, { ok: true, root: result.root })
+        return
+      }
+
+      // 回退当前分支到某个提交（reset）：写操作，三种模式都显式传，不做默认。
+      if (path === '/repo/reset') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const mode = str(body.mode).trim()
+        if (mode !== 'soft' && mode !== 'mixed' && mode !== 'hard') {
+          sendJson(res, 400, { ok: false, error: `不支持的回退模式：${mode || '(空)'}` })
+          return
+        }
+        const result = await resetToCommit(cwd, str(body.rev).trim(), mode)
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error, output: result.output })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root, output: result.output })
+        return
+      }
+
+      // 撤销某个提交（revert，生成反向提交）：写操作。
+      if (path === '/repo/revert') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const result = await revertCommit(cwd, str(body.rev).trim())
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error, output: result.output, conflicted: result.conflicted })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root, output: result.output })
         return
       }
 

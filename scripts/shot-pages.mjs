@@ -105,13 +105,13 @@ try {
     })
     await page.waitForTimeout(1400)
     await wb.screenshot({ path: '.work/pages-workbench-history.png' })
-    // 切到「分支图」
+    // 历史里的「泳道」档（dgp-v20 起分支图并入历史列表）
     await page.evaluate(() => {
-      const btns = Array.from(document.querySelectorAll('.dgp-gw-railbtn'))
-      btns.find((b) => /分支图|Graph/.test(b.textContent ?? ''))?.click()
+      const btns = Array.from(document.querySelectorAll('.dgp-seg button'))
+      btns.find((b) => /泳道|Lanes/.test(b.textContent ?? ''))?.click()
     })
     await page.waitForTimeout(1800)
-    await wb.screenshot({ path: '.work/pages-workbench-graph.png' })
+    await wb.screenshot({ path: '.work/pages-workbench-lane.png' })
     // 关闭模态框
     await page.evaluate(() => document.querySelector('.dgp-gw-x')?.click())
     await page.waitForTimeout(900)

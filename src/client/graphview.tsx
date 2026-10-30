@@ -1,13 +1,18 @@
-import { useState } from 'react'
-import { CopyIcon } from './shared.js'
-import type { RepoGraphView, Dict } from './shared.js'
+import type { GraphRowView } from './shared.js'
 
 /**
- * 分支拓扑图（车道式 DAG）：独立模块，chip 菜单与 Git 工作台共用。
- * 车道宽 13px、行高 34px；颜色按车道索引取 8 色循环（车道稳定 → 颜色稳定）。
+ * 车道图元（纯 SVG）：历史列表每行左侧贴一条泳道（dgp-v20 起合并了原先独立的「分支图」视图）。
+ *
+ * 布局算法在 node 半边（`src/node/graph.ts`）完成，这里只负责画：
+ * 行高 34px、车道宽 13px；颜色按车道索引取 8 色循环（车道稳定 → 颜色稳定）。
+ * 一条分支跨 N 行是靠 N 个竖线段拼出来的，不存在跨行长连线，
+ * 因此连线永远不会穿过中间的节点。
+ *
+ * 只导出两个：`laneWidth()` 给调用方算左侧留空，`LaneColumn` 画整列。
+ * 整列只渲染一个 SVG（不是每行一个），否则每行都要重算路径，滚动时还会抖。
  */
-const LANE_W = 13
-const ROW_H = 34
+export const LANE_W = 13
+export const ROW_H = 34
 const LANE_PAD = 9
 const DOT_R = 4
 
@@ -33,201 +38,102 @@ function curvePath(from: number, to: number, row: number): string {
   return `M${x1} ${y1} C${x1} ${y1 + half} ${x2} ${y2 - half} ${x2} ${y2}`
 }
 
-interface GraphProps {
-  t: (key: string) => string
-  graph: RepoGraphView | null
-  loading: boolean
-  error: string
+/** 车道列占用的宽度（历史视图据此给每行预留左侧空位）。 */
+export function laneWidth(laneCount: number): number {
+  const lanes = Math.max(1, laneCount)
+  return LANE_PAD * 2 + (lanes - 1) * LANE_W
 }
 
-export function GraphView({ t, graph, loading, error }: GraphProps) {
-  const [active, setActive] = useState<string>('')
-  const [copied, setCopied] = useState('')
+interface LaneProps {
+  /** 图行；row 必须是它在「被渲染列表」里的行号（历史列表按 row 重排后传入）。 */
+  rows: Array<{
+    row: number
+    lane: number
+    segments: Array<{ from: number; to: number }>
+    through: number[]
+    refs: Array<{ kind: string }>
+    hash: string
+  }>
+  laneCount: number
+  /** 总行数：决定 SVG 高度，保证最后一行也有完整的半行留白。 */
+  count: number
+}
 
-  const rows = graph?.rows ?? []
-  const laneCount = Math.max(1, graph?.laneCount ?? 1)
-  const width = LANE_PAD * 2 + (laneCount - 1) * LANE_W
-  const height = Math.max(ROW_H, rows.length * ROW_H)
-  const selected = rows.find((item) => item.hash === active) ?? null
-
-  const copyHash = async (hash: string) => {
-    try {
-      await navigator.clipboard.writeText(hash)
-      setCopied(hash)
-      window.setTimeout(() => setCopied(''), 1500)
-    } catch {
-      setCopied('')
-    }
-  }
-
-  if (loading && !graph) {
-    return (
-      <div className="dgp-graph">
-        <div className="dgp-graph-head">
-          <span>{t('graphTitle')}</span>
-        </div>
-        <div className="dgp-graph-note">{t('graphLoading')}</div>
-      </div>
-    )
-  }
-
-  if (error.length > 0) {
-    return (
-      <div className="dgp-graph">
-        <div className="dgp-graph-head">
-          <span>{t('graphTitle')}</span>
-        </div>
-        <div className="dgp-graph-note" data-tone="error">
-          {t('graphFailed')}：{error}
-        </div>
-      </div>
-    )
-  }
-
-  if (!graph || rows.length === 0) {
-    return (
-      <div className="dgp-graph">
-        <div className="dgp-graph-head">
-          <span>{t('graphTitle')}</span>
-        </div>
-        <div className="dgp-graph-note">{t('graphEmpty')}</div>
-      </div>
-    )
-  }
-
+/**
+ * 左侧车道列（纯 SVG，不含右侧文字）：分支图与历史视图共用同一套绘制口径，
+ * 避免两处画法在跨行转折处对不齐。
+ */
+export function LaneColumn({ rows, laneCount, count }: LaneProps) {
+  const width = laneWidth(laneCount)
+  const height = Math.max(ROW_H, count * ROW_H)
+  const visible = rows.filter((item) => item.row >= 0 && item.row < count)
   return (
-    <div className="dgp-graph">
-      <div className="dgp-graph-head">
-        <span>{t('graphTitle')}</span>
-        <span className="dgp-graph-meta">
-          {t('graphLanes').replace('{n}', String(laneCount))}
-          {graph.truncated ? ` · ${t('graphTruncated').replace('{n}', String(rows.length))}` : ''}
-        </span>
-      </div>
-      <div className="dgp-graph-body">
-        <svg className="dgp-graph-svg" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
-          {/* 先画线，再画节点：节点盖在连线之上，交叉处不会糊。 */}
-          {rows.map((item) =>
-            item.through.map((lane) => (
-              <line
-                key={`t-${item.row}-${lane}`}
-                className="dgp-graph-line"
-                x1={laneX(lane)}
-                y1={rowY(item.row)}
-                x2={laneX(lane)}
-                y2={rowY(item.row + 1)}
-                stroke={laneColor(lane)}
-              />
-            )),
-          )}
-          {rows.map((item) =>
-            item.segments.map((seg) =>
-              // 同车道：垂直直落；跨车道：S 形贝塞尔。两种都用 stroke 上色，交接处不跳色。
-              seg.from === seg.to ? (
-                <line
-                  key={`s-${item.row}-${seg.from}-${seg.to}`}
-                  className="dgp-graph-line"
-                  x1={laneX(seg.from)}
-                  y1={rowY(item.row)}
-                  x2={laneX(seg.to)}
-                  y2={rowY(item.row + 1)}
-                  stroke={laneColor(seg.from)}
-                />
-              ) : (
-                <path
-                  key={`s-${item.row}-${seg.from}-${seg.to}`}
-                  className="dgp-graph-line"
-                  d={curvePath(seg.from, seg.to, item.row)}
-                  stroke={laneColor(seg.to)}
-                />
-              ),
-            ),
-          )}
-          {rows.map((item) => {
-            const isHead = item.refs.some((ref) => ref.kind === 'head')
-            return (
-              <circle
-                key={`d-${item.hash}`}
-                className="dgp-graph-dot"
-                cx={laneX(item.lane)}
-                cy={rowY(item.row)}
-                r={isHead ? DOT_R + 1.4 : DOT_R}
-                fill={laneColor(item.lane)}
-              />
-            )
-          })}
-          {/* HEAD 外环：与「当前分支」区分开，只用描边不填充，避免抢眼。 */}
-          {rows
-            .filter((item) => item.refs.some((ref) => ref.kind === 'head'))
-            .map((item) => (
-              <circle
-                key={`h-${item.hash}`}
-                cx={laneX(item.lane)}
-                cy={rowY(item.row)}
-                r={DOT_R + 4}
-                fill="none"
-                stroke={laneColor(item.lane)}
-                strokeWidth="1"
-                opacity="0.45"
-              />
-            ))}
-        </svg>
-
-        <div style={{ minWidth: 0, flex: '1 1 auto' }}>
-          {rows.map((item) => {
-            const isHead = item.refs.some((ref) => ref.kind === 'head')
-            return (
-              <div
-                key={`r-${item.hash}`}
-                className="dgp-graph-row"
-                data-active={active === item.hash ? '1' : '0'}
-                data-current={isHead ? '1' : '0'}
-                title={`${item.short} · ${item.author} · ${item.date}\n${item.subject}`}
-                onMouseEnter={() => setActive(item.hash)}
-                onMouseLeave={() => setActive((current) => (current === item.hash ? '' : current))}
-                onClick={() => setActive(item.hash)}
-              >
-                <span className="dgp-graph-main">
-                  <span className="dgp-graph-subject">{item.subject || item.short}</span>
-                  <span className="dgp-graph-sub">
-                    <span className="dgp-graph-hash">{item.short}</span>
-                    <span className="dgp-graph-author">
-                      {item.author} · {item.date}
-                    </span>
-                  </span>
-                </span>
-                {item.refs.length > 0 ? (
-                  <span className="dgp-graph-refs">
-                    {item.refs.slice(0, 3).map((ref) => (
-                      <span key={`${item.hash}-${ref.kind}-${ref.name}`} className="dgp-graph-ref" data-kind={ref.kind} title={ref.name}>
-                        {ref.name}
-                      </span>
-                    ))}
-                  </span>
-                ) : null}
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      {selected ? (
-        <div className="dgp-graph-detail">
-          <span className="dgp-graph-detail-text" title={`${selected.hash}\n${selected.subject}`}>
-            {selected.short} · {selected.author} · {selected.date}
-          </span>
-          <button
-            type="button"
-            className="dgp-graph-copy"
-            title={copied === selected.hash ? t('graphCopied') : t('graphCopyHash')}
-            aria-label={t('graphCopyHash')}
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => void copyHash(selected.hash)}
-          >
-            <CopyIcon />
-          </button>
-        </div>
-      ) : null}
-    </div>
+    <svg className="dgp-graph-svg" width={width} height={height} viewBox={`0 0 ${width} ${height}`} aria-hidden="true">
+      {/* 先画线，再画节点：节点盖在连线之上，交叉处不会糊。 */}
+      {visible.map((item) =>
+        item.through.map((lane) => (
+          <line
+            key={`t-${item.row}-${lane}`}
+            className="dgp-graph-line"
+            x1={laneX(lane)}
+            y1={rowY(item.row)}
+            x2={laneX(lane)}
+            y2={rowY(item.row + 1)}
+            stroke={laneColor(lane)}
+          />
+        )),
+      )}
+      {visible.map((item) =>
+        item.segments.map((seg) =>
+          // 同车道：垂直直落；跨车道：S 形贝塞尔。两种都用 stroke 上色，交接处不跳色。
+          seg.from === seg.to ? (
+            <line
+              key={`s-${item.row}-${seg.from}-${seg.to}`}
+              className="dgp-graph-line"
+              x1={laneX(seg.from)}
+              y1={rowY(item.row)}
+              x2={laneX(seg.to)}
+              y2={rowY(item.row + 1)}
+              stroke={laneColor(seg.from)}
+            />
+          ) : (
+            <path
+              key={`s-${item.row}-${seg.from}-${seg.to}`}
+              className="dgp-graph-line"
+              d={curvePath(seg.from, seg.to, item.row)}
+              stroke={laneColor(seg.to)}
+            />
+          ),
+        ),
+      )}
+      {visible.map((item) => {
+        const isHead = item.refs.some((ref) => ref.kind === 'head')
+        return (
+          <circle
+            key={`d-${item.row}-${item.hash}`}
+            className="dgp-graph-dot"
+            cx={laneX(item.lane)}
+            cy={rowY(item.row)}
+            r={isHead ? DOT_R + 1.4 : DOT_R}
+            fill={laneColor(item.lane)}
+          />
+        )
+      })}
+      {/* HEAD 外环：与「当前分支」区分开，只用描边不填充，避免抢眼。 */}
+      {visible
+        .filter((item) => item.refs.some((ref) => ref.kind === 'head'))
+        .map((item) => (
+          <circle
+            key={`h-${item.row}-${item.hash}`}
+            cx={laneX(item.lane)}
+            cy={rowY(item.row)}
+            r={DOT_R + 4}
+            fill="none"
+            stroke={laneColor(item.lane)}
+            strokeWidth="1"
+            opacity="0.45"
+          />
+        ))}
+    </svg>
   )
 }

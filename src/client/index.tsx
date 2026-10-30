@@ -15,6 +15,9 @@ import {
   Skeleton,
   Toast,
   fmt,
+  readPref,
+  subscribePref,
+  PREF_CHIP_HIDDEN,
   type AccountRepoView,
   type AccountView,
   type Dict,
@@ -26,11 +29,12 @@ import {
 import { Workbench } from './workbench.js'
 import { GitSection } from './settings.js'
 import { InitWizard, BranchDetailModal } from './onboard.js'
+import { EXTRA_LANGUAGES, EXTRA_LOCALES } from './locales/index.js'
 
 /** 服务短名（不是 package.json 里的全名）。 */
 export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
-const BUILD = 'dgp-v19'
+const BUILD = 'dgp-v20'
 
 const ZH: Dict = {
   entry: 'Git',
@@ -156,7 +160,10 @@ const ZH: Dict = {
   wbUnstage: '取消暂存',
   wbDiscard: '丢弃',
   wbHistory: '历史',
-  wbGraph: '分支图',
+  wbHistoryStyle: '历史视图呈现方式',
+  wbHistoryList: '列表',
+  wbHistoryLane: '泳道',
+  wbHistoryLaneHint: '泳道取自当前分支的提交拓扑；搜索过滤后仍按提交对齐',
   wbChangesTab: '改动',
   wbStageAll: '全部暂存',
   wbDiffTitle: '差异预览',
@@ -253,6 +260,22 @@ const ZH: Dict = {
   reposNoMatch: '没有匹配的仓库',
   advancedShow: '高级设置',
   advancedHide: '收起高级设置',
+  interfaceShow: '界面',
+  interfaceHide: '收起界面设置',
+  groupInterface: '界面',
+  interfaceHint: '这些都只存在本机浏览器，换台机器要重新选；服务端权限不受影响。',
+  prefDiffLayout: '差异视图默认呈现',
+  prefDiffLayoutHint: '打开差异时用哪种布局；在差异视图里切换也会记住。',
+  prefBehavior: '行为开关',
+  prefHighlight: '语法高亮',
+  prefHighlightHint: '关掉后差异只上色增删行，不再逐 token 上色，长文件滚动更快。',
+  prefChip: '输入框旁显示 Git 按钮',
+  prefChipHint: '关掉后仍可从命令面板或设置进入 Git 面板。',
+  prefLanes: '历史列表显示泳道',
+  prefLanesHint: '在提交列表左侧画出分支走向；提交很多时关掉可以更省空间。',
+  prefGraphLimit: '泳道一次拉多少条',
+  prefGraphLimitHint: '20~200 条，越大越完整、拉取越慢。',
+  prefReset: '恢复默认',
   /* ---- 当前分支详情 ---- */
   branchDetail: '当前分支详情',
   branchDetailTitle: '当前分支详情',
@@ -305,6 +328,8 @@ const ZH: Dict = {
   diffLayout: '布局',
   diffSplit: '并排',
   diffUnified: '统一',
+  diffBefore: '变更前',
+  diffAfter: '变更后',
   diffHighlight: '语法高亮',
   diffFoldHint: '展开 {n} 行未变更内容',
   split: '并排',
@@ -321,6 +346,10 @@ const ZH: Dict = {
   fbTruncated: '目录条目过多，仅显示前 {n} 项',
   fbTruncatedFile: '文件过大，仅显示前 {n} KB',
   fbWrap: '自动换行',
+  fbImageFailed: '图片读取失败',
+  fbImageZoomHint: '点击图片切换原尺寸/适应窗口',
+  fbImageTooBig: '图片 {n}，超过 4 MB 预览上限，可在本地打开查看',
+  fbRendered: '渲染',
   /* ---- dgp-v19：历史搜索 ---- */
   wbSearchCommit: '搜索提交信息',
   wbSearch: '搜索',
@@ -353,6 +382,25 @@ const ZH: Dict = {
   toastTagPushed: '标签已推送',
   /* ---- dgp-v19：贮藏 ---- */
   wbStashTab: '贮藏',
+  wbSummary: '改动汇总',
+  wbSummaryFiles: '文件',
+  wbSummaryAdded: '新增',
+  wbSummaryDeleted: '删除',
+  wbSummaryStaged: '已暂存',
+  wbResetSoft: '回退并保留暂存',
+  wbResetMixed: '回退并保留改动',
+  wbResetHard: '回退并丢弃改动',
+  wbResetHardConfirm: '确认丢弃改动？',
+  wbRevert: '撤销此提交',
+  wbActHint: '回退会移动当前分支的 HEAD；撤销会生成一个反向的新提交。两者都不可自动还原，远端需另行推送。',
+  wbActFailed: '操作失败',
+  prefAiModel: 'AI 模型',
+  prefAiDefault: '跟随会话默认',
+  prefAiModelHint: '「生成提交信息」用哪个模型；选「跟随会话默认」时会随会话切换。',
+  prefAiLoading: '正在读取模型目录…',
+  prefAiUnavailable: '读取模型目录失败，暂只能用会话默认模型',
+  wbPublish: '发布分支',
+  wbPublishHint: '当前分支还没有上游，点一下会推送到远端并建立跟踪（git push -u）',
   wbStashNote: '贮藏说明（可选）',
   wbStashUntracked: '包含未跟踪文件',
   wbStashSave: '贮藏当前改动',
@@ -496,7 +544,10 @@ const EN: Dict = {
   wbUnstage: 'Unstage',
   wbDiscard: 'Discard',
   wbHistory: 'History',
-  wbGraph: 'Graph',
+  wbHistoryStyle: 'History layout',
+  wbHistoryList: 'List',
+  wbHistoryLane: 'Lanes',
+  wbHistoryLaneHint: 'Lanes follow the current branch topology; filtered commits stay aligned',
   wbChangesTab: 'Changes',
   wbStageAll: 'Stage all',
   wbDiffTitle: 'Diff preview',
@@ -591,6 +642,22 @@ const EN: Dict = {
   reposNoMatch: 'No matching repositories',
   advancedShow: 'Advanced settings',
   advancedHide: 'Hide advanced settings',
+  interfaceShow: 'Interface',
+  interfaceHide: 'Hide interface settings',
+  groupInterface: 'Interface',
+  interfaceHint: 'These live in this browser only and do not change server-side permissions.',
+  prefDiffLayout: 'Default diff layout',
+  prefDiffLayoutHint: 'Layout used when a diff opens; switching inside the diff is remembered too.',
+  prefBehavior: 'Behavior',
+  prefHighlight: 'Syntax highlighting',
+  prefHighlightHint: 'Off colors only added/removed lines, which scrolls faster on long diffs.',
+  prefChip: 'Show Git button beside the composer',
+  prefChipHint: 'Turning it off keeps the panel reachable from the command palette and settings.',
+  prefLanes: 'Show lanes in history',
+  prefLanesHint: 'Draws the branch graph beside each commit; turn off to save horizontal space.',
+  prefGraphLimit: 'Commits fetched for lanes',
+  prefGraphLimitHint: '20 to 200; higher is more complete but slower.',
+  prefReset: 'Restore defaults',
   /* ---- Current branch details ---- */
   branchDetail: 'Current branch details',
   branchDetailTitle: 'Current branch details',
@@ -643,6 +710,8 @@ const EN: Dict = {
   diffLayout: 'Layout',
   diffSplit: 'Side by side',
   diffUnified: 'Unified',
+  diffBefore: 'Before',
+  diffAfter: 'After',
   diffHighlight: 'Syntax highlight',
   diffFoldHint: 'Show {n} unchanged lines',
   split: 'Side by side',
@@ -659,6 +728,10 @@ const EN: Dict = {
   fbTruncated: 'Too many entries; showing the first {n}',
   fbTruncatedFile: 'File too large; showing the first {n} KB',
   fbWrap: 'Wrap lines',
+  fbImageFailed: 'Failed to load image',
+  fbImageZoomHint: 'Click the image to toggle actual size / fit',
+  fbImageTooBig: 'Image is {n}, above the 4 MB preview limit — open it locally',
+  fbRendered: 'Rendered',
   /* ---- dgp-v19: history search ---- */
   wbSearchCommit: 'Search commit messages',
   wbSearch: 'Search',
@@ -691,6 +764,25 @@ const EN: Dict = {
   toastTagPushed: 'Tag pushed',
   /* ---- dgp-v19: stash ---- */
   wbStashTab: 'Stashes',
+  wbSummary: 'Change summary',
+  wbSummaryFiles: 'Files',
+  wbSummaryAdded: 'Added',
+  wbSummaryDeleted: 'Removed',
+  wbSummaryStaged: 'Staged',
+  wbResetSoft: 'Reset, keep staged',
+  wbResetMixed: 'Reset, keep changes',
+  wbResetHard: 'Reset, discard changes',
+  wbResetHardConfirm: 'Discard changes?',
+  wbRevert: 'Revert this commit',
+  wbActHint: 'Reset moves the current branch HEAD; revert creates a new commit that undoes this one. Neither is auto-undoable, and the remote needs a separate push.',
+  wbActFailed: 'Operation failed',
+  prefAiModel: 'AI model',
+  prefAiDefault: 'Follow session default',
+  prefAiModelHint: 'Which model drafts commit messages. "Follow session default" tracks the current session selection.',
+  prefAiLoading: 'Reading model catalog…',
+  prefAiUnavailable: 'Could not read the model catalog; only the session default is usable',
+  wbPublish: 'Publish branch',
+  wbPublishHint: 'This branch has no upstream yet; pushing also sets tracking (git push -u)',
   wbStashNote: 'Stash note (optional)',
   wbStashUntracked: 'Include untracked files',
   wbStashSave: 'Stash changes',
@@ -1579,7 +1671,12 @@ interface ClientContext {
     inject?: (name: string, factory: () => any) => void
     register?: (options: any, component: any) => any
   }
-  locale?: { register?: (namespace: string, dicts: Record<string, Dict>) => void; bind?: (namespace: string) => (key: string) => string }
+  locale?: {
+    register?: (namespace: string, dicts: Record<string, Dict>) => void
+    bind?: (namespace: string) => (key: string) => string
+    /** 新增可选语言：fallback 链必须能落到 en，id 已存在会抛错。 */
+    addLanguage?: (input: { id: string; label: string; fallback: string }) => unknown
+  }
   sessions?: any
   /** 可选服务软取：取不到返回 undefined，不会抛错。 */
   get?: (name: string) => any
@@ -1592,7 +1689,16 @@ interface ClientContext {
 export function apply(ctx: ClientContext): void {
   let t: (key: string) => string = (key: string) => ZH[key] ?? key
   try {
-    ctx.locale?.register?.(NS, { zh: ZH, en: EN })
+    ctx.locale?.register?.(NS, { zh: ZH, en: EN, ...EXTRA_LOCALES })
+    // 内置只有 zh / en；其余 6 种要显式加进语言目录才会出现在宿主的选择器里。
+    // 重复注册（热重载）会抛 locale "<id>" is already registered，属正常，吞掉即可。
+    for (const language of EXTRA_LANGUAGES) {
+      try {
+        ctx.locale?.addLanguage?.(language)
+      } catch {
+        /* 已注册：热重载时必然发生，忽略 */
+      }
+    }
     const bound = ctx.locale?.bind?.(NS)
     if (typeof bound === 'function') {
       t = (key: string) => {

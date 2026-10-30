@@ -383,9 +383,10 @@ try {
         await page.waitForTimeout(400)
       }
 
-      // ④ 顶栏工具与左侧竖排导航切换：改动 / 历史 / 分支图（Diff 已改为预览层）。
+      // ④ 顶栏工具与左侧竖排导航切换：改动 / 历史 / 文件 / 标签 / 贮藏（Diff 已改为预览层；
+      //    dgp-v20 起「分支图」并入历史列表的泳道，不再是独立导航项）。
       const tabResults = []
-      for (const keyword of ['改动', '历史', '分支图']) {
+      for (const keyword of ['改动', '历史', '文件', '标签', '贮藏']) {
         const ok = await page.evaluate((text) => {
           const btn = [...document.querySelectorAll('.dgp-gw-railbtn')].find((b) => (b.textContent ?? '').includes(text))
           if (!btn) return false

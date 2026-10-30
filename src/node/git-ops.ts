@@ -564,6 +564,74 @@ export async function removeRemote(cwd: string, name: string): Promise<RemoteAct
   return { ok: true, root: repo.root!, error: '' }
 }
 
+export type ResetMode = 'soft' | 'mixed' | 'hard'
+
+export interface ResetResult {
+  ok: boolean
+  root: string
+  error: string
+  output: string
+}
+
+/**
+ * 把当前分支回退到某个提交（reset）。
+ *
+ * 三种模式都保留 git 原语义，不做「安全包装」——但 UI 侧必须让用户明确选：
+ * - soft：只移动 HEAD，改动全部留在暂存区（最常见的「撤销提交，重新组织」）
+ * - mixed：移动 HEAD 并取消暂存，改动留在工作区
+ * - hard：移动 HEAD 并丢弃暂存区与工作区的改动（会真丢数据）
+ */
+export async function resetToCommit(cwd: string, rev: string, mode: ResetMode): Promise<ResetResult> {
+  const repo = ensureRepo(cwd)
+  if (!repo.ok) return { ok: false, root: '', error: repo.error ?? '目录不可用', output: '' }
+  const root = repo.root!
+  const revision = String(rev ?? '').trim()
+  if (revision.length === 0) return { ok: false, root, error: '缺少目标提交', output: '' }
+  if (revision.length > 200 || /^-/.test(revision)) return { ok: false, root, error: `提交引用不合法：${revision}`, output: '' }
+  const flag = mode === 'soft' ? '--soft' : mode === 'hard' ? '--hard' : '--mixed'
+  const result = await runGit(root, ['reset', flag, revision])
+  if (!result.ok) return { ok: false, root, error: result.error, output: clipLog(result.stderr || result.stdout) }
+  return { ok: true, root, error: '', output: firstLine(result.stdout) || `已回退到 ${revision.slice(0, 8)}（${flag}）` }
+}
+
+export interface RevertResult {
+  ok: boolean
+  root: string
+  error: string
+  output: string
+  /** 有冲突：需要人工解决后自己提交。 */
+  conflicted: boolean
+}
+
+/**
+ * 生成一个反向提交（revert）。
+ *
+ * 用 `--no-edit` 让 git 用默认的 "Revert ..." 消息，避免依赖编辑器。
+ */
+export async function revertCommit(cwd: string, rev: string): Promise<RevertResult> {
+  const repo = ensureRepo(cwd)
+  if (!repo.ok) return { ok: false, root: '', error: repo.error ?? '目录不可用', output: '', conflicted: false }
+  const root = repo.root!
+  const revision = String(rev ?? '').trim()
+  if (revision.length === 0) return { ok: false, root, error: '缺少要撤销的提交', output: '', conflicted: false }
+  if (revision.length > 200 || /^-/.test(revision)) return { ok: false, root, error: `提交引用不合法：${revision}`, output: '', conflicted: false }
+  const result = await runGit(root, ['revert', '--no-edit', revision])
+  if (!result.ok) {
+    const conflicted = /CONFLICT|after resolving the conflicts/iu.test(`${result.stderr}
+${result.stdout}`)
+    return {
+      ok: false,
+      root,
+      error: conflicted
+        ? '撤销时发生冲突：请在终端解决冲突后执行 git revert --continue（或 git revert --abort 放弃）'
+        : result.error,
+      output: clipLog(result.stderr || result.stdout),
+      conflicted,
+    }
+  }
+  return { ok: true, root, error: '', output: firstLine(result.stdout), conflicted: false }
+}
+
 export interface SyncResult {
   ok: boolean
   root: string
