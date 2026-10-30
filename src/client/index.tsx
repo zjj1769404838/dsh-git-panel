@@ -23,7 +23,7 @@ import { Workbench, Modal } from './workbench.js'
 /** 服务短名（不是 package.json 里的全名）。 */
 export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
-const BUILD = 'dgp-v14'
+const BUILD = 'dgp-v15'
 
 const ZH: Dict = {
   entry: 'Git',
@@ -70,6 +70,7 @@ const ZH: Dict = {
   saved: '已保存',
   scopeRepos: '允许 Agent 操作的远端仓库',
   scopeReposHint: '每行一个 owner/repo；填 * 表示全部仓库（不推荐）。留空表示不允许任何远端操作。',
+  scopeReposNote: '这里是全局兜底名单：只有还没有账号级权限表的账号（老账号/刚升级）才按它判定；账号页里逐仓库设过档位的，以账号页为准。',
   scopeRoots: '允许 Agent 操作的本地仓库目录',
   scopeGrantAll: '授权全部仓库',
   scopeGrantAllHint: '等同于在下方填 *（不限制）。之后可随时回来收窄范围。',
@@ -265,6 +266,10 @@ const ZH: Dict = {
   permNone: '无权限',
   permSaved: '已更新仓库权限',
   permSaveFailed: '保存仓库权限失败',
+  permSaving: '保存中…',
+  reposReload: '刷新仓库列表',
+  reposTruncated: '仓库较多，仅显示前 500 个；未列出的仓库按该账号默认档位处理。',
+  statsReposHintPerAccount: '另有 {n} 个账号级仓库权限设置',
   accountEdit: '编辑账号',
   /* ---- 当前分支详情 ---- */
   branchDetail: '当前分支详情',
@@ -368,6 +373,7 @@ const EN: Dict = {
   saved: 'Saved',
   scopeRepos: 'Remote repositories the agent may use',
   scopeReposHint: 'One owner/repo per line; * means all repositories (not recommended). Empty means no remote access.',
+  scopeReposNote: 'This is the global fallback list, used only for accounts that have no per-repository table yet. Per-repository settings on the Accounts tab take precedence.',
   scopeRoots: 'Local repository directories the agent may use',
   scopeGrantAll: 'Authorize all repositories',
   scopeGrantAllHint: 'Equivalent to * below (no limit). You can narrow the scope any time.',
@@ -562,6 +568,10 @@ const EN: Dict = {
   permNone: 'No access',
   permSaved: 'Repository access updated',
   permSaveFailed: 'Failed to save repository access',
+  permSaving: 'Saving…',
+  reposReload: 'Reload repositories',
+  reposTruncated: 'Too many repositories; showing the first 500. Unlisted repositories use the account default.',
+  statsReposHintPerAccount: '{n} per-account repository overrides',
   accountEdit: 'Edit account',
   /* ---- Current branch details ---- */
   branchDetail: 'Current branch details',
@@ -648,6 +658,8 @@ interface AccountRepoView {
   url: string
   private: boolean
   defaultBranch: string
+  /** node 侧判定好的当前权限档位（唯一事实源），client 不再自己推导。 */
+  permission?: RepoPermission
 }
 
 interface SettingsView {
@@ -1455,13 +1467,15 @@ function AccountRepoList({
   accountId,
   state,
   permissionOf,
+  savingOf,
   onPermission,
   onReload,
 }: {
   t: (key: string) => string
   accountId: string
-  state?: { loading: boolean; error: string; repos: AccountRepoView[] }
+  state?: { loading: boolean; error: string; repos: AccountRepoView[]; truncated?: boolean }
   permissionOf: (repoFullName: string) => RepoPermission
+  savingOf: (repoFullName: string) => boolean
   onPermission: (repoFullName: string, perm: RepoPermission) => void
   onReload: () => void
 }) {
@@ -1475,7 +1489,7 @@ function AccountRepoList({
           <div className="dgp-repo-meta">{t('reposTitle')}</div>
         </div>
         <div className="dgp-perm">
-          <button type="button" className="dgp-btn ghost" onClick={onReload}>
+          <button type="button" className="dgp-btn ghost" onClick={onReload} aria-label={t('reposReload')} title={t('reposReload')}>
             <RefreshIcon />
           </button>
         </div>
@@ -1495,8 +1509,9 @@ function AccountRepoList({
 
       {(state?.repos ?? []).map((repo) => {
         const perm = permissionOf(repo.fullName)
+        const saving = savingOf(repo.fullName)
         return (
-          <div className="dgp-repo" key={`${accountId}:${repo.fullName}`}>
+          <div className="dgp-repo" key={`${accountId}:${repo.fullName}`} data-saving={saving ? '1' : '0'}>
             <div className="dgp-repo-main">
               <div className="dgp-repo-name">{repo.fullName}</div>
               <div className="dgp-repo-meta">
@@ -1506,10 +1521,12 @@ function AccountRepoList({
               </div>
             </div>
             <div className="dgp-perm">
+              {saving ? <span className="dgp-perm-label">{t('permSaving')}</span> : null}
               <span className="dgp-perm-label">{t('permLabel')}</span>
               <select
                 className="dgp-select dgp-perm-select"
                 value={perm}
+                disabled={saving}
                 aria-label={`${t('permLabel')} ${repo.fullName}`}
                 onChange={(event) => onPermission(repo.fullName, event.target.value as RepoPermission)}
               >
@@ -1523,6 +1540,10 @@ function AccountRepoList({
           </div>
         )
       })}
+
+      {!state?.loading && !state?.error && state?.truncated ? (
+        <div className="dgp-hint">{t('reposTruncated')}</div>
+      ) : null}
     </div>
   )
 }
@@ -1560,7 +1581,15 @@ function GitSection({ t }: SectionProps) {
   /** 展开中的账号 id（展开后拉该账号的远程仓库列表）。 */
   const [expandedAccount, setExpandedAccount] = useState<string>('')
   /** 账号 → 远程仓库列表（加载中 / 失败 / 成功三种状态分开存）。 */
-  const [accountRepos, setAccountRepos] = useState<Record<string, { loading: boolean; error: string; repos: AccountRepoView[] }>>({})
+  const [accountRepos, setAccountRepos] = useState<
+    Record<string, { loading: boolean; error: string; repos: AccountRepoView[]; truncated?: boolean }>
+  >({})
+  /** 正在保存的「账号:仓库」组合：保存期间禁用该行下拉，避免连点互相覆盖。 */
+  const [permSaving, setPermSaving] = useState<Record<string, boolean>>({})
+  /** 乐观更新的权限值（key = `账号:仓库`），请求失败时回滚。 */
+  const [permOverride, setPermOverride] = useState<Record<string, RepoPermission>>({})
+  /** 账号 → 上次拉到仓库列表的时间戳（30 秒内重复展开不重拉）。 */
+  const [reposFetchedAt, setReposFetchedAt] = useState<Record<string, number>>({})
 
   const timerRef = useRef<number | null>(null)
   const toastTimerRef = useRef<number | null>(null)
@@ -1588,7 +1617,7 @@ function GitSection({ t }: SectionProps) {
   const loadAccountRepos = useCallback(async (accountId: string) => {
     setAccountRepos((prev) => ({ ...prev, [accountId]: { loading: true, error: '', repos: prev[accountId]?.repos ?? [] } }))
     try {
-      const data = await api<{ ok: boolean; repos?: AccountRepoView[]; error?: string }>(
+      const data = await api<{ ok: boolean; repos?: AccountRepoView[]; error?: string; truncated?: boolean }>(
         `/account/repos?accountId=${encodeURIComponent(accountId)}`,
       )
       if (!data.ok) {
@@ -1600,8 +1629,14 @@ function GitSection({ t }: SectionProps) {
       }
       setAccountRepos((prev) => ({
         ...prev,
-        [accountId]: { loading: false, error: '', repos: Array.isArray(data.repos) ? data.repos : [] },
+        [accountId]: {
+          loading: false,
+          error: '',
+          repos: Array.isArray(data.repos) ? data.repos : [],
+          truncated: data.truncated === true,
+        },
       }))
+      setReposFetchedAt((prev) => ({ ...prev, [accountId]: Date.now() }))
     } catch (err) {
       setAccountRepos((prev) => ({
         ...prev,
@@ -1610,50 +1645,88 @@ function GitSection({ t }: SectionProps) {
     }
   }, [t])
 
-  /** 展开/收起账号仓库列表。 */
+  /**
+   * 展开/收起账号仓库列表。
+   * - 收起：保留已拉到的列表（再展开立刻可见），但清掉该账号的乐观值（以服务端为准）。
+   * - 展开：30 秒内重复展开不重拉（仓库列表变动很慢，避免每次点都打平台 API）。
+   */
   const toggleAccountRepos = useCallback(
     (accountId: string) => {
       if (expandedAccount === accountId) {
         setExpandedAccount('')
+        setPermOverride((prev) => {
+          const next: Record<string, RepoPermission> = {}
+          for (const [key, value] of Object.entries(prev)) {
+            if (!key.startsWith(`${accountId}:`)) next[key] = value
+          }
+          return next
+        })
         return
       }
       setExpandedAccount(accountId)
-      void loadAccountRepos(accountId)
+      const cached = accountRepos[accountId]
+      const fresh = cached && !cached.loading && !cached.error && Date.now() - (reposFetchedAt[accountId] ?? 0) < 30_000
+      if (!fresh) void loadAccountRepos(accountId)
     },
-    [expandedAccount, loadAccountRepos],
+    [expandedAccount, accountRepos, reposFetchedAt, loadAccountRepos],
   )
 
-  /** 取某账号对某仓库的当前权限（node 侧语义：有表时未列出默认 full）。 */
+  /**
+   * 取某账号对某仓库的当前权限。
+   * 优先用本地乐观值（刚点完、请求还在路上），其次用 node 在 /account/repos 里算好的档位——
+   * 判定逻辑只在 node 侧一份（store.repoPermission），client 不再自己推导一遍。
+   */
   const currentPermission = useCallback(
     (accountId: string, repoFullName: string): RepoPermission => {
-      const table = state?.settings.repoPermissions?.[accountId]
-      if (table) return table[repoFullName] ?? 'full'
-      const list = state?.settings.allowedRepos ?? []
-      if (list.includes('*')) return 'full'
-      return list.includes(repoFullName) ? 'full' : 'none'
+      const override = permOverride[`${accountId}:${repoFullName}`]
+      if (override) return override
+      const hit = (accountRepos[accountId]?.repos ?? []).find((item) => item.fullName === repoFullName)
+      return hit?.permission ?? 'full'
     },
-    [state],
+    [permOverride, accountRepos],
   )
 
-  /** 改某账号对某仓库的权限：POST /settings 带 repoPermissions（整表提交）。 */
+  /** 该行是否正在保存（保存期间禁用下拉，避免连点互相覆盖）。 */
+  const permissionSaving = useCallback(
+    (accountId: string, repoFullName: string): boolean => permSaving[`${accountId}:${repoFullName}`] === true,
+    [permSaving],
+  )
+
+  /**
+   * 改某账号对某仓库的权限：只提交这一格（POST /repo/permission）。
+   * 乐观更新 → 失败回滚到旧档位并提示，不再整表覆盖 settings（并发/连点会丢更新）。
+   */
   const saveRepoPermission = useCallback(
     async (accountId: string, repoFullName: string, perm: RepoPermission) => {
-      const base = state?.settings.repoPermissions ?? {}
-      const table = { ...(base[accountId] ?? {}) }
-      table[repoFullName] = perm
-      const next = { ...base, [accountId]: table }
+      const key = `${accountId}:${repoFullName}`
+      const previous = currentPermission(accountId, repoFullName)
+      if (previous === perm) return
+      setPermOverride((prev) => ({ ...prev, [key]: perm }))
+      setPermSaving((prev) => ({ ...prev, [key]: true }))
       try {
-        const data = await api<{ ok: boolean; state?: PanelState; error?: string }>('/settings', {
-          repoPermissions: next,
-        })
+        const data = await api<{ ok: boolean; state?: PanelState; error?: string; permission?: RepoPermission }>(
+          '/repo/permission',
+          { accountId, repo: repoFullName, permission: perm },
+        )
         if (data.state) setState(data.state)
-        if (data.ok) showToast('ok', t('permSaved'))
-        else showToast('error', data.error || t('permSaveFailed'))
+        if (data.ok) {
+          showToast('ok', t('permSaved'))
+        } else {
+          setPermOverride((prev) => ({ ...prev, [key]: previous }))
+          showToast('error', data.error || t('permSaveFailed'))
+        }
       } catch (err) {
+        setPermOverride((prev) => ({ ...prev, [key]: previous }))
         showToast('error', `${t('permSaveFailed')}：${err instanceof Error ? err.message : String(err)}`)
+      } finally {
+        setPermSaving((prev) => {
+          const next = { ...prev }
+          delete next[key]
+          return next
+        })
       }
     },
-    [state, t],
+    [currentPermission, showToast, t],
   )
 
   // 进入 scope tab 时扫描一次。
@@ -1894,6 +1967,13 @@ function GitSection({ t }: SectionProps) {
   const allowAllRoots = roots.includes('*')
   const allowAllRepos = repos.includes('*')
   const defaultAccountId = settings?.defaultAccountId ?? ''
+  // 账号级权限表的显式条目数：统计条要把这部分算进来，否则用户设了 N 个仓库权限，
+  // 「授权仓库」还显示全局 allowedRepos 的 0，读数与事实不符。
+  const perAccountEntries = Object.values(settings?.repoPermissions ?? {}).reduce(
+    (sum, table) => sum + Object.keys(table ?? {}).length,
+    0,
+  )
+  const repoCount = allowAllRepos ? Infinity : repos.length + perAccountEntries
 
   const statusText = (value: string) =>
     value === 'connected' ? t('connected') : value === 'expired' ? t('expired') : t('errored')
@@ -1943,11 +2023,15 @@ function GitSection({ t }: SectionProps) {
             {allowAllRoots ? t('statsRootsHintAll') : roots.length > 0 ? fmt(t('statsRootsHint'), { n: roots.length }) : t('statsRootsHintNone')}
           </span>
         </div>
-        <div className="dgp-stat" data-tone={allowAllRepos ? 'warn' : repos.length > 0 ? 'ok' : 'neutral'}>
+        <div className="dgp-stat" data-tone={allowAllRepos ? 'warn' : repoCount > 0 ? 'ok' : 'neutral'}>
           <span className="dgp-stat-label">{t('statsRepos')}</span>
-          <span className="dgp-stat-value">{allowAllRepos ? '∞' : repos.length}</span>
+          <span className="dgp-stat-value">{allowAllRepos ? '∞' : repoCount}</span>
           <span className="dgp-stat-hint">
-            {allowAllRepos ? t('statsReposHintAll') : repos.length > 0 ? fmt(t('statsReposHint'), { n: repos.length }) : t('statsReposHintNone')}
+            {allowAllRepos
+              ? t('statsReposHintAll')
+              : repoCount > 0
+                ? fmt(t('statsReposHint'), { n: repoCount })
+                : t('statsReposHintNone')}
           </span>
         </div>
         <div className="dgp-stat" data-tone={settings?.allowWrite ? 'warn' : 'ok'}>
@@ -2019,11 +2103,13 @@ function GitSection({ t }: SectionProps) {
                           {t('setDefault')}
                         </button>
                       )}
+                      {/* 「编辑账号」与「重新授权」是同一个动作（都只是回填连接表单），
+                          按单入口原则合并为一个按钮：回填平台/主机/API 地址/接入方式 + 提示语。 */}
                       <button
                         type="button"
                         className="dgp-btn ghost"
                         disabled={busy}
-                        title={t('accountEdit')}
+                        title={t('reauthHint')}
                         onClick={() => {
                           setProvider(account.provider)
                           setMethod(account.kind === 'oauth' ? 'oauth' : 'pat')
@@ -2036,24 +2122,11 @@ function GitSection({ t }: SectionProps) {
                       >
                         {t('accountEdit')}
                       </button>
-                      <button
-                        type="button"
-                        className="dgp-btn ghost"
-                        disabled={busy}
-                        title={t('reauthHint')}
-                        onClick={() => {
-                          setProvider(account.provider)
-                          setMethod(account.kind === 'oauth' ? 'oauth' : 'pat')
-                          setReauthTarget({ provider: account.provider, login: account.login || '' })
-                          setToken('')
-                          setTab('accounts')
-                        }}
-                      >
-                        {t('reauth')}
-                      </button>
                       <button type="button" className="dgp-btn ghost" disabled={busy} onClick={() => void recheck(account.id)}>
                         {t('recheck')}
                       </button>
+                      {/* 危险操作与常规操作之间加一道竖线，避免误点。 */}
+                      <span className="dgp-line-sep" aria-hidden="true" />
                       <button type="button" className="dgp-btn danger" disabled={busy} onClick={() => void disconnect(account.id)}>
                         {t('disconnect')}
                       </button>
@@ -2065,6 +2138,7 @@ function GitSection({ t }: SectionProps) {
                       accountId={account.id}
                       state={accountRepos[account.id]}
                       permissionOf={(repoFullName) => currentPermission(account.id, repoFullName)}
+                      savingOf={(repoFullName) => permissionSaving(account.id, repoFullName)}
                       onPermission={(repoFullName, perm) => void saveRepoPermission(account.id, repoFullName, perm)}
                       onReload={() => void loadAccountRepos(account.id)}
                     />
@@ -2244,6 +2318,7 @@ function GitSection({ t }: SectionProps) {
               <label className="dgp-label">{t('scopeRepos')}</label>
               <textarea className="dgp-area" value={reposText} onChange={(event) => setReposText(event.target.value)} placeholder={'owner/repo\nanother-owner/another-repo'} />
               <div className="dgp-hint">{t('scopeReposHint')}</div>
+              <div className="dgp-hint">{t('scopeReposNote')}</div>
             </div>
           </div>
 

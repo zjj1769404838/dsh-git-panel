@@ -82,6 +82,15 @@ function emptyState(): PanelState {
   return { version: 1, accounts: [], settings: { ...DEFAULT_SETTINGS } }
 }
 
+/**
+ * 把各种写法的仓库标识归一成 `owner/repo`。
+ *
+ * - 接受 `owner/repo`、`owner/repo.git`、完整 https/ssh URL、`git@host:owner/repo`。
+ * - **段数 ≥2 时全部保留**：GitLab 的子组仓库是 `group/subgroup/repo`，
+ *   只取前两段会把同一子组下的多个仓库折叠成同一个键（`group/subgroup`），
+ *   一个仓库的权限会串到另一个仓库上，档位可被绕过。
+ * - 每段都必须是合法字符，任何一段不合法则整体判为非法。
+ */
 function normalizeRepo(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const raw = value.trim()
@@ -90,14 +99,13 @@ function normalizeRepo(value: unknown): string | null {
   // 允许粘贴完整 URL 或 owner/repo(.git)
   const cleaned = raw
     .replace(/^git@[^:]+:/, '')
-    .replace(/^https?:\/\/[^/]+\//, '')
+    .replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\//i, '')
     .replace(/\.git$/, '')
     .replace(/^\/+|\/+$/g, '')
-  const parts = cleaned.split('/')
+  const parts = cleaned.split('/').filter((segment) => segment.length > 0)
   if (parts.length < 2) return null
-  const [owner, repo] = parts
-  if (!/^[\w.-]+$/.test(owner) || !/^[\w.-]+$/.test(repo)) return null
-  return `${owner}/${repo}`
+  if (!parts.every((segment) => /^[\w.-]+$/.test(segment))) return null
+  return parts.join('/')
 }
 
 export function normalizeRepos(input: unknown): string[] {

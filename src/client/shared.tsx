@@ -153,6 +153,8 @@ export const CSS = `
 .dgp-line:last-of-type{border-bottom:none}
 .dgp-line-main{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
 .dgp-line-side{display:flex;align-items:center;gap:6px;flex:0 0 auto}
+.dgp-line-sep{width:1px;height:16px;background:var(--dgp-line);margin:0 2px;flex:0 0 auto}
+.dgp-repo[data-saving="1"]{opacity:.6}
 .dgp-name{font-size:14px;line-height:22px;font-weight:500;color:var(--dgp-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dgp-meta{font-size:12px;line-height:18px;color:var(--dgp-muted);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .dgp-meta code,.dgp-mono{font-family:var(--dgp-code);font-size:11.5px}

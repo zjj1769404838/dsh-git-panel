@@ -321,19 +321,25 @@ export interface AccountRepoInfo {
   defaultBranch: string
 }
 
+/** 单页仓库数（三家平台都支持这个量级）。 */
+const REPO_PAGE_SIZE = 100
+/** 最多翻几页：500 个仓库封顶，避免超大账号把一次请求拖成几十秒。 */
+const REPO_MAX_PAGES = 5
+
 /**
- * 各平台「列出账号可见仓库」的接口路径。
+ * 各平台「列出账号可见仓库」的接口路径（带分页）。
  * 单独导出便于单测断言拼接结果（不做任何网络请求）。
  */
-export function accountReposEndpoint(provider: ProviderId, base: string): string {
+export function accountReposEndpoint(provider: ProviderId, base: string, page = 1): string {
   const root = String(base ?? '').replace(/\/+$/, '')
+  const p = Math.max(1, Math.floor(page) || 1)
   if (provider === 'gitlab') {
-    return `${root}/api/v4/projects?membership=true&per_page=100`
+    return `${root}/api/v4/projects?membership=true&per_page=${REPO_PAGE_SIZE}&page=${p}`
   }
   if (provider === 'gitea') {
-    return `${root}/user/repos?limit=50`
+    return `${root}/user/repos?limit=${REPO_PAGE_SIZE}&page=${p}`
   }
-  return `${root}/user/repos?per_page=100&affiliation=owner,collaborator,organization_member`
+  return `${root}/user/repos?per_page=${REPO_PAGE_SIZE}&page=${p}&affiliation=owner,collaborator,organization_member`
 }
 
 function pickString(...values: unknown[]): string {
@@ -383,20 +389,39 @@ export async function listAccountRepos(
   token: string,
   apiBase?: string,
   host?: string,
-): Promise<{ ok: boolean; repos: AccountRepoInfo[]; error?: string }> {
+): Promise<{ ok: boolean; repos: AccountRepoInfo[]; error?: string; truncated?: boolean }> {
   if (typeof token !== 'string' || token.trim().length === 0) {
     return { ok: false, repos: [], error: '令牌为空' }
   }
   const base = resolveApiBase(provider, apiBase, host)
   if (!base) return { ok: false, repos: [], error: '该平台需要填写 API 地址（例如 https://git.example.com/api/v1）' }
-  const url = accountReposEndpoint(provider, base)
-  const result = await request(url, { token })
-  if (!result.ok) return { ok: false, repos: [], error: result.error || '读取仓库列表失败' }
-  const list = Array.isArray(result.json) ? result.json : []
+
   const repos: AccountRepoInfo[] = []
-  for (const item of list) {
-    const mapped = mapAccountRepo(provider, item)
-    if (mapped) repos.push(mapped)
+  const seen = new Set<string>()
+  let truncated = false
+  for (let page = 1; page <= REPO_MAX_PAGES; page += 1) {
+    const result = await request(accountReposEndpoint(provider, base, page), { token })
+    // 第一页失败才算失败；后续页失败就用已拿到的结果（不把整次列表判死）。
+    if (!result.ok) {
+      if (page === 1) return { ok: false, repos: [], error: result.error || '读取仓库列表失败' }
+      truncated = true
+      break
+    }
+    const list = Array.isArray(result.json) ? result.json : []
+    for (const item of list) {
+      const mapped = mapAccountRepo(provider, item)
+      if (!mapped) continue
+      if (seen.has(mapped.fullName)) continue
+      seen.add(mapped.fullName)
+      repos.push(mapped)
+    }
+    // 不满一页说明已到末页。
+    if (list.length < REPO_PAGE_SIZE) {
+      truncated = false
+      break
+    }
+    // 满页且已到页数上限 → 明确告知调用方还有更多。
+    if (page === REPO_MAX_PAGES) truncated = true
   }
-  return { ok: true, repos }
+  return { ok: true, repos, truncated }
 }

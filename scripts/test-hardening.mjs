@@ -879,6 +879,48 @@ check('工具 name 前缀一致', [...registeredTools.keys()].every((name) => na
   })
   check('指定不存在账号被拒 403', addBadAcct.status === 403, String(addBadAcct.status))
 
+  // 单条权限写入端点：只改一格，不整表覆盖；非法输入被挡。
+  const permNoRepo = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/permission',
+    body: JSON.stringify({ accountId: acctId, permission: 'read' }),
+  })
+  check('单条权限缺 repo 报 400', permNoRepo.status === 400, String(permNoRepo.status))
+
+  const permBadValue = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/permission',
+    body: JSON.stringify({ accountId: acctId, repo: 'owner/some-repo', permission: 'admin' }),
+  })
+  check('单条权限档位非法报 400', permBadValue.status === 400, String(permBadValue.status))
+
+  const permNoAcct = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/permission',
+    body: JSON.stringify({ accountId: 'nope', repo: 'owner/some-repo', permission: 'read' }),
+  })
+  check('单条权限账号不存在报 404', permNoAcct.status === 404, String(permNoAcct.status))
+
+  const permSet = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/permission',
+    body: JSON.stringify({ accountId: acctId, repo: 'owner/some-repo', permission: 'read' }),
+  })
+  check('单条权限写入成功', permSet.json?.ok === true && permSet.json?.permission === 'read', JSON.stringify(permSet.json ?? {}).slice(0, 200))
+  const permAfter = permSet.json?.state?.settings?.repoPermissions?.[acctId] ?? {}
+  check('单条权限写入不丢其它条目', permAfter['owner/denied-repo'] === 'none' && permAfter['owner/readonly-repo'] === 'read', JSON.stringify(permAfter))
+  check('单条权限写入落到目标仓库', permAfter['owner/some-repo'] === 'read', JSON.stringify(permAfter))
+
+  // GitLab 子组仓库键保留全部段（不再折叠成 group/subgroup）
+  const permSubgroup = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/permission',
+    body: JSON.stringify({ accountId: acctId, repo: 'group/subgroup/repo-a', permission: 'none' }),
+  })
+  const subAfter = permSubgroup.json?.state?.settings?.repoPermissions?.[acctId] ?? {}
+  check('子组仓库键保留三段', subAfter['group/subgroup/repo-a'] === 'none', JSON.stringify(subAfter))
+  check('子组仓库键不折叠成组名', subAfter['group/subgroup'] === undefined, JSON.stringify(subAfter))
+
   // 初始化向导：参数校验 + 分支撞名降级 + origin 不静默覆盖
   const bootBadAcct = await call(handler2, {
     method: 'POST',

@@ -185,7 +185,7 @@ if (clientOut) {
   check('client 一级菜单不再内嵌分支拓扑（index.tsx 不再引用 GraphView）', !clientSrc.includes('GraphView'))
   check('client 一级菜单不再内嵌改动明细（index.tsx 不再有 ChangesList）', !clientSrc.includes('ChangesList'))
   check('client 工作台 portal 到 body（createPortal + document.body）', clientOut.includes('document.body') && portalImported >= 2)
-  check('client BUILD 版本已推进（dgp-v14）', clientOut.includes('dgp-v14'))
+  check('client BUILD 版本已推进（dgp-v15）', clientOut.includes('dgp-v15'))
   // ---- i18n 键完整性：任何 t('x') 用到的键都必须在 ZH/EN 字典里存在（防 wbCancel 类漏键） ----
   const clientNorm = clientSrc.replace(/\r\n/g, '\n')
   const dictStart = clientNorm.indexOf('const ZH: Dict = {')
@@ -226,9 +226,19 @@ if (clientOut) {
   check('client 初始化向导分步推进（initStep）', clientSrcAll.includes('initStep'))
   check('client 初始化失败可返回上一步（initBack）', clientSrcAll.includes('initBack'))
   check('client 当前分支详情入口（branchDetail）', clientSrcAll.includes('branchDetail'))
+  // ---- 2026-10-30 审核后重构：设置页 Git 分节 ----
+  check('client 账号行合并重复入口（不再单独渲染 reauth 按钮）', !/t\('reauth'\)/u.test(clientSrcAll))
+  check('client 权限只提交单条（/repo/permission）', clientSrcAll.includes('/repo/permission'))
+  check('client 权限保存有乐观更新与回滚（permOverride）', clientSrcAll.includes('permOverride'))
+  check('client 权限保存有在途锁（permSaving）', clientSrcAll.includes('permSaving'))
+  check('client 不再整表提交 repoPermissions 到 /settings', !/api<[^>]*>\('\/settings',\s*\{\s*repoPermissions/u.test(clientSrcAll))
+  check('client 仓库列表展示截断提示（reposTruncated）', clientSrcAll.includes('reposTruncated'))
+  check('client 统计条并入账号级权限（perAccountEntries）', clientSrcAll.includes('perAccountEntries'))
+  check('client scope tab 说明全局兜底语义（scopeReposNote）', clientSrcAll.includes('scopeReposNote'))
+
   check('client 分支详情按 ref 取提交（ref=）', clientSrcAll.includes('ref=') && clientSrcAll.includes('/repo/commits'))
   check('client 分支详情不单独做按钮（Git 只有一个 chip 入口）', !clientSrcAll.includes('dgp-branchbtn'))
-  check('client BUILD 版本已推进（dgp-v14）', clientOut.includes('dgp-v14'))
+  check('client BUILD 版本已推进（dgp-v15）', clientOut.includes('dgp-v15'))
 }
 // ---- node 半边：git-ops 命令层与工作台端点 ----
 {
@@ -260,11 +270,17 @@ if (clientOut) {
       check('store 提供 per-account/per-repo 权限结构（repoPermissions）', storeSrc.includes('repoPermissions'))
       check('store 提供仓库权限查询（repoPermission）', storeSrc.includes('repoPermission('))
       check('store 提供仓库权限写入（setRepoPermission）', storeSrc.includes('setRepoPermission('))
+      check('store 仓库键保留多段（GitLab 子组不截断）', !/const \[owner, repo\] = parts/u.test(storeSrc))
+      check('handler 提供单条仓库权限端点（/repo/permission）', handlerSrc.includes("'/repo/permission'"))
+      check('handler /account/repos 返回每仓库权限（permission）', /permission: deps\.store\.repoPermission/u.test(handlerSrc))
+
     }
     const providersSrc = await readText(resolve(root, 'src/node/providers.ts'))
     if (providersSrc) {
       check('providers 提供列出账号远程仓库（listAccountRepos）', providersSrc.includes('export async function listAccountRepos'))
       check('providers 提供仓库列表端点纯函数（便于门禁）', providersSrc.includes('accountReposEndpoint'))
+      check('providers 仓库列表支持分页（page 参数）', providersSrc.includes('page=${p}'))
+      check('providers 仓库列表返回截断标记（truncated）', providersSrc.includes('truncated'))
     }
     const gitOpsSrc2 = await readText(resolve(root, 'src/node/git-ops.ts'))
     if (gitOpsSrc2) {

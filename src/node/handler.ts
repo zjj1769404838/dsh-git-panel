@@ -174,7 +174,13 @@ export function createHandler(deps: HandlerDeps) {
           sendJson(res, 200, { ok: false, error: result.error ?? '读取仓库列表失败', repos: [] })
           return
         }
-        sendJson(res, 200, { ok: true, repos: result.repos })
+        // 权限档位由 node 侧唯一事实源判定（store.repoPermission），client 不再自己算一遍，
+        // 避免「有表默认 full / 无表回退 allowedRepos」两处实现各自漂移。
+        const repos = result.repos.map((repo) => ({
+          ...repo,
+          permission: deps.store.repoPermission(account.id, repo.fullName),
+        }))
+        sendJson(res, 200, { ok: true, repos, truncated: result.truncated === true })
         return
       }
 
@@ -1026,6 +1032,36 @@ export function createHandler(deps: HandlerDeps) {
           scopes: verified.identity?.scopes?.length ? verified.identity.scopes : account.scopes,
         })
         sendJson(res, 200, { ok: true, state: deps.store.snapshot() })
+        return
+      }
+
+      // 单条仓库权限写入：只改「该账号对该仓库」这一格，不整表覆盖。
+      // 整表 POST /settings 的做法在连点/多窗口下会互相覆盖（后写者把前者的改动抹掉）。
+      if (path === '/repo/permission') {
+        const accountId = str(body.accountId).trim()
+        const repoFullName = str(body.repo).trim()
+        const perm = str(body.permission).trim()
+        if (!accountId || !repoFullName) {
+          sendJson(res, 400, { ok: false, error: '缺少 accountId 或 repo 参数' })
+          return
+        }
+        if (perm !== 'full' && perm !== 'read' && perm !== 'none') {
+          sendJson(res, 400, { ok: false, error: `权限档位不合法：${perm || '(空)'}` })
+          return
+        }
+        const account = deps.store.getAccount(accountId)
+        if (!account) {
+          sendJson(res, 404, { ok: false, error: '账号不存在' })
+          return
+        }
+        const applied = deps.store.setRepoPermission(accountId, repoFullName, perm)
+        deps.log?.('info', `仓库权限已更新：${accountId.slice(0, 8)}… ${repoFullName}=${applied}`)
+        sendJson(res, 200, {
+          ok: true,
+          repo: repoFullName,
+          permission: applied,
+          state: deps.store.snapshot(),
+        })
         return
       }
 
