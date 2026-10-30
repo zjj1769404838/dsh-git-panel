@@ -29,7 +29,7 @@ import {
   stagePaths,
   unstagePaths,
 } from './git-ops.js'
-import { pollDeviceFlow, PROVIDERS, providerOf, startDeviceFlow, verifyToken, listAccountRepos } from './providers.js'
+import { pollDeviceFlow, PROVIDERS, providerOf, startDeviceFlow, verifyToken, listAccountRepos, createAccountRepo } from './providers.js'
 import { redact } from './vault.js'
 
 export const ROUTE_PREFIX = '/dsh-git-panel'
@@ -870,6 +870,55 @@ export function createHandler(deps: HandlerDeps) {
 
         deps.log?.('info', `仓库初始化完成：${root}（origin=${remoteUrl}）`)
         sendJson(res, 200, { ok: true, root, branch, remoteName: 'origin', remoteUrl, steps, error: '' })
+        return
+      }
+
+      // 在已连接账号下新建一个空远程仓库：用于「本地目录 → 远端仓库」从零开始。
+      // 这是写操作（会在远端产生资源），过 requireWrite + 归属授权；建完自动补进该账号的权限表（full），
+      // 否则新仓库会因为「不在授权名单里」而无法 push。
+      if (path === '/repo/create') {
+        const cwd = str(body.cwd).trim()
+        if (cwd) {
+          const allowed = requireWrite(cwd)
+          if (!allowed) return
+        }
+        const accountId = str(body.accountId).trim()
+        const account = accountId ? deps.store.getAccount(accountId) : deps.store.activeAccount()
+        if (!account) {
+          sendJson(res, 200, { ok: false, error: accountId ? '账号不存在' : '尚未连接 Git 账号，请先在设置中连接账号' })
+          return
+        }
+        const token = deps.store.revealSecret(account.id)
+        if (!token) {
+          deps.store.markAccount(account.id, { status: 'error', lastError: '凭据无法解密' })
+          sendJson(res, 200, { ok: false, error: '凭据无法解密，请重新授权' })
+          return
+        }
+        const name = str(body.name).trim()
+        if (!name) {
+          sendJson(res, 400, { ok: false, error: '请填写仓库名' })
+          return
+        }
+        const created = await createAccountRepo(
+          providerOf(account.provider),
+          token,
+          {
+            name,
+            private: body.private === true,
+            description: str(body.description).trim(),
+            owner: str(body.owner).trim() || undefined,
+          },
+          account.apiBase || undefined,
+          account.host,
+        )
+        if (!created.ok || !created.repo) {
+          sendJson(res, 200, { ok: false, error: created.error ?? '创建远程仓库失败' })
+          return
+        }
+        // 新仓库默认授权 full：用户刚在账号下建出来，意图就是要用它。
+        deps.store.setRepoPermission(account.id, created.repo.fullName, 'full')
+        deps.log?.('info', `远程仓库已创建：${account.provider}/${created.repo.fullName}`)
+        sendJson(res, 200, { ok: true, repo: created.repo, state: deps.store.snapshot() })
         return
       }
 

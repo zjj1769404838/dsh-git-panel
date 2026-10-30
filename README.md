@@ -1,8 +1,8 @@
-# dsh-git-panel
+# @zjj/dsh-git-panel
 
 DSH（DeepSeek Harness）桌面端插件：**Git 账号接入 + 受控仓库操作**。
 
-配置全部放在 **DSH 设置页**（左侧导航新增 `Git` 分节）；输入框下方左侧只保留一个 **opencode 风格的分支状态 chip**（如 `⎇ main ↑2 3*`），点它直接跳到设置页。同时把 Git 查询与受控写操作封装成 Agent 可直接调用的工具。
+配置全部放在 **DSH 设置页**（左侧导航新增 `Git` 分节）；输入框下方左侧只保留一个 **opencode 风格的分支状态 chip**（如 `⎇ main ↑2 3*`），点它弹出分组菜单（仓库 / 打开 / 设置），工作台、当前分支详情、初始化向导与设置页都从这里进。同时把 Git 查询与受控写操作封装成 Agent 可直接调用的工具。
 
 ---
 
@@ -32,7 +32,7 @@ DSH（DeepSeek Harness）桌面端插件：**Git 账号接入 + 受控仓库操�
 | 连接账号 | 「连接账号」是一个 **Modal 弹窗**（不再常驻在页面里）：平台 / 备注名 / 接入方式（PAT 或 OAuth 设备码）/ 令牌或 clientId / 主机与 API 地址，成功即关闭并刷新账号卡 |
 | 仓库筛选 | 账号卡里的仓库列表带工具行：**搜索框**（按 `owner/repo` 过滤）+ **权限筛选分段**（全部 / 完整 / 只读 / 无权限）+ 计数「共 n / m 个仓库」+ 刷新按钮；列表被分页截断时底部提示 |
 | 当前分支详情 | **不单独占一个按钮** —— Git 只保留输入框下方那一个 chip 入口；点 chip 打开菜单，选「当前分支详情」即在**页面中央**弹出 Modal，用**时间线**逐条展示该分支的提交记录（左侧竖线 + 节点，首条节点带光晕；每行 = 提交信息 / 短哈希 / 作者 / 时间），可滚动、不溢出视口；菜单项副标题与弹窗标题都带当前分支名；×、遮罩点击、Esc、底部按钮四种方式均可关闭 |
-| 初始化 | 未初始化目录点「初始化 Git 项目」进入**单页表单 + 右侧实时计划**（不再分步）：左侧一次填完 ①选账号 ②选远程仓库（平台列举 / 新地址 / 手工 `owner/repo`）③分支名与首次提交信息，右侧同步显示将要执行的动作清单与就绪状态；提交后右侧切换为执行结果（成功给步骤清单，失败给中文原因并可就地改） |
+| 初始化 | 未初始化目录点「初始化 Git 项目」进入**单页表单 + 右侧实时计划**（不再分步）：左侧一次填完 ①选账号 ②选远程仓库（平台列举 / **在该账号下新建仓库** / 新地址 / 手工 `owner/repo`）③分支名与首次提交信息，右侧同步显示将要执行的动作清单与就绪状态；提交后右侧切换为执行结果（成功给步骤清单，失败给中文原因并可就地改）。「新建仓库」是就地展开的一行：仓库名（默认取当前目录名）+ 私有勾选 + 「创建并选用」，建完自动授权 `full` 并回填为本次远程 |
 | 工作区改动明细 | 在 **Git 工作台「改动」视图**（左侧竖排导航第一项）列出未提交文件：状态字母 + 路径 + 增删行数 + 已暂存标记；提交框固定在列表上方（暂存区 → 写提交信息 → 提交），选中文件后出现批量条；加载中用骨架屏，空状态用图形化插画 |
 | 轻提示 toast | 所有动作反馈统一为右下角 toast（成功/失败/信息三态），2.6 秒自动消失；菜单关闭后提示仍保留 |
 
@@ -40,13 +40,18 @@ DSH（DeepSeek Harness）桌面端插件：**Git 账号接入 + 受控仓库操�
 
 ## 二、安装
 
+从 Git 源安装（仓库已入库 `lib/` 构建产物，装完即可用）：
+
 ```bash
-# 在插件目录构建
+dsh plugin --profile desktop add github:zjj1769404838/dsh-git-panel
+```
+
+从本地目录安装（改代码时用）：
+
+```bash
 npm install --include=dev
 node scripts/build.mjs
-
-# 安装到 desktop profile
-"D:/apps/dsh-desktop/resources/runtime/cli/bin/dsh.cmd" plugin --profile desktop add "D:/my-projects/plugins/dsh-git-panel"
+dsh plugin --profile desktop add link:/absolute/path/to/dsh-git-panel
 ```
 
 装完重启桌面端（node 半边与 client 模块表在启动时扫描 `dsh.client` 行）；client 半边改动后需在 GUI 里 **Ctrl+Shift+R 硬刷新**。
@@ -54,7 +59,7 @@ node scripts/build.mjs
 卸载：
 
 ```bash
-"D:/apps/dsh-desktop/resources/runtime/cli/bin/dsh.cmd" plugin --profile desktop remove dsh-git-panel
+dsh plugin --profile desktop remove @zjj/dsh-git-panel
 ```
 
 ---
@@ -161,8 +166,9 @@ node scripts/build.mjs
 | GET | `/repo/graph?cwd=<绝对路径>&limit=<5-100>` | 供 chip 菜单的分支拓扑图使用：`{isRepo, root, branch, head, detached, reason, truncated, laneCount, rows}`；每行 `rows[i]` 含 `{hash, short, parents, author, date, subject, refs, row, lane, segments, through}` —— `lane` 是本行所在车道、`segments` 是向下连到父提交的线（`from === to` 为同车道直落，否则为跨车道转折）、`through` 是穿过本行的其他车道；未授权目录返回 `authorized:false` 且 `rows` 为空、`laneCount:0`（不泄露提交历史） |
 | GET | `/repo/changes?cwd=<绝对路径>` | 供 chip 菜单的「工作区改动明细」使用：`{isRepo, root, branch, dirty, files}`；每个 `files[i]` 含 `{path, index, worktree, added, deleted, staged}` —— `index`/`worktree` 是 git porcelain 两列状态码（`M` 修改 / `A` 新增 / `D` 删除 / `R` 重命名 / `C` 复制 / `??` 未跟踪），`added`/`deleted` 是增删行数（未跟踪二进制无法计数时置 0，界面显示「—」）。未授权目录只回 `{isRepo:true, root:'', branch:'', dirty:false, files:[]}` 空壳（**不泄露路径、分支与文件名**）；非仓库回 `{isRepo:false,…}` |
 | POST | `/repo/init` | 在会话目录执行 `git init -b main`（幂等：已有 `.git` 返回 `created:false`，绝不覆盖，**且不删除/不改动目录里已有文件**）；必须先过同源校验 + `allowedRoots` 授权闸门，未授权目录 403 且不创建任何文件；写开关关闭时同样 403 |
-| POST | `/repo/bootstrap` | **一键初始化（分步向导的执行端）**：请求体 `{cwd, accountId, remoteMode:'existing'|'new', repoFullName?, remoteUrl?, branchName, branchMode:'new'|'existing', initialCommitMessage?}`；依次完成 ①账号与凭据校验 → ②解析远程目标（选已有仓库时按 `repoFullName` 在平台列表里匹配出 URL）→ ③远端归属授权（`repoKey` 必须对该账号 `full`，否则 403「未授权写入」）→ ④`git init`（已有仓库则复用）→ ⑤添加远程 `origin`（**已存在且指向不同地址时直接报错，不静默覆盖**）→ ⑥分支（`new` 撞名时降级为切换并在 `steps` 里说明）→ ⑦可选首次提交；成功回 `{ok:true,root,branch,remoteName:'origin',remoteUrl,steps:[中文步骤]}`，失败回 `{ok:false,error:'中文原因'}`（HTTP 200）。**只做本地操作，不 push** |
+| POST | `/repo/bootstrap` | **一键初始化（单页初始化页的执行端）**：请求体 `{cwd, accountId, remoteMode:'existing'|'new', repoFullName?, remoteUrl?, branchName, branchMode:'new'|'existing', initialCommitMessage?}`；依次完成 ①账号与凭据校验 → ②解析远程目标（选已有仓库时按 `repoFullName` 在平台列表里匹配出 URL）→ ③远端归属授权（`repoKey` 必须对该账号 `full`，否则 403「未授权写入」）→ ④`git init`（已有仓库则复用）→ ⑤添加远程 `origin`（**已存在且指向不同地址时直接报错，不静默覆盖**）→ ⑥分支（`new` 撞名时降级为切换并在 `steps` 里说明）→ ⑦可选首次提交；成功回 `{ok:true,root,branch,remoteName:'origin',remoteUrl,steps:[中文步骤]}`，失败回 `{ok:false,error:'中文原因'}`（HTTP 200）。**只做本地操作，不 push** |
 | POST | `/pat/connect` | PAT 接入 |
+| POST | `/repo/create` | **在指定账号下新建远程仓库**：请求体 `{accountId?, name, private?, description?, cwd?}`；`accountId` 缺省取默认账号；给了 `cwd` 就先过 `requireWrite`（目录授权 + 写开关），只建远端时可不传。按平台分别调 GitHub `POST /user/repos`（或 `/orgs/{org}/repos`）、GitLab `POST /api/v4/projects`、Gitea `POST /api/v1/user/repos`；仓库名按 `^[\w.-]{1,100}$` 校验（不合法 400「仓库名不合法」）、缺名 400。**建完自动把该仓库对该账号的权限写成 `full`**，否则紧接着的 push 会被「未授权写入」拦下。成功回 `{ok:true, repo, state}`，失败回 `{ok:false, error:'中文原因'}`（HTTP 200；401 提示重新授权、403 按平台提示所需 scope、422/400 提示仓库已存在或名称不合法） |
 | POST | `/oauth/start` | 发起设备码流程，返回 `pollKey` 与 `userCode` |
 | POST | `/oauth/poll` | 用 `pollKey` 轮询（不传设备码） |
 | POST | `/accounts/remove` | 断开账号 |
@@ -179,11 +185,11 @@ node scripts/build.mjs
 ```bash
 npm run bundle        # 构建 lib/index.js + lib/client.js
 npm run typecheck     # tsc --noEmit
-npm run gates         # 183 项插件契约门禁
-npm run test:hardening# 194 项加固回归（含真实 git 仓库端到端 + 仓库权限档位 + 单条权限写入）
+npm run gates         # 195 项插件契约门禁
+npm run test:hardening# 197 项加固回归（含真实 git 仓库端到端 + 仓库权限档位 + 单条权限写入 + 新建远程仓库）
 npm run test:e2e      # 23 项设置页 GUI 端到端验证（需要本机 Edge + DSH Web 在跑）
 npm run test:e2e:wb   # 29 项 Git 工作台 GUI 端到端验证（含居中模态框形态、点弹窗不消失回归）
-npm run test:e2e:newui # 19 项新入口体系 GUI 端到端验证（单一 chip 入口 + 五入口菜单）
+npm run test:e2e:newui # 19 项新入口体系 GUI 端到端验证（单一 chip 入口 + 分组菜单）
 npm run preview       # 用真实 CSS + 宿主 token 渲染 docs/preview/*.png（需要本机 Edge）
 npm test              # gates + hardening
 ```
@@ -236,7 +242,7 @@ scripts/
 
 - client 半边只注册 slot（`settings.section` + `conversation.input.left`），不写 DOM 注入；若宿主未提供某个 slot，对应 UI 不会出现（控制台会记录 `[dsh-git-panel] … 注册失败`）。
 - 分支 chip 的 cwd 来自 `sessions.list.getSnapshot().byId[sessionId].cwd`；DSH 的会话快照没有「当前会话」字段，取不到 cwd 时 chip 整块不渲染（不报错、不占位）。取到 cwd 但该目录不是 Git 仓库时，chip 降级为一个灰化的 `Git` 入口（`data-norepo="1"`），点击仍可进设置页——避免「插件看起来没装」的误解。
-- 点 chip 弹出的是插件**自绘菜单**（仓库摘要 / 分支拓扑图 / 初始化 Git 项目 / 刷新 / 复制路径 / 打开 Git 设置）。菜单项「打开 Git 设置」按可信度四级降级：① **宿主账号菜单 →「设置」菜单项**（宿主真入口，最稳）→ ② 点宿主设置触发按钮（`button[aria-haspopup="dialog"]` 且文案匹配 `设置|Settings|Preferences`，`aria-expanded="true"` 时跳过，否则会把它关掉）→ ③ `shortcuts.registry.invoke('settings.open', …)`（原生菜单走的同一条路，不校验 isTrusted）→ ④ 派发 `Ctrl+,` 与 `Ctrl+Alt+,`（仅 Web 端有效；宿主按运行端注册 `desktop:* = Comma+primary`、`web:* = Comma+primary+alt` 两套绑定）。**不能只派发合成键盘事件**：桌面端 `installNativeKeyboard` 接管后 `installKeyboard` 里 `if (native) return` 直接跳过 DOM keydown 分支，合成事件永远到不了命令。面板打开后还会把左侧导航切到 Git 分节（按导航行文案匹配，检查 `aria-current`）。
+- 点 chip 弹出的是插件**自绘分组菜单**（`仓库` 组：Git 工作台 / 刷新状态 / 当前分支详情；`打开` 组：打开项目目录；分隔线；Git 设置）。菜单项「Git 设置」按可信度四级降级：① **宿主账号菜单 →「设置」菜单项**（宿主真入口，最稳）→ ② 点宿主设置触发按钮（`button[aria-haspopup="dialog"]` 且文案匹配 `设置|Settings|Preferences`，`aria-expanded="true"` 时跳过，否则会把它关掉）→ ③ `shortcuts.registry.invoke('settings.open', …)`（原生菜单走的同一条路，不校验 isTrusted）→ ④ 派发 `Ctrl+,` 与 `Ctrl+Alt+,`（仅 Web 端有效；宿主按运行端注册 `desktop:* = Comma+primary`、`web:* = Comma+primary+alt` 两套绑定）。**不能只派发合成键盘事件**：桌面端 `installNativeKeyboard` 接管后 `installKeyboard` 里 `if (native) return` 直接跳过 DOM keydown 分支，合成事件永远到不了命令。面板打开后还会把左侧导航切到 Git 分节（按导航行文案匹配，检查 `aria-current`）。
   - **首选路径是账号菜单**：宿主把设置入口渲染在 `settings.launcher` slot 的 fallback 里，而 `@deepseek-ai/dsh-client-ui-settings-account` 无条件占用了该 slot（账号菜单），所以真正的设置按钮**根本不在 DOM 里**；账号菜单里的「设置」项（文案形如「设置  Ctrl+Alt+,」）才是稳定可点的真入口。走这条路径实测能打开设置面板并落到 Git 分节。
   - **触发按钮必须同时满足「文案匹配」+「排除 `[data-team-action]`」**：设置按钮不在 DOM 时，页面上其余 `aria-haspopup="dialog"` 按钮都是别的浮层——`[data-team-action]` 的「智能体团队」触发按钮就是其中之一。早期实现写成「文案不匹配就退化成 `usable[0]`」，于是点「打开 Git 设置」实际打开了智能体团队面板。现在找不到文案匹配的按钮就直接走第 ③ 条，**绝不退化成取第一个按钮**。
   - 上述行为由 `npm run test:e2e` 在真实 GUI 上逐条断言（打开的是设置面板、智能体团队面板没被误开、导航落在 Git 分节、智能体团队入口自身仍可用）。

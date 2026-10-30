@@ -37,7 +37,11 @@ const pkgRaw = await readText(resolve(root, 'package.json'))
 check('package.json 存在', pkgRaw !== null)
 const pkg = pkgRaw ? JSON.parse(pkgRaw) : {}
 
-check('package.json name 与目录一致', pkg.name === 'dsh-git-panel', `实际 ${pkg.name}`)
+check(
+  'package.json name 与目录一致（允许 scope 前缀）',
+  pkg.name === 'dsh-git-panel' || pkg.name === '@zjj/dsh-git-panel',
+  `实际 ${pkg.name}`,
+)
 check('type=module', pkg.type === 'module')
 check('main 指向 lib/index.js', pkg.main === 'lib/index.js', `实际 ${pkg.main}`)
 
@@ -56,8 +60,10 @@ const patchRaw = await readText(resolve(root, 'cordis.patch.yml'))
 check('cordis.patch.yml 存在', patchRaw !== null)
 if (patchRaw) {
   check('patch 含 insert 行', /^\s*-?\s*insert:/m.test(patchRaw), patchRaw.trim())
-  check('patch 含插件 id', patchRaw.includes(`id: ${pkg.name}`), patchRaw.trim())
-  check('patch 含插件 name', patchRaw.includes(`name: ${pkg.name}`), patchRaw.trim())
+  // YAML 里以 @ 开头的纯量必须加引号，所以比较时先剥掉 id/name 两侧的引号。
+  const patchNorm = patchRaw.replace(/(id|name):\s*(['"])(.*?)\2/g, '$1: $3')
+  check('patch 含插件 id', patchNorm.includes(`id: ${pkg.name}`), patchRaw.trim())
+  check('patch 含插件 name', patchNorm.includes(`name: ${pkg.name}`), patchRaw.trim())
 }
 
 check('lib/index.js 已构建', await exists(resolve(root, 'lib/index.js')))
@@ -72,7 +78,10 @@ if (nodeOut) {
     nodeOut.includes(`"${pkg.version}"`) || nodeOut.includes(`'${pkg.version}'`),
     `期望 ${pkg.version}`,
   )
-  check('node 产物导出 name', /export\s*\{[^}]*\bname\b/.test(nodeOut) || nodeOut.includes('name = "dsh-git-panel"'))
+  check(
+    'node 产物导出 name',
+    /export\s*\{[^}]*\bname\b/.test(nodeOut) || nodeOut.includes(`name = "${pkg.name}"`),
+  )
   check('node 产物注册了 webServer 路由', nodeOut.includes('/dsh-git-panel'))
 }
 
@@ -120,7 +129,7 @@ if (clientOut) {
   check('client 拉取提交图接口（/repo/graph）', clientOut.includes('/repo/graph'))
   check('client 图区超宽时横向滚动（overflow:auto）', clientOut.includes('dgp-graph-body'))
   check('client 节点悬浮/选中反馈（data-active）', clientOut.includes('data-active'))
-  check('client ref chip 区分 local/remote/tag/head', clientOut.includes('data-kind') && clientOut.includes('graphHead'))
+  check('client ref chip 区分 local/remote/tag/head', clientOut.includes('data-kind') && sharedSrc.includes('[data-kind="head"]'))
   // 「打开 Git 设置」：桌面端快捷键走原生 IPC，合成 keydown 到不了 settings.open，
   // 必须点宿主设置触发按钮 / 调 shortcuts.invoke，两条路都要在产物里。
   check('client 打开设置不依赖合成快捷键（点宿主触发按钮）', clientOut.includes('aria-haspopup') && clientOut.includes('aria-keyshortcuts'))
@@ -267,6 +276,13 @@ if (clientOut) {
   check('client 连接账号走弹窗（不再常驻表单）', clientSrcAll.includes('connectOpen') && clientSrcAll.includes('connectAccount'))
 
   check('client 分支详情按 ref 取提交（ref=）', clientSrcAll.includes('ref=') && clientSrcAll.includes('/repo/commits'))
+  // ---- 2026-10-30 文案 vs 功能一致性审计（15 处）后补的回归点 ----
+  check('工作台 Pull 带 remote + 分支（不跑裸 git pull）', /api<SyncView>\('\/repo\/pull',\s*\{[^}]*remote:/.test(clientSrcAll) && /\/repo\/pull',\s*\{[^}]*branch:/.test(clientSrcAll))
+  check('工作台把冲突/被拒翻成人话（run() 消费 syncConflicted/syncRejected）', clientSrcAll.includes("t('syncConflicted')") && clientSrcAll.includes("t('syncRejected')"))
+  check('初始化表单不再有被丢弃的「仓库名」输入（wbInitName 已删）', !clientSrcAll.includes('wbInitName') && !clientSrcAll.includes('initName'))
+  check('文案不再指向已删除的「仓库范围」（wbUnauthorizedHint/helpText）', !clientSrcAll.includes('「仓库范围」') && !clientSrcAll.includes('→ Scope'))
+  check('概览授权仓库只数可访问档位（排除 none）', clientSrcAll.includes("perm !== 'none'") && clientSrcAll.includes('statsReposHintDefault'))
+  check('死字典键已清（抽查 8 个不再出现）', ['scopeGrantAll', 'graphHead', 'statsReposHintAll', 'initStepConfirm', 'loadingLabel', 'toastCopiedFailed', 'wbDiffTab', 'branchDetailLoading'].every((key) => !clientSrcAll.includes(`  ${key}:`)))
   check('client 分支详情不单独做按钮（Git 只有一个 chip 入口）', !clientSrcAll.includes('dgp-branchbtn'))
   check('client BUILD 版本已推进（dgp-v18）', clientOut.includes('dgp-v18'))
 }
@@ -305,12 +321,18 @@ if (clientOut) {
       check('handler /account/repos 返回每仓库权限（permission）', /permission: deps\.store\.repoPermission/u.test(handlerSrc))
 
     }
+    check('handler 提供新建远程仓库端点（/repo/create）', handlerSrc.includes("'/repo/create'"))
+    check('handler 新建仓库后自动授权为 full（避免建完推不上去）', /setRepoPermission\(account\.id, created\.repo\.fullName, 'full'\)/u.test(handlerSrc))
     const providersSrc = await readText(resolve(root, 'src/node/providers.ts'))
     if (providersSrc) {
       check('providers 提供列出账号远程仓库（listAccountRepos）', providersSrc.includes('export async function listAccountRepos'))
       check('providers 提供仓库列表端点纯函数（便于门禁）', providersSrc.includes('accountReposEndpoint'))
       check('providers 仓库列表支持分页（page 参数）', providersSrc.includes('page=${p}'))
       check('providers 仓库列表返回截断标记（truncated）', providersSrc.includes('truncated'))
+      check('providers 提供新建远程仓库（createAccountRepo）', providersSrc.includes('export async function createAccountRepo'))
+      check('providers 提供建仓端点纯函数（createRepoEndpoint）', providersSrc.includes('createRepoEndpoint'))
+      check('providers 建仓前校验仓库名合法性（REPO_NAME_RE）', providersSrc.includes('REPO_NAME_RE'))
+      check('providers 建仓按平台区分可见性字段（visibility / private）', providersSrc.includes('visibility: isPrivate') && providersSrc.includes('private: isPrivate'))
     }
     const gitOpsSrc2 = await readText(resolve(root, 'src/node/git-ops.ts'))
     if (gitOpsSrc2) {

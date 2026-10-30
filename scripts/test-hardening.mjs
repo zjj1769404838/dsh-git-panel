@@ -921,6 +921,28 @@ check('工具 name 前缀一致', [...registeredTools.keys()].every((name) => na
   check('子组仓库键保留三段', subAfter['group/subgroup/repo-a'] === 'none', JSON.stringify(subAfter))
   check('子组仓库键不折叠成组名', subAfter['group/subgroup'] === undefined, JSON.stringify(subAfter))
 
+  // 新建远程仓库：缺名 400、非法名 400、无账号、凭据不可用时不抛异常
+  const createNoName = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/create',
+    body: JSON.stringify({ accountId: acctId }),
+  })
+  check('新建仓库缺仓库名报 400', createNoName.status === 400, String(createNoName.status))
+
+  const createBadName = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/create',
+    body: JSON.stringify({ accountId: acctId, name: '../escape' }),
+  })
+  check('新建仓库非法名不落到平台（返回错误而非成功）', createBadName.json?.ok !== true, JSON.stringify(createBadName.json ?? {}).slice(0, 200))
+
+  const createNoAcct = await call(handler2, {
+    method: 'POST',
+    url: '/dsh-git-panel/repo/create',
+    body: JSON.stringify({ accountId: 'nope', name: 'demo-repo' }),
+  })
+  check('新建仓库指定不存在账号被拒', createNoAcct.json?.ok !== true && String(createNoAcct.json?.error ?? '').length > 0, JSON.stringify(createNoAcct.json ?? {}).slice(0, 200))
+
   // 初始化向导：参数校验 + 分支撞名降级 + origin 不静默覆盖
   const bootBadAcct = await call(handler2, {
     method: 'POST',

@@ -380,6 +380,98 @@ function mapAccountRepo(provider: ProviderId, raw: any): AccountRepoInfo | null 
   }
 }
 
+/** 新建远程仓库的入参。 */
+export interface CreateRepoOptions {
+  /** 仓库名（不含 owner）。 */
+  name: string
+  /** 私有仓库。默认 false（公开）。 */
+  private?: boolean
+  description?: string
+  /** 归属组织/命名空间；留空则建在账号自己名下。 */
+  owner?: string
+}
+
+/**
+ * 各平台「新建仓库」的接口路径。
+ * 单独导出便于单测断言拼接结果（不做任何网络请求）。
+ */
+export function createRepoEndpoint(provider: ProviderId, base: string, owner?: string): string {
+  const root = String(base ?? '').replace(/\/+$/, '')
+  const scope = String(owner ?? '').trim()
+  if (provider === 'gitlab') {
+    // GitLab 用 POST /projects，命名空间走 namespace_path / path 参数，不换端点。
+    return `${root}/api/v4/projects`
+  }
+  if (provider === 'gitea') {
+    return scope ? `${root}/orgs/${encodeURIComponent(scope)}/repos` : `${root}/user/repos`
+  }
+  return scope ? `${root}/orgs/${encodeURIComponent(scope)}/repos` : `${root}/user/repos`
+}
+
+/** 仓库名合法字符：字母数字、下划线、点、连字符（三家平台都接受）。 */
+const REPO_NAME_RE = /^[\w.-]{1,100}$/
+
+/**
+ * 在账号下新建一个空远程仓库。
+ * 成功后返回与 `listAccountRepos` 同构的 `AccountRepoInfo`，`url` 可直接 `git remote add`。
+ * 任何失败都返回 `{ok:false,error}`（可读中文），绝不抛异常、绝不回显令牌。
+ */
+export async function createAccountRepo(
+  provider: ProviderId,
+  token: string,
+  options: CreateRepoOptions,
+  apiBase?: string,
+  host?: string,
+): Promise<{ ok: boolean; repo?: AccountRepoInfo; error?: string }> {
+  if (typeof token !== 'string' || token.trim().length === 0) {
+    return { ok: false, error: '令牌为空' }
+  }
+  const name = String(options?.name ?? '').trim()
+  if (!name) return { ok: false, error: '请填写仓库名' }
+  if (!REPO_NAME_RE.test(name)) {
+    return { ok: false, error: `仓库名不合法：${name}（只能用字母、数字、下划线、点、连字符）` }
+  }
+  const base = resolveApiBase(provider, apiBase, host)
+  if (!base) return { ok: false, error: '该平台需要填写 API 地址（例如 https://git.example.com/api/v1）' }
+
+  const description = String(options?.description ?? '').trim()
+  const isPrivate = options?.private === true
+  const payload =
+    provider === 'gitlab'
+      ? { name, path: name, visibility: isPrivate ? 'private' : 'public', description }
+      : { name, private: isPrivate, description, auto_init: false }
+
+  const result = await request(createRepoEndpoint(provider, base, options?.owner), {
+    method: 'POST',
+    token,
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+
+  if (!result.ok) {
+    if (result.status === 401) return { ok: false, error: '令牌无效或已过期，请重新授权' }
+    if (result.status === 403) {
+      return {
+        ok: false,
+        error:
+          provider === 'gitlab'
+            ? '令牌缺少创建仓库的权限（需要 api 范围）'
+            : provider === 'gitea'
+              ? '令牌缺少创建仓库的权限（需要 write:repository）'
+              : '令牌缺少创建仓库的权限（需要 repo 范围）',
+      }
+    }
+    if (result.status === 422 || result.status === 400) {
+      return { ok: false, error: `创建失败：${result.error || '仓库已存在或名称不合法'}` }
+    }
+    return { ok: false, error: result.error || '创建远程仓库失败' }
+  }
+
+  const mapped = mapAccountRepo(provider, result.json)
+  if (!mapped) return { ok: false, error: '仓库已创建，但平台返回的数据无法解析（请刷新仓库列表确认）' }
+  return { ok: true, repo: mapped }
+}
+
 /**
  * 列出某账号可见的全部远程仓库。
  * 任何失败都返回 `{ok:false,error}`（可读中文），绝不抛异常、绝不回显令牌。

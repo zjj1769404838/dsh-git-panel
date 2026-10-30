@@ -1,3 +1,3 @@
 - insert:
-    - id: dsh-git-panel
-      name: dsh-git-panel
+    - id: '@zjj/dsh-git-panel'
+      name: '@zjj/dsh-git-panel'

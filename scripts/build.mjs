@@ -30,7 +30,7 @@ const clientConfig = {
   bundle: true,
   logLevel: 'info',
   // React 由宿主模块加载器提供，不能打进产物（否则会出现两份 React 实例）。
-  external: ['react', 'react/jsx-runtime', 'react-dom'],
+  external: ['react', 'react/jsx-runtime', 'react-dom', 'react-dom/client'],
   banner: {
     js: `window.__ModuleLoader__.load({ id: ${JSON.stringify(pkg.name)}, factory: (require) => {\nvar module = { exports: {} }; var exports = module.exports;`,
   },

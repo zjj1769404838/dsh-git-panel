@@ -183,7 +183,6 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
 
   const isRepo = status !== null && status.isRepo
   const authorized = status !== null && status.authorized !== false
-  const [initName, setInitName] = useState(cwd.split(/[\\/]/).filter(Boolean).pop() || '')
   const [initRemote, setInitRemote] = useState('')
   const [discardPending, setDiscardPending] = useState<string[] | null>(null)
 
@@ -368,7 +367,11 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
   }
 
   /** 通用写操作执行器：busy 防重复 + toast 反馈 + 成功后全量刷新。 */
-  const run = async (kind: BusyKind, action: () => Promise<{ ok: boolean; error?: string }>, okText: string): Promise<boolean> => {
+  const run = async (
+    kind: BusyKind,
+    action: () => Promise<{ ok: boolean; error?: string; conflicted?: boolean; rejected?: boolean }>,
+    okText: string,
+  ): Promise<boolean> => {
     if (busy !== 'none') return false
     setBusy(kind)
     try {
@@ -378,7 +381,9 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
         await refreshAll()
         return true
       }
-      showToast('error', result.error || t('actionFailed'))
+      // 冲突 / 被拒单独给可操作的话术，其余沿用服务端错误原文。
+      const friendly = result.conflicted ? t('syncConflicted') : result.rejected ? t('syncRejected') : ''
+      showToast('error', friendly || result.error || t('actionFailed'))
       return false
     } catch (error) {
       showToast('error', `${t('actionFailed')}：${(error as Error).message}`)
@@ -410,8 +415,14 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
 
   const doFetch = () => run('fetch', () => api<SyncView>('/repo/fetch', { cwd }), t('toastFetched'))
 
+  // 没有上游时裸 git pull 会报 no tracking information；显式带 remote + 当前分支名，
+  // 等价于 git pull <remote> <branch>，无论有没有 upstream 都能拉到同名分支。
   const doPull = (strategy: 'merge' | 'rebase') =>
-    run('pull', () => api<SyncView>('/repo/pull', { cwd, strategy }), strategy === 'rebase' ? t('toastPulledRebase') : t('toastPulledMerge')).then((ok) => {
+    run(
+      'pull',
+      () => api<SyncView>('/repo/pull', { cwd, strategy, remote: remotes[0]?.name ?? '', branch: currentBranch }),
+      strategy === 'rebase' ? t('toastPulledRebase') : t('toastPulledMerge'),
+    ).then((ok) => {
       if (!ok) void loadStatus()
     })
 
@@ -490,10 +501,6 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
           <div className="dgp-gw-state">
             <EmptyState title={t('notRepo')} hint={t('wbInitHint')} />
             <div className="dgp-gw-initform">
-              <label className="dgp-field">
-                <span className="dgp-label">{t('wbInitName')}</span>
-                <input className="dgp-input" value={initName} onChange={(event) => setInitName(event.target.value)} />
-              </label>
               <label className="dgp-field">
                 <span className="dgp-label">{t('wbInitRemote')}</span>
                 <input className="dgp-input" value={initRemote} onChange={(event) => setInitRemote(event.target.value)} placeholder="https://github.com/user/repo.git" />

@@ -51,6 +51,12 @@ export function InitWizard({ t, cwd, accounts, authorizedRepos, onQuickInit, onC
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState<{ root: string; branch: string; remoteName: string; remoteUrl: string; steps: string[] } | null>(null)
+  /** 就地新建远程仓库：省掉「先去网页建、再回来刷新」这一跳。 */
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createName, setCreateName] = useState('')
+  const [createPrivate, setCreatePrivate] = useState(true)
+  const [createBusy, setCreateBusy] = useState(false)
+  const [createError, setCreateError] = useState('')
 
   /** 默认选第一个账号，少一次点击。 */
   useEffect(() => {
@@ -142,6 +148,47 @@ export function InitWizard({ t, cwd, accounts, authorizedRepos, onQuickInit, onC
     }
   }
 
+  /** 在当前账号下就地新建远程仓库，建完自动选中它（node 侧会顺手授 full）。 */
+  const runCreateRepo = async () => {
+    setCreateBusy(true)
+    setCreateError('')
+    try {
+      const data = await api<{
+        ok: boolean
+        error?: string
+        repo?: { fullName: string; name: string; url: string; defaultBranch: string; private: boolean }
+      }>('/repo/create', {
+        cwd,
+        accountId,
+        name: createName.trim(),
+        private: createPrivate,
+      })
+      if (!data.ok || !data.repo) {
+        setCreateError(data.error || t('repoCreateFailed'))
+        return
+      }
+      const created: AccountRepoView = {
+        fullName: data.repo.fullName,
+        name: data.repo.name,
+        owner: data.repo.fullName.split('/').slice(0, -1).join('/'),
+        url: data.repo.url,
+        private: data.repo.private,
+        defaultBranch: data.repo.defaultBranch,
+        permission: 'full',
+      }
+      setRepos((prev) => (prev.some((item) => item.fullName === created.fullName) ? prev : [created, ...prev]))
+      setRemoteMode('existing')
+      setRepoFullName(created.fullName)
+      setRemoteUrl(created.url)
+      setCreateOpen(false)
+      setCreateName('')
+    } catch (err) {
+      setCreateError((err as Error).message || t('repoCreateFailed'))
+    } finally {
+      setCreateBusy(false)
+    }
+  }
+
   // 没有账号：只能本地初始化，直接给最省事的出口。
   if (accounts.length === 0) {
     return (
@@ -227,7 +274,8 @@ export function InitWizard({ t, cwd, accounts, authorizedRepos, onQuickInit, onC
                       <span className="dgp-option-main">
                         <span className="dgp-option-title">{repo.fullName}</span>
                         <span className="dgp-option-hint">
-                          {repo.private ? t('repoPrivate') : t('repoPublic')} · {t('repoDefaultBranch')} {repo.defaultBranch || '-'}
+                          {repo.private ? t('repoPrivate') : t('repoPublic')} ·{' '}
+                          {fmt(t('repoDefaultBranch'), { branch: repo.defaultBranch || '-' })}
                         </span>
                       </span>
                     </label>
@@ -258,7 +306,7 @@ export function InitWizard({ t, cwd, accounts, authorizedRepos, onQuickInit, onC
                 ))}
               </ul>
             ) : null}
-            <div className="dgp-iw-inline">
+            <div className="dgp-iw-actions">
               <button
                 type="button"
                 className="dgp-gw-textbtn"
@@ -268,7 +316,51 @@ export function InitWizard({ t, cwd, accounts, authorizedRepos, onQuickInit, onC
                 {remoteMode === 'new' ? '✓ ' : '+ '}
                 {t('initNewRemote')}
               </button>
+              <button
+                type="button"
+                className="dgp-gw-textbtn"
+                data-on={createOpen ? '1' : '0'}
+                onClick={() => {
+                  setCreateOpen(!createOpen)
+                  setCreateError('')
+                  if (!createOpen && !createName) {
+                    // 用目录名做默认仓库名：多数情况下就是想把这个项目推上去。
+                    const guess = cwd.split(/[\\/]/).filter(Boolean).pop() || ''
+                    setCreateName(guess)
+                  }
+                }}
+              >
+                {createOpen ? '✓ ' : '+ '}
+                {t('repoCreateOpen')}
+              </button>
             </div>
+            {createOpen ? (
+              <div className="dgp-iw-create">
+                <input
+                  className="dgp-input"
+                  value={createName}
+                  onChange={(event) => setCreateName(event.target.value)}
+                  placeholder={t('repoCreateName')}
+                  aria-label={t('repoCreateName')}
+                />
+                <label className="dgp-check">
+                  <input type="checkbox" checked={createPrivate} onChange={(event) => setCreatePrivate(event.target.checked)} />
+                  <span>{t('repoCreatePrivate')}</span>
+                </label>
+                <button
+                  type="button"
+                  className="dgp-btn primary"
+                  disabled={createBusy || createName.trim() === '' || accountId === ''}
+                  onClick={() => void runCreateRepo()}
+                >
+                  {createBusy ? t('repoCreating') : t('repoCreateSubmit')}
+                </button>
+              </div>
+            ) : null}
+            {createOpen ? (
+              <div className="dgp-hint">{fmt(t('repoCreateHint'), { account: accounts.find((item) => item.id === accountId)?.login || '-' })}</div>
+            ) : null}
+            {createOpen && createError ? <div className="dgp-err">{createError}</div> : null}
             {remoteMode === 'new' ? (
               <label className="dgp-field">
                 <span className="dgp-label">{t('initRemoteUrl')}</span>
@@ -330,7 +422,12 @@ export function InitWizard({ t, cwd, accounts, authorizedRepos, onQuickInit, onC
               <div className="dgp-iw-secthead">{t('initConfirmTitle')}</div>
               <ul className="dgp-plan">
                 <li>{t('initPlanInit')}</li>
-                <li>{t('initPlanRemote')} · {remoteMode === 'existing' ? repoFullName || '-' : remoteUrl.trim() || '-'}</li>
+                <li>
+                  {t('initPlanRemote')}
+                  {remoteMode === 'existing'
+                    ? repoFullName.trim() ? ` · ${repoFullName.trim()}` : ''
+                    : remoteUrl.trim() ? ` · ${remoteUrl.trim()}` : ''}
+                </li>
                 <li>{fmt(t('initPlanBranch'), { branch: branchName.trim() || defaultBranch })}</li>
                 {commitMessage.trim() ? <li>{t('initPlanCommit')}</li> : null}
               </ul>

@@ -207,9 +207,9 @@
 | 项目 | 结果 |
 | --- | --- |
 | `npm run typecheck` | 0 错误 |
-| `npm run bundle` | `lib/client.js` 232.5kb |
-| `npm run gates` | **183 项通过**（+9：模态框结构 / 竖排导航 / 旧 `dgp-wb` 为 0 / 非贴右抽屉 / 单页向导 / 时间线 / 分组菜单） |
-| `npm run test:hardening` | **194 项通过** |
+| `npm run bundle` | `lib/client.js` 238.4kb |
+| `npm run gates` | **189 项通过**（+9：模态框结构 / 竖排导航 / 旧 `dgp-wb` 为 0 / 非贴右抽屉 / 单页向导 / 时间线 / 分组菜单；再 +6：`/repo/create` 端点、建完自动授权 `full`、`createAccountRepo` / `createRepoEndpoint` / `REPO_NAME_RE` / 平台可见性字段） |
+| `npm run test:hardening` | **197 项通过**（+3：新建仓库缺名 400 / 非法名不落平台 / 指定不存在账号被拒） |
 | `npm run test:e2e` | **23 项通过** |
 | `npm run test:e2e:wb` | **29 项通过**（选择器全部迁到 `.dgp-gw*`，+2 几何/样式断言确认居中模态框形态，提交详情改为先切「历史」再点行） |
 | `npm run test:e2e:newui` | **19 项通过**（时间线 `.dgp-tl-item`） |
@@ -220,3 +220,82 @@
 - gates 断言不能写 `!includes('initStep')`——字典键 `initStepAccount/initStepRemote/initStepBranch/initStepsTitle` 会误伤，必须收紧成 `setInitStep` / `initStep:`。
 - `dgp-v16` 在 gates 里出现 4 次（2 处断言 + 2 处描述文本），`str.replace(a,b,N)` 前先 `assert s.count(a)==N`，否则断言失败。
 - 工作台 e2e 里直接点 `.dgp-gw-commit, .dgp-gw-logrow, .dgp-gw-row` 会先命中改动行，提交详情弹窗根本打不开 → 必须先点竖排导航的「历史」再点日志行。
+
+---
+
+## 六、初始化页补「在账号下新建仓库」（2026-10-30）
+
+### 6.1 问题
+初始化页的「远程仓库」只能从平台已列出的仓库里挑，或手填一个已存在的地址；用户想把这个本地项目推上去时，得先去平台上建仓再回来填地址。原本文案还写着「插件不在平台上建仓」，等于把这条路的门直接关了。
+
+### 6.2 补上的链路（node 半边）
+| 位置 | 内容 |
+| --- | --- |
+| `src/node/providers.ts` `createRepoEndpoint(provider, base, owner?)` | GitHub/Gitea 有 owner → `POST /orgs/{owner}/repos`，无 owner → `POST /user/repos`；GitLab → `POST /api/v4/projects` |
+| `src/node/providers.ts` `createAccountRepo(...)` | 名称按 `^[\w.-]{1,100}$` 校验；GitLab 用 `{name, path, visibility}`，其它用 `{name, private, auto_init:false}`；401 → 「令牌无效或已过期，请重新授权」，403 → 按平台提示所需 scope（GitLab `api` / Gitea `write:repository` / GitHub `repo`），422/400 → 「仓库已存在或名称不合法」 |
+| `src/node/handler.ts` `POST /repo/create` | `cwd` 可选（给了就过 `requireWrite`）；`accountId` 缺省取默认账号；`revealSecret` 失败回「凭据无法解密，请重新授权」；**建完立即 `setRepoPermission(account.id, fullName, 'full')`**，否则紧接着的 push 会被 `isRepoWritableFor` 拦成「未授权写入」；成功回 `{ok, repo, state}` |
+
+### 6.3 补上的链路（client 半边）
+- 「远程仓库」区的两个文字按钮并排一行：`+ 填写其它远程地址`、`+ 在该账号下新建仓库`。
+- 新建仓库是**就地展开的一行**（`.dgp-iw-create`）：仓库名输入（默认取当前目录名）+ `私有仓库` 勾选 + `创建并选用` 主按钮；说明文案在展开行下方。
+- 建完把新仓库插到列表首位、`permission` 直接标 `full`、自动选中为本次远程并回填 URL，用户不用再点一次。
+- 新增字典键（ZH/EN 各 8 条）：`repoCreateOpen` / `repoCreateTitle` / `repoCreateName` / `repoCreatePrivate` / `repoCreateHint` / `repoCreateSubmit` / `repoCreating` / `repoCreateFailed`；`initRemoteUrlHint` 改写为「填写已存在的远程地址；也可以点上方『在该账号下新建仓库』」。
+
+### 6.4 验证
+| 项目 | 结果 |
+| --- | --- |
+| `npm run typecheck` | 0 错误 |
+| `npm run bundle` | `lib/client.js` 238.4kb |
+| `npm run gates` | **189 项通过** |
+| `npm run test:hardening` | **197 项通过** |
+| 真机截图 | `.work/init-create.png`（展开行：仓库名 `dsh-git-panel` + 私有勾选 + 创建并选用，单行不溢出） |
+
+### 6.5 踩到的坑
+- `.dgp-iw-create` 一开始套了 `.dgp-iw-sect` + `.dgp-iw-grid2` 两列布局，主按钮被挤成两行竖排、`私有仓库` 也竖着断行 —— 改成一行的 flex（输入 `flex:1 1 auto;min-width:0`，勾选与按钮 `flex:0 0 auto;white-space:nowrap`）才正常。
+- 展开面板放在 `Modal` 里时，主按钮贴到 `.dgp-modal-body` 底边会被 footer 压住 —— 缩短为单行后自然解决。
+
+## 七、文案 vs 功能一致性审计（2026-10-30，15 处）
+
+界面文案与真实行为逐条比对后的修正。审计方式：从 `index.tsx` 抽出 ZH 字典 301 个键，用 `/t\(\s*'([A-Za-z0-9_]+)'\s*\)/gu` 扫六个 client 文件找引用，再人工核对每条文案描述的行为是否与 node 侧实现一致。
+
+### 7.1 高优先级（文案与行为相反）
+
+| 位置 | 文案原话 | 实际行为 | 处理 |
+| --- | --- | --- | --- |
+| `allowWriteHint` | 「开启后 Agent 可执行 add/commit/checkout；关闭时全部写操作会被拒绝」 | `requireWrite` 闸的是**全部写端点**（stage/unstage/discard/commit/push/pull/init/bootstrap/create），界面按钮同样 403 | 改写为「这是写操作的唯一总开关：开启后 Agent 与本页按钮都能暂存、提交、推送；关闭后所有写接口一律 403（含手点按钮）」 |
+| `requireConfirmHint` | 「开启后 Agent 每次写操作都会先返回待确认信息」 | 只有 `tools.ts` 的 `git_write` 消费 `requireConfirm`；handler 12 个写端点零消费 | 改写为「只作用于 Agent 工具调用……本页按钮是你亲手点的，不受此项约束」 |
+| `doPull`（`workbench.tsx`） | `wbPullNoUpstream` 说「Pull 会按远程同名分支拉取」 | 只发 `{cwd, strategy}`，`pullRepo` 收到空 remote/branch → 跑裸 `git pull` → 报 no tracking information | `doPull` 改为带 `remote: remotes[0]?.name` + `branch: currentBranch` |
+| 工作台初始化表单 | 有「仓库名」输入框 | `doInitWithForm` 只读 `initRemote`，`initName` 被静默丢弃 | 删掉该输入框、`initName` state 与 `wbInitName` 键 |
+
+### 7.2 中优先级（口径错/指向已删 UI）
+
+| 位置 | 问题 | 处理 |
+| --- | --- | --- |
+| 概览「授权仓库」 | 把 `'none'` 条目也算授权，而 `repoPermission` 对未列出的仓库默认 `'full'` 完全不计 | 只数 `perm !== 'none'`，并在有权限表时补 `statsReposHintDefault`「未单列的仓库默认完整权限」 |
+| `helpText` | 「只能读取你在『仓库范围』里列出的仓库」与 `?? 'full'` 语义相反，且该 UI 名已不存在 | 改写为「本地命令只在高级设置→本地目录内执行；远端按账号卡片三档判定，未单列的默认完整权限」 |
+| `wbCommitNeedsStaged` | 「请先在**左侧**勾选」 | dgp-v18 是单列模态框 → 改「先在下方勾选」 |
+| `reposEmptyHint` | 「再回来**展开**刷新」 | 折叠开关已删 → 改「可以在本页『新建仓库』直接创建，或去平台侧建好后点刷新」 |
+| `menuInitHint` | 「只创建 .git 目录」 | 该菜单项打开的是完整初始化页 → 改「打开初始化页：可只建本地仓库，也可顺带关联或新建远程仓库」 |
+| `initManualRepoHint` | 「可手工填写 owner/repo 或远程地址继续」 | 无账号分支没有任何输入框 → 改「连上账号后会自动列出仓库；现在也可以只初始化本地仓库」 |
+| `initNoBranches` | 「取不到远程分支列表」 | 代码从未请求分支列表 → 改「分支名可自由填写；留空则用远程默认分支」 |
+| chip「刷新状态」副标题 | `aux || t('alreadyRepo')`，即「当前目录已经是 Git 仓库，无需初始化」 | 新增 `menuRefreshHint`「重新读取分支、领先落后与改动数」 |
+
+### 7.3 低优先级（命名漂移 / 死键）
+
+- `wbUnauthorizedHint`、`toastSaved` 里残留的「仓库范围」改为「授权范围 / 高级设置 → 本地目录」。
+- `syncConflicted` / `syncRejected` 原本零引用：现在 `run()` 读响应的 `conflicted` / `rejected` 字段翻成人话（冲突给「请解决冲突后重新提交」，被拒给「远端有新提交，请先 Pull 再 Push」）。
+- 删除 48 个死键（中英各一，共 96 行）：`scopeGrantAll*`、`defaultAccount`、`authDone`、`currentRepo`、`menuCopyPath`、`menuNoRepo`、`graphHead/Remote/Tag/Detached`、`noSession`、`detached`、`changed`、`stats*Hint*`（10 个）、`changesTitle/Count/Loading/Unauthorized`、`toastCopied*`、`wbDiffTab`、`syncFailed`、`branchDetailLoading`、`initStep*`、`initNext/Back`、`initGoConnect/PickAccount/PickRemote`、`repoCreateTitle`、`initManualRepo`、`initNewBranch/UseRemoteDefault/PickBranch`、`initBranchRequired`、`initRemoteRequired`、`loadingLabel`。gates 里引用 `graphHead` 的一条断言改为检查 CSS 的 `[data-kind="head"]`。
+
+### 7.4 验证
+
+| 项目 | 结果 |
+| --- | --- |
+| `npx tsc --noEmit` | 0 错误 |
+| `npm run bundle` | `lib/client.js` 234.7kb |
+| `npm run gates` | **195 项通过**（新增 6 条文案一致性断言） |
+| `npm run test:hardening` | **197 项通过** |
+| `node scripts/e2e-settings.mjs --url http://127.0.0.1:63801` | **23 项通过** |
+
+### 7.5 踩到的坑
+- Python 三引号里写英文缩写 `agent's` 会截断字符串 → 报 `TS1005: ',' expected` 一大片；改写成不带撇号的措辞。
+- `edit` 工具改 JSX 时，`old_string` 含末尾换行会吞掉下一行缩进，曾把 `<button` 与 `onClick` 粘到同一行。

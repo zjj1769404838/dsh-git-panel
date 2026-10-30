@@ -985,12 +985,16 @@ export function GitSection({ t }: SectionProps) {
   const allowAllRoots = roots.includes('*')
   const allowAllRepos = (settings?.allowedRepos ?? []).includes('*')
   const defaultAccountId = settings?.defaultAccountId ?? ''
-  // 概览的「仓库授权」= 全局兜底名单 + 各账号权限表的显式条目数（旧版只看全局，读数与事实不符）。
-  const perAccountEntries = Object.values(settings?.repoPermissions ?? {}).reduce(
-    (sum, table) => sum + Object.keys(table ?? {}).length,
+  // 概览的「授权仓库」= 全局兜底名单 + 各账号权限表里**真正可访问**（full/read）的条目。
+  // 只数条目会把 'none' 也算成授权；而未单独设过的仓库按 store 语义默认 full，
+  // 这层「默认全开」用 statsReposHintDefault 明说，不硬凑进数字。
+  const permTables = Object.values(settings?.repoPermissions ?? {})
+  const perAccountGrants = permTables.reduce(
+    (sum, table) => sum + Object.values(table ?? {}).filter((perm) => perm !== 'none').length,
     0,
   )
-  const repoGrantCount = allowAllRepos ? Infinity : (settings?.allowedRepos ?? []).length + perAccountEntries
+  const hasPermTable = permTables.some((table) => Object.keys(table ?? {}).length > 0)
+  const repoGrantCount = allowAllRepos ? Infinity : (settings?.allowedRepos ?? []).length + perAccountGrants
 
   const primaryState = accounts.find((item) => item.status === 'connected')?.status ?? accounts[0]?.status
 
@@ -1036,6 +1040,7 @@ export function GitSection({ t }: SectionProps) {
         <span className="dgp-overview-item" data-tone={allowAllRepos ? 'warn' : repoGrantCount > 0 ? 'ok' : 'neutral'}>
           <span className="dgp-overview-label">{t('statsRepos')}</span>
           <span className="dgp-overview-num">{allowAllRepos ? '∞' : repoGrantCount}</span>
+          {hasPermTable && !allowAllRepos ? <span className="dgp-overview-hint">{t('statsReposHintDefault')}</span> : null}
         </span>
         <span className="dgp-overview-sep" aria-hidden="true" />
         <span className="dgp-overview-item" data-tone={settings?.allowWrite ? 'warn' : 'ok'}>

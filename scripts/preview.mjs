@@ -201,13 +201,11 @@ const menuSample = `
     <button class="dgp-root dgp-chip" data-norepo="1" data-open="1">${ICON}<span class="dgp-chip-name">Git</span></button>
     <span class="dgp-portal dgp-menu" role="menu" style="position:static">
       <span class="dgp-menu-head">${ICON}Repository</span>
-      <span class="dgp-menu-sum">D:/my-projects/plugins/dsh-git-panel · not a Git repository</span>
+      <span class="dgp-menu-sum">~/projects/example-repo · not a Git repository</span>
       <span class="dgp-menu-sep"></span>
       <button class="dgp-menu-item" data-primary="1"><span class="dgp-menu-item-main"><span class="dgp-menu-item-title">Initialize Git project</span><span class="dgp-menu-item-hint">Creates only the .git directory; existing files are kept as-is</span></span></button>
-      <button class="dgp-menu-item"><span class="dgp-menu-item-main"><span class="dgp-menu-item-title">Copy directory path</span></span></button>
-      <button class="dgp-menu-item"><span class="dgp-menu-item-main"><span class="dgp-menu-item-title">Open Git settings</span></span></button>
       <span class="dgp-menu-sep"></span>
-      <span class="dgp-menu-note" data-tone="ok">Git project initialized · main</span>
+      <button class="dgp-menu-item"><span class="dgp-menu-item-main"><span class="dgp-menu-item-title">Open Git settings</span></span></button>
     </span>
   </div>
 </div>`

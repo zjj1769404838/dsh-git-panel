@@ -521,6 +521,12 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 .dgp-iw-secthead[data-tone="error"]{color:var(--dgp-danger)}
 .dgp-iw-grid2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px 12px}
 .dgp-iw-inline{display:flex;flex-direction:column;gap:6px;margin-top:2px}
+.dgp-iw-actions{display:flex;align-items:center;gap:8px;margin-top:2px}
+.dgp-iw-actions .dgp-btn{flex:0 0 auto}
+.dgp-iw-create{display:flex;align-items:center;gap:8px;margin-top:6px;padding:6px 8px;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-sm);background:var(--dgp-inset)}
+.dgp-iw-create .dgp-input{flex:1 1 auto;min-width:0;height:26px}
+.dgp-iw-create .dgp-check{flex:0 0 auto;white-space:nowrap}
+.dgp-iw-create .dgp-btn{flex:0 0 auto;white-space:nowrap}
 .dgp-options{display:flex;flex-direction:column;gap:2px;margin:0;padding:0;list-style:none}
 .dgp-option{display:flex;align-items:center;gap:9px;padding:7px 9px;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-sm);cursor:pointer;min-width:0;transition:background var(--dgp-fast) var(--dgp-ease),border-color var(--dgp-fast) var(--dgp-ease)}
 .dgp-option:hover{background:var(--dgp-hover)}
