@@ -291,7 +291,13 @@ export interface CommitListResult {
 const MAX_COMMITS = 200
 
 /** 提交历史（--topo-order 带图，父母 hash 单列出来给图与详情用）。 */
-export async function readCommits(cwd: string, limit: number, offset: number, ref?: string): Promise<CommitListResult> {
+export async function readCommits(
+  cwd: string,
+  limit: number,
+  offset: number,
+  ref?: string,
+  search?: string,
+): Promise<CommitListResult> {
   const repo = ensureRepo(cwd)
   if (!repo.ok) return { ok: false, root: '', commits: [], error: repo.error ?? '目录不可用', truncated: false }
   const root = repo.root!
@@ -302,6 +308,12 @@ export async function readCommits(cwd: string, limit: number, offset: number, re
   if (revision.length > 0 && (revision.startsWith('-') || /\s/.test(revision))) {
     return { ok: false, root, commits: [], error: `分支/提交号不合法：${revision}`, truncated: false }
   }
+  // 关键词检索：走 git 自己的 --grep（不在这里拼正则，也不做全量拉取后前端过滤，
+  // 否则「加载更多」永远只能翻到前 N 条）。--fixed-strings 避免用户输入被当正则。
+  const keyword = String(search ?? '').trim()
+  if (keyword.length > 200) {
+    return { ok: false, root, commits: [], error: '检索关键词过长（上限 200 字符）', truncated: false }
+  }
   // 空仓库：log 直接失败，返回空列表而不是错误。
   const args = ['log']
   if (revision.length > 0) args.push(revision)
@@ -311,6 +323,7 @@ export async function readCommits(cwd: string, limit: number, offset: number, re
     '--date=iso-local',
     '--pretty=format:%H%x09%h%x09%an%x09%ae%x09%ad%x09%P%x09%D%x09%s',
   )
+  if (keyword.length > 0) args.push('--regexp-ignore-case', '--fixed-strings', `--grep=${keyword}`)
   const result = await runGit(root, args)
   if (!result.ok) {
     if (/does not have any commits yet|bad revision|unknown revision|ambiguous argument/i.test(result.stderr)) {
@@ -735,6 +748,228 @@ export async function discoverRepos(roots: string[]): Promise<DiscoveredRepo[]> 
     walk(root, 0)
   }
   return found
+}
+
+// ---------------------------------------------------------------------------
+// 标签（tag）：列表 / 新建 / 删除 / 推送
+// ---------------------------------------------------------------------------
+
+export interface TagRow {
+  name: string
+  /** 标签指向的提交短号。 */
+  hash: string
+  /** 附注标签的说明（轻量标签为空）。 */
+  subject: string
+  /** 创建时间（附注标签取 taggerdate，轻量标签取提交日期）。 */
+  date: string
+  /** 是否附注标签（有 tagger）。 */
+  annotated: boolean
+}
+
+export interface TagListResult {
+  ok: boolean
+  root: string
+  tags: TagRow[]
+  error: string
+}
+
+const MAX_TAGS = 500
+
+/**
+ * 列出标签。
+ * 用 for-each-ref 一次拿全（tag 名 / 指向对象 / 创建者时间 / 主题），
+ * 不逐标签 fork 子进程。
+ */
+export async function readTags(cwd: string): Promise<TagListResult> {
+  const repo = ensureRepo(cwd)
+  if (!repo.ok) return { ok: false, root: '', tags: [], error: repo.error ?? '目录不可用' }
+  const root = repo.root!
+  const result = await runGit(root, [
+    'for-each-ref',
+    '--sort=-creatordate',
+    '--count=500',
+    'refs/tags',
+    '--format=%(refname:short)%09%(objectname:short)%09%(creatordate:iso-local)%09%(taggername)%09%(subject)',
+  ])
+  if (!result.ok) return { ok: false, root, tags: [], error: result.error }
+  const tags: TagRow[] = []
+  for (const line of result.stdout.split('\n')) {
+    if (line.trim().length === 0) continue
+    const [name, hash, date, tagger, ...rest] = line.split('\t')
+    if (!name) continue
+    tags.push({
+      name,
+      hash: hash ?? '',
+      date: date ?? '',
+      // 附注标签才有 tagger；轻量标签 tagger 为空，主题取提交标题。
+      annotated: (tagger ?? '').length > 0,
+      subject: rest.join('\t'),
+    })
+    if (tags.length >= MAX_TAGS) break
+  }
+  return { ok: true, root, tags, error: '' }
+}
+
+/** 标签名合法性：复用分支规则（git 对两者的 ref 命名约束一致）。 */
+export function validTagName(name: string): boolean {
+  return validBranchName(name)
+}
+
+export interface TagWriteResult {
+  ok: boolean
+  root: string
+  error: string
+}
+
+/** 新建标签。message 非空 → 附注标签（-a）；否则轻量标签。 */
+export async function createTag(cwd: string, name: string, ref: string, message: string): Promise<TagWriteResult> {
+  const tag = String(name ?? '').trim()
+  if (!validTagName(tag)) return { ok: false, root: '', error: `标签名不合法：${tag || '(空)'}` }
+  const repo = ensureRepo(cwd)
+  if (!repo.ok) return { ok: false, root: '', error: repo.error ?? '目录不可用' }
+  const root = repo.root!
+  const target = String(ref ?? '').trim() || 'HEAD'
+  if (target.startsWith('-') || /\s/.test(target)) {
+    return { ok: false, root, error: `目标提交不合法：${target}` }
+  }
+  const text = String(message ?? '').trim()
+  const args = ['tag']
+  if (text.length > 0) {
+    if (text.length > 2000) return { ok: false, root, error: '标签说明过长（上限 2000 字符）' }
+    args.push('-a', tag, '-m', text, target)
+  } else {
+    args.push(tag, target)
+  }
+  const result = await runGit(root, args)
+  if (!result.ok) {
+    if (/already exists/i.test(result.stderr || result.stdout)) {
+      return { ok: false, root, error: `标签已存在：${tag}` }
+    }
+    return { ok: false, root, error: result.error }
+  }
+  return { ok: true, root, error: '' }
+}
+
+/** 删除本地标签。 */
+export async function deleteTag(cwd: string, name: string): Promise<TagWriteResult> {
+  const tag = String(name ?? '').trim()
+  if (!validTagName(tag)) return { ok: false, root: '', error: `标签名不合法：${tag || '(空)'}` }
+  const repo = ensureRepo(cwd)
+  if (!repo.ok) return { ok: false, root: '', error: repo.error ?? '目录不可用' }
+  const result = await runGit(repo.root!, ['tag', '-d', tag])
+  if (!result.ok) return { ok: false, root: repo.root!, error: result.error }
+  return { ok: true, root: repo.root!, error: '' }
+}
+
+/** 推送单个标签到远端（`git push <remote> refs/tags/<name>`）。 */
+export async function pushTag(cwd: string, remote: string, name: string): Promise<TagWriteResult> {
+  const tag = String(name ?? '').trim()
+  if (!validTagName(tag)) return { ok: false, root: '', error: `标签名不合法：${tag || '(空)'}` }
+  const target = String(remote ?? '').trim()
+  if (!/^[\w.-]{1,80}$/.test(target)) return { ok: false, root: '', error: `远端名不合法：${target || '(空)'}` }
+  const repo = ensureRepo(cwd)
+  if (!repo.ok) return { ok: false, root: '', error: repo.error ?? '目录不可用' }
+  const result = await runGit(repo.root!, ['push', target, `refs/tags/${tag}`])
+  if (!result.ok) return { ok: false, root: repo.root!, error: result.error }
+  return { ok: true, root: repo.root!, error: '' }
+}
+
+// ---------------------------------------------------------------------------
+// 贮藏（stash）：列表 / 保存 / 弹出 / 应用 / 删除
+// ---------------------------------------------------------------------------
+
+export interface StashRow {
+  /** stash@{n} 里的 n。 */
+  index: number
+  /** 引用名（stash@{0}）。 */
+  ref: string
+  /** 贮藏时的分支。 */
+  branch: string
+  subject: string
+}
+
+export interface StashListResult {
+  ok: boolean
+  root: string
+  stashes: StashRow[]
+  error: string
+}
+
+/** 列出贮藏条目（`git stash list`，用 %gd 拿序号）。 */
+export async function readStashes(cwd: string): Promise<StashListResult> {
+  const repo = ensureRepo(cwd)
+  if (!repo.ok) return { ok: false, root: '', stashes: [], error: repo.error ?? '目录不可用' }
+  const root = repo.root!
+  const result = await runGit(root, ['stash', 'list', '--date=iso-local', '--pretty=format:%gd%x09%gs'])
+  if (!result.ok) {
+    // 没有贮藏时部分 git 版本返回非零；视为空列表而不是错误。
+    if (/no stash entries/i.test(result.stderr || result.stdout)) {
+      return { ok: true, root, stashes: [], error: '' }
+    }
+    return { ok: false, root, stashes: [], error: result.error }
+  }
+  const stashes: StashRow[] = []
+  for (const line of result.stdout.split('\n')) {
+    if (line.trim().length === 0) continue
+    const [ref, ...rest] = line.split('\t')
+    const match = /stash@\{(\d+)\}/.exec(ref ?? '')
+    const message = rest.join('\t')
+    // gs 形如 `WIP on main: 1a2b3c4 subject` 或 `On main: message`
+    const branchMatch = /^(?:WIP on|On) ([^:]+):/.exec(message)
+    stashes.push({
+      index: match ? Number.parseInt(match[1], 10) : stashes.length,
+      ref: ref ?? `stash@{${stashes.length}}`,
+      branch: branchMatch ? branchMatch[1] : '',
+      subject: message,
+    })
+  }
+  return { ok: true, root, stashes, error: '' }
+}
+
+/** 校验 stash 序号（只接受 0..999 的整数，避免把用户输入拼进 ref）。 */
+function stashIndex(value: unknown): number | null {
+  const n = typeof value === 'number' ? value : Number.parseInt(String(value ?? ''), 10)
+  if (!Number.isFinite(n) || n < 0 || n > 999) return null
+  return Math.trunc(n)
+}
+
+/** 保存贮藏。includeUntracked → -u（未跟踪文件一并收进去）。 */
+export async function stashSave(cwd: string, message: string, includeUntracked: boolean): Promise<TagWriteResult> {
+  const repo = ensureRepo(cwd)
+  if (!repo.ok) return { ok: false, root: '', error: repo.error ?? '目录不可用' }
+  const root = repo.root!
+  const text = String(message ?? '').trim()
+  if (text.length > 500) return { ok: false, root, error: '贮藏说明过长（上限 500 字符）' }
+  const args = ['stash', 'push']
+  if (includeUntracked) args.push('-u')
+  if (text.length > 0) args.push('-m', text)
+  const result = await runGit(root, args)
+  if (!result.ok) return { ok: false, root, error: result.error }
+  // 「没有改动可贮藏」不是错误，但要让界面知道什么都没发生。
+  if (/No local changes to save/i.test(result.stdout)) {
+    return { ok: false, root, error: '当前没有可贮藏的改动' }
+  }
+  return { ok: true, root, error: '' }
+}
+
+/** 弹出（pop）/ 应用（apply）/ 删除（drop）贮藏。 */
+export async function stashAction(cwd: string, action: 'pop' | 'apply' | 'drop', index: unknown): Promise<TagWriteResult> {
+  const n = stashIndex(index)
+  if (n === null) return { ok: false, root: '', error: `贮藏序号不合法：${String(index)}` }
+  const repo = ensureRepo(cwd)
+  if (!repo.ok) return { ok: false, root: '', error: repo.error ?? '目录不可用' }
+  const root = repo.root!
+  const result = await runGit(root, ['stash', action, `stash@{${n}}`])
+  if (!result.ok) {
+    if (/no stash entries|is not a valid reference/i.test(result.stderr || result.stdout)) {
+      return { ok: false, root, error: `贮藏条目不存在：stash@{${n}}` }
+    }
+    if (action !== 'drop' && /conflict/i.test(result.stderr || result.stdout)) {
+      return { ok: false, root, error: `应用贮藏时发生冲突，请在终端解决后手动删除 stash@{${n}}` }
+    }
+    return { ok: false, root, error: result.error }
+  }
+  return { ok: true, root, error: '' }
 }
 
 /** 同步版 runGit（discover 用 readdir 同步遍历，配套同步 git 调用）。 */

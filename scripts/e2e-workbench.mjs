@@ -77,8 +77,24 @@ const context = await chromium.launchPersistentContext(userDataDir, {
 await context.addCookies([{ ...cookie, domain: new URL(guiUrl).hostname, path: '/', httpOnly: true }])
 
 const page = await context.newPage()
+// 只收集「本插件相关」的页面错误。
+// 环境里同时装着多个第三方 DSH 插件，它们的 slot 抢占冲突（例如
+// `single slot "conversation.input.model.label" already has a registration`
+// 来自 dsh-connect-trae-client）会在任意页面加载时抛出，与本插件无关。
+// 这类噪声若计入断言，会让工作台回归长期假红——所以按「归因于本插件」过滤：
+// 报错文本里出现本插件标识（dgp / dsh-git-panel / GitPanel）才算本插件的错。
 const errors = []
-page.on('pageerror', (error) => errors.push(String(error)))
+const IGNORED_ERROR_PATTERNS = [
+  /single slot "[^"]+" already has a registration/u,
+]
+function isOwnError(text) {
+  if (/dgp|dsh-git-panel|GitPanel/iu.test(text)) return true
+  return !IGNORED_ERROR_PATTERNS.some((re) => re.test(text))
+}
+page.on('pageerror', (error) => {
+  const text = String(error)
+  if (isOwnError(text)) errors.push(text)
+})
 
 try {
   await page.goto(guiUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })

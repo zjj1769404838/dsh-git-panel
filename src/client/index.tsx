@@ -30,7 +30,7 @@ import { InitWizard, BranchDetailModal } from './onboard.js'
 /** 服务短名（不是 package.json 里的全名）。 */
 export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
-const BUILD = 'dgp-v18'
+const BUILD = 'dgp-v19'
 
 const ZH: Dict = {
   entry: 'Git',
@@ -92,6 +92,7 @@ const ZH: Dict = {
   menuInit: '初始化 Git 项目',
   menuInitHint: '打开初始化页：可只建本地仓库，也可顺带关联或新建远程仓库',
   menuSettings: '打开 Git 设置',
+  menuNewVersion: '有新版本 {v}',
   menuOpenDir: '打开项目目录',
   menuGroupRepo: '仓库',
   menuGroupOpen: '打开',
@@ -298,6 +299,75 @@ const ZH: Dict = {
   initResultRemote: '远程地址',
   initStepsTitle: '执行步骤',
   initRepoRequired: '请选择或填写一个远程仓库',
+  /* ---- dgp-v19：差异视图 ---- */
+  diffFind: '查找',
+  diffFindPlaceholder: '在差异里查找（Ctrl/⌘+F）',
+  diffLayout: '布局',
+  diffSplit: '并排',
+  diffUnified: '统一',
+  diffHighlight: '语法高亮',
+  diffFoldHint: '展开 {n} 行未变更内容',
+  split: '并排',
+  unified: '统一',
+  /* ---- dgp-v19：文件浏览 ---- */
+  fbBack: '返回目录',
+  fbBinary: '二进制文件，无法预览',
+  fbEmpty: '这个目录是空的',
+  fbEmptyHint: '换个目录看看，或确认仓库里确实没有内容',
+  fbLoadFailed: '读取目录失败',
+  fbPick: '从左侧选择一个文件',
+  fbPickHint: '支持代码、Markdown、图片等常见格式的只读预览',
+  fbReadFailed: '读取文件失败',
+  fbTruncated: '目录条目过多，仅显示前 {n} 项',
+  fbTruncatedFile: '文件过大，仅显示前 {n} KB',
+  fbWrap: '自动换行',
+  /* ---- dgp-v19：历史搜索 ---- */
+  wbSearchCommit: '搜索提交信息',
+  wbSearch: '搜索',
+  wbSearchClear: '清空',
+  wbSearchEmpty: '没有匹配的提交',
+  wbSearchEmptyHint: '换个关键词，或清空搜索看全部历史',
+  wbNoMoreCommits: '已经到底了',
+  wbLoadMore: '加载更多',
+  wbLoadingMore: '正在加载…',
+  /* ---- dgp-v19：仓库切换 ---- */
+  wbSwitchRepo: '切换仓库',
+  wbSwitchRepoHint: '在工作区里发现的其他仓库',
+  /* ---- dgp-v19：AI 生成提交信息 ---- */
+  wbSuggest: 'AI 生成',
+  wbSuggesting: '生成中…',
+  wbSuggestHint: '按当前暂存改动和近期提交风格生成一行提交信息',
+  toastSuggested: '已生成提交信息',
+  suggestFailed: '生成提交信息失败',
+  /* ---- dgp-v19：标签 ---- */
+  wbTagsTab: '标签',
+  wbTagName: '标签名，例如 v1.0.0',
+  wbTagNote: '附注信息（留空为轻量标签）',
+  wbTagCreate: '创建标签',
+  wbTagAnnotated: '附注',
+  wbTagPush: '推送',
+  wbNoTags: '还没有标签',
+  wbNoTagsHint: '在上面填标签名即可创建一个指向当前提交的标签',
+  toastTagCreated: '标签已创建',
+  toastTagDeleted: '标签已删除',
+  toastTagPushed: '标签已推送',
+  /* ---- dgp-v19：贮藏 ---- */
+  wbStashTab: '贮藏',
+  wbStashNote: '贮藏说明（可选）',
+  wbStashUntracked: '包含未跟踪文件',
+  wbStashSave: '贮藏当前改动',
+  wbStashPop: '恢复并删除',
+  wbStashApply: '恢复',
+  wbStashDrop: '删除',
+  wbStashNoSubject: '（无说明）',
+  wbNoStashes: '还没有贮藏',
+  wbNoStashesHint: '把当前改动暂存起来，工作区会回到干净状态',
+  toastStashed: '已贮藏',
+  toastStashPopped: '已恢复并删除该贮藏',
+  toastStashApplied: '已恢复该贮藏',
+  toastStashDropped: '已删除该贮藏',
+  /* ---- dgp-v19：文件浏览视图 ---- */
+  wbFilesTab: '文件',
   /* ---- 刷新 ---- */
 }
 
@@ -361,6 +431,7 @@ const EN: Dict = {
   menuInit: 'Initialize Git project',
   menuInitHint: 'Opens the setup page: local-only init, or also attach / create a remote repository',
   menuSettings: 'Open Git settings',
+  menuNewVersion: 'Update available {v}',
   menuOpenDir: 'Open project folder',
   menuGroupRepo: 'Repository',
   menuGroupOpen: 'Open',
@@ -566,6 +637,75 @@ const EN: Dict = {
   initResultRemote: 'Remote URL',
   initStepsTitle: 'Executed steps',
   initRepoRequired: 'Pick or enter a remote repository',
+  /* ---- dgp-v19: diff view ---- */
+  diffFind: 'Find',
+  diffFindPlaceholder: 'Find in diff (Ctrl/⌘+F)',
+  diffLayout: 'Layout',
+  diffSplit: 'Side by side',
+  diffUnified: 'Unified',
+  diffHighlight: 'Syntax highlight',
+  diffFoldHint: 'Show {n} unchanged lines',
+  split: 'Side by side',
+  unified: 'Unified',
+  /* ---- dgp-v19: file browser ---- */
+  fbBack: 'Back to folder',
+  fbBinary: 'Binary file; preview unavailable',
+  fbEmpty: 'This folder is empty',
+  fbEmptyHint: 'Try another folder, or check that the repository really has content',
+  fbLoadFailed: 'Failed to read the folder',
+  fbPick: 'Pick a file on the left',
+  fbPickHint: 'Read-only preview for code, Markdown, images and more',
+  fbReadFailed: 'Failed to read the file',
+  fbTruncated: 'Too many entries; showing the first {n}',
+  fbTruncatedFile: 'File too large; showing the first {n} KB',
+  fbWrap: 'Wrap lines',
+  /* ---- dgp-v19: history search ---- */
+  wbSearchCommit: 'Search commit messages',
+  wbSearch: 'Search',
+  wbSearchClear: 'Clear',
+  wbSearchEmpty: 'No matching commits',
+  wbSearchEmptyHint: 'Try another keyword, or clear the search to see all history',
+  wbNoMoreCommits: 'No more commits',
+  wbLoadMore: 'Load more',
+  wbLoadingMore: 'Loading…',
+  /* ---- dgp-v19: repo switching ---- */
+  wbSwitchRepo: 'Switch repository',
+  wbSwitchRepoHint: 'Other repositories found in the workspace',
+  /* ---- dgp-v19: AI commit message ---- */
+  wbSuggest: 'Generate',
+  wbSuggesting: 'Generating…',
+  wbSuggestHint: 'Draft one commit message line from the staged diff and recent commit style',
+  toastSuggested: 'Commit message generated',
+  suggestFailed: 'Failed to generate a commit message',
+  /* ---- dgp-v19: tags ---- */
+  wbTagsTab: 'Tags',
+  wbTagName: 'Tag name, e.g. v1.0.0',
+  wbTagNote: 'Annotation (leave empty for a lightweight tag)',
+  wbTagCreate: 'Create tag',
+  wbTagAnnotated: 'Annotated',
+  wbTagPush: 'Push',
+  wbNoTags: 'No tags yet',
+  wbNoTagsHint: 'Enter a tag name above to tag the current commit',
+  toastTagCreated: 'Tag created',
+  toastTagDeleted: 'Tag deleted',
+  toastTagPushed: 'Tag pushed',
+  /* ---- dgp-v19: stash ---- */
+  wbStashTab: 'Stashes',
+  wbStashNote: 'Stash note (optional)',
+  wbStashUntracked: 'Include untracked files',
+  wbStashSave: 'Stash changes',
+  wbStashPop: 'Pop',
+  wbStashApply: 'Apply',
+  wbStashDrop: 'Drop',
+  wbStashNoSubject: '(no note)',
+  wbNoStashes: 'No stashes yet',
+  wbNoStashesHint: 'Stash the current changes to leave a clean working tree',
+  toastStashed: 'Changes stashed',
+  toastStashPopped: 'Stash popped',
+  toastStashApplied: 'Stash applied',
+  toastStashDropped: 'Stash dropped',
+  /* ---- dgp-v19: files view ---- */
+  wbFilesTab: 'Files',
 }
 
 /** 设置面板在 DOM 里的稳定锚点（宿主 SettingsPanel 上写死）。 */
@@ -807,6 +947,81 @@ async function openSettingsFallback(ctx?: {
 }
 
 /* ------------------------------------------------------------------ */
+/* 版本检查（client 侧，只在打开菜单时拉一次，5 秒超时 + 进程内缓存）      */
+/* ------------------------------------------------------------------ */
+
+/** 版本查询目标仓库（与 package.json 的 repository 保持一致）。 */
+const VERSION_REPO = 'zjj1769404838/dsh-git-panel'
+/** 进程内缓存：同一页面生命周期里只查一次，失败也缓存（避免反复打 GitHub）。 */
+let versionPromise: Promise<string> | null = null
+
+/** 把 `v1.2.3` / `1.2.3-rc.1` 解析成可比较的数字段；解析不出返回 null。 */
+export function parseVersion(raw: string): number[] | null {
+  const text = raw.trim().replace(/^v/iu, '')
+  const match = /^(\d+)\.(\d+)\.(\d+)/u.exec(text)
+  if (!match) return null
+  return [Number(match[1]), Number(match[2]), Number(match[3])]
+}
+
+/** a 是否比 b 新（逐段比较；解析失败视为不比它新）。 */
+export function isNewer(a: string, b: string): boolean {
+  const left = parseVersion(a)
+  const right = parseVersion(b)
+  if (!left || !right) return false
+  for (let i = 0; i < 3; i += 1) {
+    if (left[i] !== right[i]) return left[i] > right[i]
+  }
+  return false
+}
+
+/**
+ * 拉 GitHub 最新 release 的 tag。
+ *
+ * 三条纪律：① 5 秒超时，绝不拖住菜单；② 预发布（`-rc` / `-beta`）不提示，
+ * 与发布流程一致（预发布不发正式版本）；③ 失败静默返回空串，版本提示是锦上添花，
+ * 不能因为它报错而打断正常使用。
+ */
+function fetchLatestVersion(): Promise<string> {
+  if (versionPromise !== null) return versionPromise
+  versionPromise = (async () => {
+    const controller = new AbortController()
+    const timer = window.setTimeout(() => controller.abort(), 5000)
+    try {
+      const response = await fetch(`https://api.github.com/repos/${VERSION_REPO}/releases/latest`, {
+        signal: controller.signal,
+        headers: { Accept: 'application/vnd.github+json' },
+      })
+      if (!response.ok) return ''
+      const data = (await response.json()) as { tag_name?: unknown; prerelease?: unknown }
+      if (data.prerelease === true) return ''
+      const tag = typeof data.tag_name === 'string' ? data.tag_name : ''
+      return /-\w+/u.test(tag) ? '' : tag
+    } catch {
+      return ''
+    } finally {
+      window.clearTimeout(timer)
+    }
+  })()
+  return versionPromise
+}
+
+/** 有新版本时返回该版本号，否则返回空串。 */
+function useLatestVersion(enabled: boolean): string {
+  const [latest, setLatest] = useState('')
+  useEffect(() => {
+    if (!enabled) return
+    let alive = true
+    void fetchLatestVersion().then((tag) => {
+      if (alive && tag !== '' && isNewer(tag, BUILD)) setLatest(tag)
+    })
+    return () => {
+      alive = false
+    }
+  }, [enabled])
+  return latest
+}
+
+/* ------------------------------------------------------------------ */
 /* composer 状态 chip（opencode 风格）                                  */
 /* ------------------------------------------------------------------ */
 
@@ -843,6 +1058,8 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
   const [toast, setToast] = useState<{ tone: 'ok' | 'error' | 'info'; text: string } | null>(null)
   const toastTimerRef = useRef<number | null>(null)
   const [anchor, setAnchor] = useState<MenuAnchor>({ left: 0, bottom: 0 })
+  /** 有新版本时是 tag 号，否则空串：只在菜单打开时查一次。 */
+  const latestVersion = useLatestVersion(open)
   const wrapRef = useRef<HTMLSpanElement | null>(null)
   const menuRef = useRef<HTMLSpanElement | null>(null)
 
@@ -988,6 +1205,8 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
         .join(' ')
     : ''
   const warn = isRepo && status!.authorized === false
+  // 二态色：有未提交改动（changed > 0）时 chip 用警示色，干净时不加任何强调。
+  const dirty = isRepo && status!.changed > 0
 
   const title = !status
     ? detectFailed
@@ -1095,6 +1314,7 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
         className="dgp-chip"
         data-warn={warn ? '1' : '0'}
         data-norepo={isRepo ? '0' : '1'}
+        data-dirty={dirty ? '1' : '0'}
         data-open={open ? '1' : '0'}
         title={title}
         aria-label={`${t('entryTitle')}: ${label}`}
@@ -1131,6 +1351,21 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
             {t('menuTitle')}
           </span>
           <span className="dgp-menu-sum">{summary}</span>
+
+          {/* 有新版本：一行提示 + 跳转 release 页。查不到就整块不渲染。 */}
+          {latestVersion !== '' ? (
+            <a
+              className="dgp-menu-note"
+              data-tone="warn"
+              href={`https://github.com/${VERSION_REPO}/releases/latest`}
+              target="_blank"
+              rel="noreferrer"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => setOpen(false)}
+            >
+              {fmt(t('menuNewVersion'), { v: latestVersion })}
+            </a>
+          ) : null}
 
           <span className="dgp-menu-sep" />
 

@@ -35,6 +35,17 @@ DSH（DeepSeek Harness）桌面端插件：**Git 账号接入 + 受控仓库操�
 | 初始化 | 未初始化目录点「初始化 Git 项目」进入**单页表单 + 右侧实时计划**（不再分步）：左侧一次填完 ①选账号 ②选远程仓库（平台列举 / **在该账号下新建仓库** / 新地址 / 手工 `owner/repo`）③分支名与首次提交信息，右侧同步显示将要执行的动作清单与就绪状态；提交后右侧切换为执行结果（成功给步骤清单，失败给中文原因并可就地改）。「新建仓库」是就地展开的一行：仓库名（默认取当前目录名）+ 私有勾选 + 「创建并选用」，建完自动授权 `full` 并回填为本次远程 |
 | 工作区改动明细 | 在 **Git 工作台「改动」视图**（左侧竖排导航第一项）列出未提交文件：状态字母 + 路径 + 增删行数 + 已暂存标记；提交框固定在列表上方（暂存区 → 写提交信息 → 提交），选中文件后出现批量条；加载中用骨架屏，空状态用图形化插画 |
 | 轻提示 toast | 所有动作反馈统一为右下角 toast（成功/失败/信息三态），2.6 秒自动消失；菜单关闭后提示仍保留 |
+| 工作台导航 | 左侧竖排导航 6 项：**改动 / 历史 / 分支图 / 文件 / 标签 / 贮藏**，右侧单视图切换（视图内容懒加载，切到才拉数据） |
+| 多仓库切换 | 顶栏仓库名是一个下拉（`GET /repo/discover` 扫授权目录下的仓库，下探 3 层、上限 50 个）；切换后改动/历史/分支图/文件全部作用于所选仓库，并清空上一仓库的选中项与提交信息。**扫描范围严格受 `allowedRoots` 限制** |
+| 差异视图 | 独立模块 `diffview.tsx`：**行号**（左右两侧旧/新行号）、**Ctrl/⌘+F 就地查找**（F3 / Shift+F3 跳转、Esc 清空、命中行高亮并滚到视口中央、`n/m` 计数）、**并排/统一两种布局**（选择写入 localStorage，下次打开沿用）、**词级高亮**（按 token 求公共前后缀，只标真正变化的中段）、**未变更块折叠**（连续 6 行以上折叠，保留首尾各 3 行，点开就地展开）、**语法高亮**（Prism，15 种语言，纯字符串 API 不扫宿主 DOM） |
+| 历史搜索与分页 | 提交历史支持关键词搜索（走 git 原生 `--grep --fixed-strings --regexp-ignore-case`，不是前端过滤，所以「加载更多」能翻到真正的旧提交）+ 每页 80 条「加载更多」，到底显示「没有更多了」 |
+| 文件浏览 | 工作台「文件」视图：懒加载目录树 + 文件预览，走 `GET /repo/tree` 与 `GET /repo/file`；忽略项（`node_modules` / `.git` / `dist` / `lib`）半透明；二进制文件与超大文件（>512 KiB）明确提示不预览；Markdown/代码带语法高亮，图片直接显示；窄屏下改为「树 / 预览」钻取式切换 |
+| 标签管理 | 工作台「标签」视图：列标签（附注标签带徽章）+ 新建（可填附注信息，不填为轻量标签）+ 删除（二次确认）+ 推送单个标签到远端（走远端归属闸门） |
+| 贮藏 | 工作台「贮藏」视图：保存（可写说明、可含未跟踪文件）、`pop` / `apply` / `drop`；冲突时给中文提示并说明要手动删 `stash@{n}` |
+| AI 生成提交信息 | 提交框上的「AI 生成」按钮：取暂存区 diff（无暂存则取工作区）+ 最近 8 条提交当风格样本，调宿主 `ctx.llm` 生成一行中文提交信息并回填输入框。**模型服务或默认模型取不到时明确提示，不猜 provider**；不落盘、不改仓库 |
+| 窄屏适配 | 全仓第一个宽度断点 `@media (max-width:760px)`：工作台改单栏、导航转横排、差异并排降为单列、文件浏览钻取、弹窗贴边、初始化页单列 |
+| chip 二态 | chip 颜色区分干净/脏：有未提交改动时用 warn 色（`data-dirty="1"`），干净时用常规色 |
+| 版本提示 | client 侧查 GitHub 最新 release（`/releases/latest`，5 秒超时、进程内缓存、失败静默），只在打开 chip 菜单时查一次；有新版本时菜单顶部给一行「有新版本 vX.Y.Z」并链到 release 页；**预发布（`-rc`）不提示** |
 
 ---
 
@@ -165,6 +176,17 @@ dsh plugin --profile desktop remove @zjj/dsh-git-panel
 | GET | `/repo/status?cwd=<绝对路径>` | 供输入区分支 chip 使用：`{isRepo, root, branch, detached, head, ahead, behind, changed, authorized, reason}`；`reason` 三态区分结论 —— `repo`（确认是仓库）/ `no-repo`（目录存在但没有 `.git`，**只有这种才允许显示初始化**）/ `invalid`（路径非法、不存在、不可读 —— 属于检测失败，不能当成未初始化）；非仓库不是错误（`isRepo:false`），未授权目录返回 `authorized:false` 且不泄露 ahead/behind |
 | GET | `/repo/graph?cwd=<绝对路径>&limit=<5-100>` | 供 chip 菜单的分支拓扑图使用：`{isRepo, root, branch, head, detached, reason, truncated, laneCount, rows}`；每行 `rows[i]` 含 `{hash, short, parents, author, date, subject, refs, row, lane, segments, through}` —— `lane` 是本行所在车道、`segments` 是向下连到父提交的线（`from === to` 为同车道直落，否则为跨车道转折）、`through` 是穿过本行的其他车道；未授权目录返回 `authorized:false` 且 `rows` 为空、`laneCount:0`（不泄露提交历史） |
 | GET | `/repo/changes?cwd=<绝对路径>` | 供 chip 菜单的「工作区改动明细」使用：`{isRepo, root, branch, dirty, files}`；每个 `files[i]` 含 `{path, index, worktree, added, deleted, staged}` —— `index`/`worktree` 是 git porcelain 两列状态码（`M` 修改 / `A` 新增 / `D` 删除 / `R` 重命名 / `C` 复制 / `??` 未跟踪），`added`/`deleted` 是增删行数（未跟踪二进制无法计数时置 0，界面显示「—」）。未授权目录只回 `{isRepo:true, root:'', branch:'', dirty:false, files:[]}` 空壳（**不泄露路径、分支与文件名**）；非仓库回 `{isRepo:false,…}` |
+| GET | `/repo/commits?cwd=<绝对路径>&limit=<1-200>&offset=<n>&ref=<分支或提交>&search=<关键词>` | 提交历史：`{ok, root, commits, truncated}`；`search` 走 git 原生 `--grep`（`--fixed-strings` + `--regexp-ignore-case`，关键词上限 200 字符），**在后端过滤**，因此分页能翻到真正的旧提交 |
+| GET | `/repo/tags?cwd=<绝对路径>` | 标签列表：`{ok, root, tags}`，每项 `{name, hash, subject, date, annotated}`；按创建时间倒序、上限 500 |
+| GET | `/repo/stash?cwd=<绝对路径>` | 贮藏列表：`{ok, root, stashes}`，每项 `{index, ref, branch, subject}`；无贮藏时返回空数组而非报错 |
+| GET | `/repo/tree?cwd=<绝对路径>&path=<相对路径>` | 目录列表：`{ok, root, path, entries, truncated}`，每项 `{name, path, kind:'file'|'dir', size, lang}`；目录在前、同类按名称排序、单次上限 2000 项。路径经 `realpath` 解析后判越界（软链外指被拦），`..` / 绝对路径 / 盘符 / `.git` 段一律拒绝 |
+| GET | `/repo/file?cwd=<绝对路径>&path=<相对路径>` | 文件内容：`{ok, root, path, content, size, truncated, binary, lang}`；>512 KiB 截断（`truncated:true`）、NUL 嗅探判二进制（`binary:true` 时不回内容） |
+| POST | `/repo/tags/create` | 新建标签：`{cwd, name, ref?, message?}`；有 `message` 建附注标签，否则轻量标签；重名回「标签已存在」 |
+| POST | `/repo/tags/delete` | 删除本地标签：`{cwd, name}` |
+| POST | `/repo/tags/push` | 推送单个标签：`{cwd, name, remote?}`；**先过远端归属闸门**（目标 remote 的 `owner/repo` 对该账号必须 `full`） |
+| POST | `/repo/stash/save` | 保存贮藏：`{cwd, message?, includeUntracked?}`；无改动回「当前没有可贮藏的改动」 |
+| POST | `/repo/stash/action` | 贮藏动作：`{cwd, action:'pop'|'apply'|'drop', index}`；action 白名单校验，非法回 400「不支持的贮藏操作」；冲突时提示手动删 `stash@{n}` |
+| POST | `/repo/suggest-message` | **AI 生成提交信息**：`{cwd, hint?}` → `{ok, message, source:'model'|'none', provider, model, error}`；取暂存区 diff（无则工作区）+ 最近 8 条提交当风格样本，调宿主 `ctx.llm.prepareCall` + `stream`，45 秒超时。**只读仓库、不落盘**，因此走 `requireRead` 而不是 `requireWrite` |
 | POST | `/repo/init` | 在会话目录执行 `git init -b main`（幂等：已有 `.git` 返回 `created:false`，绝不覆盖，**且不删除/不改动目录里已有文件**）；必须先过同源校验 + `allowedRoots` 授权闸门，未授权目录 403 且不创建任何文件；写开关关闭时同样 403 |
 | POST | `/repo/bootstrap` | **一键初始化（单页初始化页的执行端）**：请求体 `{cwd, accountId, remoteMode:'existing'|'new', repoFullName?, remoteUrl?, branchName, branchMode:'new'|'existing', initialCommitMessage?}`；依次完成 ①账号与凭据校验 → ②解析远程目标（选已有仓库时按 `repoFullName` 在平台列表里匹配出 URL）→ ③远端归属授权（`repoKey` 必须对该账号 `full`，否则 403「未授权写入」）→ ④`git init`（已有仓库则复用）→ ⑤添加远程 `origin`（**已存在且指向不同地址时直接报错，不静默覆盖**）→ ⑥分支（`new` 撞名时降级为切换并在 `steps` 里说明）→ ⑦可选首次提交；成功回 `{ok:true,root,branch,remoteName:'origin',remoteUrl,steps:[中文步骤]}`，失败回 `{ok:false,error:'中文原因'}`（HTTP 200）。**只做本地操作，不 push** |
 | POST | `/pat/connect` | PAT 接入 |
@@ -185,7 +207,7 @@ dsh plugin --profile desktop remove @zjj/dsh-git-panel
 ```bash
 npm run bundle        # 构建 lib/index.js + lib/client.js
 npm run typecheck     # tsc --noEmit
-npm run gates         # 195 项插件契约门禁
+npm run gates         # 244 项插件契约门禁
 npm run test:hardening# 197 项加固回归（含真实 git 仓库端到端 + 仓库权限档位 + 单条权限写入 + 新建远程仓库）
 npm run test:e2e      # 23 项设置页 GUI 端到端验证（需要本机 Edge + DSH Web 在跑）
 npm run test:e2e:wb   # 29 项 Git 工作台 GUI 端到端验证（含居中模态框形态、点弹窗不消失回归）

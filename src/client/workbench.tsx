@@ -1,17 +1,17 @@
 /**
- * Git 工作台（BUILD dgp-v18，完全重写）。
+ * Git 工作台（BUILD dgp-v19）。
  *
- * 与旧版的差别不是微调，是换形态：
- *   - 旧版是 760px 居中弹窗 + 左 44% 变更 / 右 56% 三 tab 平铺 + 底部提交框；
- *   - 新版是居中模态框（宽 min(1040px, 100vw-96px)、高 min(660px, 100vh-96px)），
- *     左侧竖排导航（改动 / 历史 / 分支图），主区一次只呈现一件事；
- *     提交区提到「改动」视图顶部，形成「先看改动 → 再提交」的单列流程。
- *   - Diff 不再占一个常驻 tab，改为点文件时弹出的预览层（看完即走，不抢主区）。
+ * 形态沿用 dgp-v18 的居中模态框 + 左侧竖排导航，v19 在其上补齐六件事：
+ *   - 差异视图换成 DiffView：行号 / Ctrl+F 就地查找 / 并排-统一（记忆）/ 词级高亮 / 未变更块折叠 / 语法高亮；
+ *   - 历史视图加关键词搜索（服务端 git --grep）与「加载更多」（offset 分页）；
+ *   - 新增「文件」视图（懒加载目录树 + 预览）、「标签」视图（建/删/推）、「贮藏」视图（存/取/应用/删除）；
+ *   - 提交框加「AI 生成」按钮（走宿主模型服务，只读仓库内容，结果落进输入框由用户确认）；
+ *   - 顶栏仓库名变下拉，可在已发现的本地仓库间切换（切换只影响本工作台，不改会话 cwd）。
  *
- * 数据契约完全沿用既有 node 端点，不新增接口：
- *   /repo/status|changes|commits|branches|remotes|graph|diff|commit|stage|unstage|discard|fetch|pull|push|init|remotes/*
+ * 数据契约：node 端点 /repo/status|changes|commits|branches|remotes|graph|diff|commit|stage|unstage|discard|
+ * fetch|pull|push|init|remotes/*|tags|stash|tree|file|discover|suggest-message。
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   api,
   useStyles,
@@ -26,8 +26,12 @@ import {
   type RepoStatusView,
   type RepoChangesView,
   type RepoGraphView,
+  type StashView,
+  type TagView,
 } from './shared.js'
 import { GraphView } from './graphview.js'
+import { DiffView } from './diffview.js'
+import { FileBrowser } from './filebrowser.js'
 
 /** /repo/commits 行（node 半边 readCommits）。 */
 interface CommitRow {
@@ -70,13 +74,82 @@ interface SyncView {
 }
 
 /** 异步操作进行中状态（防重复提交 + 按钮反馈）。 */
-type BusyKind = 'none' | 'commit' | 'pull' | 'push' | 'fetch' | 'stage' | 'unstage' | 'discard' | 'branch' | 'remote' | 'init'
+type BusyKind =
+  | 'none'
+  | 'commit'
+  | 'pull'
+  | 'push'
+  | 'fetch'
+  | 'stage'
+  | 'unstage'
+  | 'discard'
+  | 'branch'
+  | 'remote'
+  | 'init'
+  | 'tag'
+  | 'stash'
+  | 'suggest'
 
 /** 主区视图：一次只呈现一件事，靠左侧导航切换。 */
-type ViewKind = 'changes' | 'history' | 'graph'
+type ViewKind = 'changes' | 'history' | 'graph' | 'files' | 'tags' | 'stash'
 
 /** 二级层：同一时刻最多一层。 */
 type LayerKind = 'none' | 'branches' | 'newBranch' | 'commit' | 'remote' | 'pull' | 'diff'
+
+/** /repo/discover 行（node 半边 discoverRepos）。 */
+interface RepoRow {
+  root: string
+  name: string
+  branch: string
+  remotes: string[]
+}
+
+/** 提交历史每页条数（配合「加载更多」按 offset 翻页）。 */
+const COMMIT_PAGE = 80
+
+/** 扩展名 → 高亮语言标识（与 node 侧 files.ts 的 langOf 同一套键，供 DiffView 用）。 */
+const LANG_BY_EXT: Record<string, string> = {
+  ts: 'typescript',
+  tsx: 'typescript',
+  mts: 'typescript',
+  cts: 'typescript',
+  js: 'javascript',
+  jsx: 'javascript',
+  mjs: 'javascript',
+  cjs: 'javascript',
+  json: 'json',
+  jsonc: 'json',
+  css: 'css',
+  scss: 'scss',
+  less: 'less',
+  html: 'xml',
+  htm: 'xml',
+  xml: 'xml',
+  svg: 'xml',
+  md: 'markdown',
+  markdown: 'markdown',
+  yml: 'yaml',
+  yaml: 'yaml',
+  sh: 'bash',
+  bash: 'bash',
+  zsh: 'bash',
+  py: 'python',
+  go: 'go',
+  rs: 'rust',
+  java: 'java',
+  sql: 'sql',
+  diff: 'diff',
+  patch: 'diff',
+}
+
+/** 从 diff 的文件路径推语言标识（取不到返回空串，DiffView 会退回纯文本）。 */
+function langOfPath(path: string): string {
+  if (!path) return ''
+  const name = path.split(/[\\/]/).pop() ?? ''
+  const dot = name.lastIndexOf('.')
+  if (dot < 0) return ''
+  return LANG_BY_EXT[name.slice(dot + 1).toLowerCase()] ?? ''
+}
 
 export interface WorkbenchProps {
   t: (key: string) => string
@@ -186,11 +259,32 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
   const [initRemote, setInitRemote] = useState('')
   const [discardPending, setDiscardPending] = useState<string[] | null>(null)
 
+  // 历史视图：关键词（服务端 git --grep）+ 分页（offset 累加，翻得到旧提交）。
+  const [commitQuery, setCommitQuery] = useState('')
+  const [commitSearch, setCommitSearch] = useState('')
+  const [commitsMore, setCommitsMore] = useState(false)
+  const [commitsExhausted, setCommitsExhausted] = useState(false)
+
+  // 标签 / 贮藏 / 仓库切换 / AI 生成。
+  const [tags, setTags] = useState<TagView[]>([])
+  const [tagsLoading, setTagsLoading] = useState(false)
+  const [tagsError, setTagsError] = useState('')
+  const [stashes, setStashes] = useState<StashView[]>([])
+  const [stashesLoading, setStashesLoading] = useState(false)
+  const [stashesError, setStashesError] = useState('')
+  const [repos, setRepos] = useState<RepoRow[]>([])
+  const [repoMenu, setRepoMenu] = useState(false)
+  const [activeRoot, setActiveRoot] = useState('')
+  const [suggesting, setSuggesting] = useState(false)
+
+  /** 当前操作的仓库根：默认跟随会话 dir，用户在下拉里切换后以切换值为准。 */
+  const dir = activeRoot || cwd
+
   const showToast = (tone: 'ok' | 'error' | 'info', text: string) => setToast({ tone, text })
 
   const loadStatus = async () => {
     try {
-      const data = await api<{ ok: boolean; status?: RepoStatusView }>(`/repo/status?cwd=${encodeURIComponent(cwd)}`)
+      const data = await api<{ ok: boolean; status?: RepoStatusView }>(`/repo/status?dir=${encodeURIComponent(dir)}`)
       if (data.ok && data.status) onStatusChange(data.status)
     } catch {
       /* 状态失败不阻塞其它面板数据 */
@@ -198,10 +292,10 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
   }
 
   const loadChanges = async () => {
-    if (!cwd || !isRepo) return
+    if (!dir || !isRepo) return
     setChangesLoading(true)
     try {
-      const data = await api<{ ok: boolean; changes?: RepoChangesView; error?: string }>(`/repo/changes?cwd=${encodeURIComponent(cwd)}`)
+      const data = await api<{ ok: boolean; changes?: RepoChangesView; error?: string }>(`/repo/changes?dir=${encodeURIComponent(dir)}`)
       if (data.ok && data.changes) {
         setChanges(data.changes)
         setChangesError('')
@@ -219,30 +313,44 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     }
   }
 
-  const loadCommits = async () => {
-    if (!cwd || !isRepo) return
-    setCommitsLoading(true)
+  /**
+   * 提交历史：`offset` 为 0 时整体替换（首屏 / 搜索词变化），否则追加（加载更多）。
+   * 搜索走服务端 git --grep，前端全量过滤会让「加载更多」永远翻不到旧提交。
+   */
+  const loadCommits = async (search = commitSearch, offset = 0) => {
+    if (!dir || !isRepo) return
+    const appending = offset > 0
+    if (appending) setCommitsMore(true)
+    else setCommitsLoading(true)
     try {
-      const data = await api<{ ok: boolean; commits?: CommitRow[]; error?: string }>(`/repo/commits?cwd=${encodeURIComponent(cwd)}&limit=80`)
+      const params = new URLSearchParams({ cwd: dir, limit: String(COMMIT_PAGE), offset: String(offset) })
+      if (search.trim()) params.set('search', search.trim())
+      const data = await api<{ ok: boolean; commits?: CommitRow[]; truncated?: boolean; error?: string }>(
+        `/repo/commits?${params.toString()}`,
+      )
       if (data.ok && Array.isArray(data.commits)) {
-        setCommits(data.commits)
+        const rows = data.commits
+        setCommits((prev) => (appending ? [...prev, ...rows] : rows))
+        // 服务端 truncated=false 表示已经取到末尾，前端不再显示「加载更多」。
+        setCommitsExhausted(data.truncated === false && rows.length < COMMIT_PAGE)
         setCommitsError('')
       } else {
-        setCommits([])
+        if (!appending) setCommits([])
         setCommitsError(data.error || '')
       }
     } catch (error) {
-      setCommits([])
+      if (!appending) setCommits([])
       setCommitsError((error as Error).message)
     } finally {
       setCommitsLoading(false)
+      setCommitsMore(false)
     }
   }
 
   const loadBranches = async () => {
-    if (!cwd || !isRepo) return
+    if (!dir || !isRepo) return
     try {
-      const data = await api<{ ok: boolean; branches?: BranchRow[]; current?: string; error?: string }>(`/repo/branches?cwd=${encodeURIComponent(cwd)}`)
+      const data = await api<{ ok: boolean; branches?: BranchRow[]; current?: string; error?: string }>(`/repo/branches?dir=${encodeURIComponent(dir)}`)
       if (data.ok) {
         setBranches(data.branches ?? [])
         setCurrentBranch(data.current ?? '')
@@ -253,9 +361,9 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
   }
 
   const loadRemotes = async () => {
-    if (!cwd || !isRepo) return
+    if (!dir || !isRepo) return
     try {
-      const data = await api<{ ok: boolean; remotes?: RemoteRow[]; upstream?: string }>(`/repo/remotes?cwd=${encodeURIComponent(cwd)}`)
+      const data = await api<{ ok: boolean; remotes?: RemoteRow[]; upstream?: string }>(`/repo/remotes?dir=${encodeURIComponent(dir)}`)
       if (data.ok) {
         setRemotes(data.remotes ?? [])
         setUpstream(data.upstream ?? '')
@@ -266,10 +374,10 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
   }
 
   const loadGraph = async () => {
-    if (!cwd || !isRepo) return
+    if (!dir || !isRepo) return
     setGraphLoading(true)
     try {
-      const data = await api<{ ok: boolean; graph?: RepoGraphView; error?: string }>(`/repo/graph?cwd=${encodeURIComponent(cwd)}&limit=40`)
+      const data = await api<{ ok: boolean; graph?: RepoGraphView; error?: string }>(`/repo/graph?dir=${encodeURIComponent(dir)}&limit=40`)
       if (data.ok && data.graph) {
         setGraph(data.graph)
         setGraphError('')
@@ -285,12 +393,62 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     }
   }
 
+  const loadTags = async () => {
+    if (!dir || !isRepo) return
+    setTagsLoading(true)
+    try {
+      const data = await api<{ ok: boolean; tags?: TagView[]; error?: string }>(`/repo/tags?dir=${encodeURIComponent(dir)}`)
+      if (data.ok && Array.isArray(data.tags)) {
+        setTags(data.tags)
+        setTagsError('')
+      } else {
+        setTags([])
+        setTagsError(data.error || '')
+      }
+    } catch (error) {
+      setTags([])
+      setTagsError((error as Error).message)
+    } finally {
+      setTagsLoading(false)
+    }
+  }
+
+  const loadStashes = async () => {
+    if (!dir || !isRepo) return
+    setStashesLoading(true)
+    try {
+      const data = await api<{ ok: boolean; stashes?: StashView[]; error?: string }>(`/repo/stash?dir=${encodeURIComponent(dir)}`)
+      if (data.ok && Array.isArray(data.stashes)) {
+        setStashes(data.stashes)
+        setStashesError('')
+      } else {
+        setStashes([])
+        setStashesError(data.error || '')
+      }
+    } catch (error) {
+      setStashes([])
+      setStashesError((error as Error).message)
+    } finally {
+      setStashesLoading(false)
+    }
+  }
+
+  /** 仓库列表：只扫已授权根（`*` 根跳过，不扫全机），失败静默——下拉退回只显示当前仓库。 */
+  const loadRepos = async () => {
+    try {
+      const data = await api<{ ok: boolean; repos?: RepoRow[] }>('/repo/discover')
+      if (data.ok && Array.isArray(data.repos)) setRepos(data.repos)
+    } catch {
+      /* 仓库扫描失败不阻塞工作台 */
+    }
+  }
+
   const loadDiff = async (mode: 'worktree' | 'staged', path: string) => {
-    if (!cwd || !isRepo) return
+    if (!dir || !isRepo) return
     setDiffLoading(true)
     setDiffError('')
     try {
-      const params = new URLSearchParams({ cwd, mode })
+      const params = new URLSearchParams({ cwd: dir, mode })
       if (path) params.set('path', path)
       const data = await api<{ ok: boolean; diff?: string; truncated?: boolean; error?: string }>(`/repo/diff?${params.toString()}`)
       if (data.ok) {
@@ -310,19 +468,27 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
 
   /** 全量刷新：写操作成功后统一走这里（不做定时轮询，只在打开与动作后取一次）。 */
   const refreshAll = async () => {
-    if (!cwd) return
+    if (!dir) return
     await Promise.all([loadStatus(), loadChanges(), loadCommits(), loadBranches(), loadRemotes()])
   }
 
   useEffect(() => {
-    if (!cwd) return
+    if (!dir) return
     void refreshAll()
     if (isRepo) void loadGraph()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cwd, isRepo])
+  }, [dir, isRepo])
+
+  // 仓库列表只在打开工作台时取一次（扫描本地授权根，不随视图切换重复扫盘）。
+  useEffect(() => {
+    void loadRepos()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if (view === 'graph' && isRepo && !graph) void loadGraph()
+    if (view === 'tags' && isRepo && tags.length === 0 && !tagsLoading) void loadTags()
+    if (view === 'stash' && isRepo && stashes.length === 0 && !stashesLoading) void loadStashes()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, isRepo])
 
@@ -394,16 +560,16 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
   }
 
   const stageSelected = (paths: string[]) =>
-    run('stage', () => api<{ ok: boolean; error?: string }>('/repo/stage', { cwd, paths }), t('toastStaged'))
+    run('stage', () => api<{ ok: boolean; error?: string }>('/repo/stage', { cwd: dir, paths }), t('toastStaged'))
 
   const unstageSelected = (paths: string[]) =>
-    run('unstage', () => api<{ ok: boolean; error?: string }>('/repo/unstage', { cwd, paths }), t('toastUnstaged'))
+    run('unstage', () => api<{ ok: boolean; error?: string }>('/repo/unstage', { cwd: dir, paths }), t('toastUnstaged'))
 
   const doDiscard = (paths: string[]) =>
-    run('discard', () => api<{ ok: boolean; error?: string }>('/repo/discard', { cwd, paths, confirmed: true }), t('toastDiscarded'))
+    run('discard', () => api<{ ok: boolean; error?: string }>('/repo/discard', { cwd: dir, paths, confirmed: true }), t('toastDiscarded'))
 
   const doCommit = () =>
-    run('commit', () => api<{ ok: boolean; error?: string; hash?: string }>('/repo/commit', { cwd, message, amend }), amend ? t('toastAmended') : t('toastCommitted')).then(
+    run('commit', () => api<{ ok: boolean; error?: string; hash?: string }>('/repo/commit', { cwd: dir, message, amend }), amend ? t('toastAmended') : t('toastCommitted')).then(
       (ok) => {
         if (ok) {
           setMessage('')
@@ -413,26 +579,26 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
       },
     )
 
-  const doFetch = () => run('fetch', () => api<SyncView>('/repo/fetch', { cwd }), t('toastFetched'))
+  const doFetch = () => run('fetch', () => api<SyncView>('/repo/fetch', { cwd: dir }), t('toastFetched'))
 
   // 没有上游时裸 git pull 会报 no tracking information；显式带 remote + 当前分支名，
   // 等价于 git pull <remote> <branch>，无论有没有 upstream 都能拉到同名分支。
   const doPull = (strategy: 'merge' | 'rebase') =>
     run(
       'pull',
-      () => api<SyncView>('/repo/pull', { cwd, strategy, remote: remotes[0]?.name ?? '', branch: currentBranch }),
+      () => api<SyncView>('/repo/pull', { cwd: dir, strategy, remote: remotes[0]?.name ?? '', branch: currentBranch }),
       strategy === 'rebase' ? t('toastPulledRebase') : t('toastPulledMerge'),
     ).then((ok) => {
       if (!ok) void loadStatus()
     })
 
   const doPush = (setUpstream: boolean) =>
-    run('push', () => api<SyncView>('/repo/push', { cwd, remote: remotes[0]?.name ?? '', branch: currentBranch, setUpstream }), t('toastPushed')).then((ok) => {
+    run('push', () => api<SyncView>('/repo/push', { cwd: dir, remote: remotes[0]?.name ?? '', branch: currentBranch, setUpstream }), t('toastPushed')).then((ok) => {
       if (!ok) void loadStatus()
     })
 
   const doInit = () =>
-    run('init', () => api<{ ok: boolean; error?: string; result?: { created?: boolean; branch?: string } }>('/repo/init', { cwd, branch: 'main' }), t('initDone'))
+    run('init', () => api<{ ok: boolean; error?: string; result?: { created?: boolean; branch?: string } }>('/repo/init', { cwd: dir, branch: 'main' }), t('initDone'))
 
   /** 初始化 + 可选关联远程地址（复用既有 /repo/remotes/add，不臆造接口）。 */
   const doInitWithForm = async () => {
@@ -441,7 +607,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     const url = initRemote.trim()
     if (!url) return
     try {
-      const added = await api<{ ok: boolean; error?: string }>('/repo/remotes/add', { cwd, name: 'origin', url })
+      const added = await api<{ ok: boolean; error?: string }>('/repo/remotes/add', { cwd: dir, name: 'origin', url })
       showToast(added.ok ? 'ok' : 'error', added.ok ? t('toastRemoteAdded') : added.error || t('actionFailed'))
       await refreshAll()
     } catch (error) {
@@ -460,6 +626,86 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     setLayer('diff')
     void loadDiff(mode, path)
   }
+
+  /** 切换仓库：只改本工作台的 dir，不动会话 cwd；切换后整体重取（含图与标签贮藏）。 */
+  const switchRepo = (next: string) => {
+    setRepoMenu(false)
+    if (!next || next === dir) return
+    setActiveRoot(next)
+    setCommits([])
+    setCommitsExhausted(false)
+    setTags([])
+    setStashes([])
+    setGraph(null)
+    setChanges(null)
+    setSelected(new Set())
+    setMessage('')
+  }
+
+  /** 提交信息搜索：回车 / 按钮触发，回到第一页重取。 */
+  const submitCommitSearch = () => {
+    setCommitSearch(commitQuery.trim())
+    setCommitsExhausted(false)
+    void loadCommits(commitQuery.trim(), 0)
+  }
+
+  /** 加载更多：按已取条数当 offset 追加。 */
+  const loadMoreCommits = () => {
+    if (commitsMore) return
+    void loadCommits(commitSearch, commits.length)
+  }
+
+  /**
+   * AI 生成提交信息：只读仓库内容（服务端不落盘），结果填进输入框由用户确认。
+   * 模型服务缺失 / 无默认模型时按服务端错误原文提示，不静默失败。
+   */
+  const doSuggest = async () => {
+    if (suggesting) return
+    setSuggesting(true)
+    try {
+      const data = await api<{ ok: boolean; message?: string; error?: string; source?: string }>('/repo/suggest-message', {
+        cwd: dir,
+        hint: message.trim(),
+      })
+      if (data.ok && data.message) {
+        setMessage(data.message)
+        showToast('ok', t('toastSuggested'))
+      } else {
+        showToast('error', data.error || t('suggestFailed'))
+      }
+    } catch (error) {
+      showToast('error', `${t('suggestFailed')}：${(error as Error).message}`)
+    } finally {
+      setSuggesting(false)
+    }
+  }
+
+  const doTagCreate = (name: string, message: string) =>
+    run('tag', () => api<{ ok: boolean; error?: string }>('/repo/tags/create', { cwd: dir, name, message }), t('toastTagCreated')).then(
+      (ok) => ok && loadTags(),
+    )
+
+  const doTagDelete = (name: string) =>
+    run('tag', () => api<{ ok: boolean; error?: string }>('/repo/tags/delete', { cwd: dir, name }), t('toastTagDeleted')).then(
+      (ok) => ok && loadTags(),
+    )
+
+  const doTagPush = (name: string) =>
+    run('tag', () => api<{ ok: boolean; error?: string }>('/repo/tags/push', { cwd: dir, name, remote: remotes[0]?.name ?? '' }), t('toastTagPushed')).then(
+      (ok) => ok && loadTags(),
+    )
+
+  const doStashSave = (text: string, includeUntracked: boolean) =>
+    run('stash', () => api<{ ok: boolean; error?: string }>('/repo/stash/save', { cwd: dir, message: text, includeUntracked }), t('toastStashed')).then(
+      (ok) => ok && loadStashes(),
+    )
+
+  const doStashAction = (action: 'pop' | 'apply' | 'drop', index: number) =>
+    run(
+      'stash',
+      () => api<{ ok: boolean; error?: string }>('/repo/stash/action', { cwd: dir, action, index }),
+      action === 'drop' ? t('toastStashDropped') : action === 'pop' ? t('toastStashPopped') : t('toastStashApplied'),
+    ).then((ok) => ok && loadStashes())
 
   const currentBranchRow = branches.find((branch) => branch.kind === 'local' && branch.current)
   const hasRemote = remotes.length > 0
@@ -551,18 +797,61 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     { key: 'changes', label: t('wbChangesTab'), count: changes?.files.length ?? 0 },
     { key: 'history', label: t('wbHistory'), count: commits.length },
     { key: 'graph', label: t('wbGraph'), count: graph?.rows.length ?? 0 },
+    { key: 'files', label: t('wbFilesTab'), count: 0 },
+    { key: 'tags', label: t('wbTagsTab'), count: tags.length },
+    { key: 'stash', label: t('wbStashTab'), count: stashes.length },
   ]
+
+  // 仓库下拉候选：已发现的本地仓库，当前仓库补在最前（扫描不到时至少能显示自己）。
+  const repoOptions: RepoRow[] = (() => {
+    const list = repos.slice()
+    if (!list.some((item) => item.root.toLowerCase() === dir.toLowerCase())) {
+      list.unshift({ root: dir, name: status?.root?.split(/[\\/]/).pop() || dir, branch: currentBranch, remotes: [] })
+    }
+    return list
+  })()
 
   return (
     <>
       <div className="dgp-portal dgp-gw-mask" onMouseDown={(event) => event.target === event.currentTarget && closeAll()} />
       <div className="dgp-root dgp-gw" role="dialog" aria-label={t('wbTitle')} data-state="ready">
-        {/* 顶栏：仓库 · 分支 · 同步动作 · 关闭 */}
+        {/* 顶栏：仓库（可切） · 分支 · 同步动作 · 关闭 */}
         <div className="dgp-gw-top">
-          <span className="dgp-gw-repo" title={status.root || cwd}>
+          <button
+            type="button"
+            className="dgp-gw-repo"
+            title={status.root || dir}
+            aria-haspopup="menu"
+            aria-expanded={repoMenu}
+            onClick={() => setRepoMenu((prev) => !prev)}
+          >
             <BranchIcon />
-            {status.root?.split(/[\\/]/).pop() || cwd}
-          </span>
+            {status.root?.split(/[\\/]/).pop() || dir}
+            {repoOptions.length > 1 ? <span className="dgp-gw-caret">▾</span> : null}
+          </button>
+          {repoMenu ? (
+            createPortal(
+              <div className="dgp-portal dgp-repomenu" role="menu" aria-label={t('wbSwitchRepo')}>
+                <div className="dgp-repomenu-head">{t('wbSwitchRepo')}</div>
+                {repoOptions.map((item) => (
+                  <button
+                    key={item.root}
+                    type="button"
+                    role="menuitem"
+                    className="dgp-repomenu-row"
+                    data-on={item.root.toLowerCase() === dir.toLowerCase() ? '1' : '0'}
+                    title={item.root}
+                    onClick={() => switchRepo(item.root)}
+                  >
+                    <span className="dgp-repomenu-name">{item.name}</span>
+                    <span className="dgp-repomenu-meta">{item.branch || 'HEAD'}</span>
+                  </button>
+                ))}
+                <div className="dgp-repomenu-foot">{t('wbSwitchRepoHint')}</div>
+              </div>,
+              document.body,
+            )
+          ) : null}
           <button type="button" className="dgp-gw-branch" data-current={currentBranchRow ? '1' : '0'} onClick={() => setLayer('branches')}>
             {currentBranch || 'HEAD'} <span className="dgp-gw-caret">▾</span>
           </button>
@@ -623,6 +912,15 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
                       <input type="checkbox" checked={amend} onChange={(event) => setAmend(event.target.checked)} />
                       {t('wbAmend')}
                     </label>
+                    <button
+                      type="button"
+                      className="dgp-gw-textbtn"
+                      disabled={suggesting || busy !== 'none'}
+                      onClick={() => void doSuggest()}
+                      title={t('wbSuggestHint')}
+                    >
+                      {suggesting ? t('wbSuggesting') : t('wbSuggest')}
+                    </button>
                     <span className="dgp-gw-spacer" />
                     <span className="dgp-gw-staged-count">{stagedFiles.length}</span>
                     <button type="button" className="dgp-btn primary" disabled={!canCommit} onClick={() => void doCommit()}>{t('wbCommit')}</button>
@@ -753,30 +1051,69 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
               </>
             ) : null}
 
-            {/* 历史视图 */}
+            {/* 历史视图：关键词搜索（服务端 --grep）+ 加载更多 */}
             {view === 'history' ? (
-              <div className="dgp-gw-scroll">
-                {commitsLoading && commits.length === 0 ? (
-                  <Skeleton rows={8} />
-                ) : commitsError ? (
-                  <div className="dgp-err">{commitsError}</div>
-                ) : commits.length === 0 ? (
-                  <EmptyState title={t('wbNoCommits')} hint={t('wbNoCommitsHint')} />
-                ) : (
-                  <div className="dgp-gw-log" role="list">
-                    {commits.map((commit) => (
-                      <button key={commit.hash} type="button" className="dgp-gw-logrow" role="listitem" onClick={() => openDetail(commit.hash)}>
-                        <span className="dgp-gw-loghash">{commit.shortHash}</span>
-                        <span className="dgp-gw-logmsg" title={commit.subject}>{commit.subject}</span>
-                        {parseRefs(commit.refs).map((ref) => (
-                          <span key={ref.text} className="dgp-graph-ref" data-kind={ref.kind === 'head' ? 'head' : ref.kind}>{ref.text}</span>
+              <>
+                <div className="dgp-gw-searchbar">
+                  <input
+                    className="dgp-input dgp-gw-search"
+                    placeholder={t('wbSearchCommit')}
+                    value={commitQuery}
+                    onChange={(event) => setCommitQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter') submitCommitSearch()
+                      if (event.key === 'Escape') setCommitQuery('')
+                    }}
+                  />
+                  <button type="button" className="dgp-btn" onClick={submitCommitSearch}>{t('wbSearch')}</button>
+                  {commitSearch ? (
+                    <button
+                      type="button"
+                      className="dgp-gw-textbtn"
+                      onClick={() => {
+                        setCommitQuery('')
+                        setCommitSearch('')
+                        void loadCommits('', 0)
+                      }}
+                    >
+                      {t('wbSearchClear')}
+                    </button>
+                  ) : null}
+                </div>
+                <div className="dgp-gw-scroll">
+                  {commitsLoading && commits.length === 0 ? (
+                    <Skeleton rows={8} />
+                  ) : commitsError ? (
+                    <div className="dgp-err">{commitsError}</div>
+                  ) : commits.length === 0 ? (
+                    <EmptyState title={commitSearch ? t('wbSearchEmpty') : t('wbNoCommits')} hint={commitSearch ? t('wbSearchEmptyHint') : t('wbNoCommitsHint')} />
+                  ) : (
+                    <>
+                      <div className="dgp-gw-log" role="list">
+                        {commits.map((commit) => (
+                          <button key={commit.hash} type="button" className="dgp-gw-logrow" role="listitem" onClick={() => openDetail(commit.hash)}>
+                            <span className="dgp-gw-loghash">{commit.shortHash}</span>
+                            <span className="dgp-gw-logmsg" title={commit.subject}>{commit.subject}</span>
+                            {parseRefs(commit.refs).map((ref) => (
+                              <span key={ref.text} className="dgp-graph-ref" data-kind={ref.kind === 'head' ? 'head' : ref.kind}>{ref.text}</span>
+                            ))}
+                            <span className="dgp-gw-logmeta">{commit.author} · {shortDate(commit.date)}</span>
+                          </button>
                         ))}
-                        <span className="dgp-gw-logmeta">{commit.author} · {shortDate(commit.date)}</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+                      </div>
+                      {commitsExhausted ? (
+                        <div className="dgp-hint">{t('wbNoMoreCommits')}</div>
+                      ) : (
+                        <div className="dgp-gw-more">
+                          <button type="button" className="dgp-btn" disabled={commitsMore} onClick={loadMoreCommits}>
+                            {commitsMore ? t('wbLoadingMore') : t('wbLoadMore')}
+                          </button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </div>
+              </>
             ) : null}
 
             {/* 分支图视图 */}
@@ -784,6 +1121,39 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
               <div className="dgp-gw-scroll">
                 <GraphView t={t} graph={graph} loading={graphLoading} error={graphError} />
               </div>
+            ) : null}
+
+            {/* 文件视图：懒加载目录树 + 预览（只读，走 /repo/tree 与 /repo/file） */}
+            {view === 'files' ? <FileBrowser t={t} cwd={dir} /> : null}
+
+            {/* 标签视图：列表 + 新建 + 推送 + 删除（删除需点两次） */}
+            {view === 'tags' ? (
+              <TagsPanel
+                t={t}
+                tags={tags}
+                loading={tagsLoading}
+                error={tagsError}
+                busy={busy !== 'none'}
+                hasRemote={hasRemote}
+                onCreate={doTagCreate}
+                onDelete={doTagDelete}
+                onPush={doTagPush}
+                onRefresh={loadTags}
+              />
+            ) : null}
+
+            {/* 贮藏视图：列表 + 保存 + pop/apply/drop */}
+            {view === 'stash' ? (
+              <StashPanel
+                t={t}
+                stashes={stashes}
+                loading={stashesLoading}
+                error={stashesError}
+                busy={busy !== 'none'}
+                onSave={doStashSave}
+                onAction={doStashAction}
+                onRefresh={loadStashes}
+              />
             ) : null}
           </div>
         </div>
@@ -817,9 +1187,9 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
         ) : null}
 
         {layer === 'diff' ? (
-          <Modal title={`${t('wbDiffTitle')} · ${diffPath || (diffMode === 'staged' ? t('changesStaged') : t('wbUnstaged'))}`} onClose={() => setLayer('none')} width={880}>
+          <Modal title={`${t('wbDiffTitle')} · ${diffPath || (diffMode === 'staged' ? t('changesStaged') : t('wbUnstaged'))}`} onClose={() => setLayer('none')} width={1040}>
             {diffLoading ? <Skeleton rows={8} /> : diffError ? <div className="dgp-err">{diffError}</div> : diffText ? (
-              <pre className="dgp-gw-diff"><code>{diffText}</code></pre>
+              <DiffView t={t} text={diffText} truncated={diffTruncated} lang={langOfPath(diffPath)} />
             ) : (
               <EmptyState title={t('diffEmpty')} hint={t('diffEmptyHint')} />
             )}
@@ -830,7 +1200,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
         {layer === 'branches' ? (
           <BranchesModal
             t={t}
-            cwd={cwd}
+            cwd={dir}
             branches={branches}
             current={currentBranch}
             onClose={() => setLayer('none')}
@@ -839,9 +1209,9 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
             onNewBranch={() => setLayer('newBranch')}
           />
         ) : null}
-        {layer === 'newBranch' ? <NewBranchModal t={t} cwd={cwd} onClose={() => setLayer('none')} onChanged={refreshAll} run={run} /> : null}
-        {layer === 'commit' ? <CommitDetailModal t={t} cwd={cwd} rev={detailRev} onClose={() => setLayer('none')} /> : null}
-        {layer === 'remote' ? <RemoteModal t={t} cwd={cwd} remotes={remotes} onClose={() => setLayer('none')} onChanged={refreshAll} run={run} /> : null}
+        {layer === 'newBranch' ? <NewBranchModal t={t} cwd={dir} onClose={() => setLayer('none')} onChanged={refreshAll} run={run} /> : null}
+        {layer === 'commit' ? <CommitDetailModal t={t} cwd={dir} rev={detailRev} onClose={() => setLayer('none')} /> : null}
+        {layer === 'remote' ? <RemoteModal t={t} cwd={dir} remotes={remotes} onClose={() => setLayer('none')} onChanged={refreshAll} run={run} /> : null}
         {layer === 'pull' ? (
           <PullModal
             t={t}
@@ -854,6 +1224,147 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
             hasRemote={hasRemote}
           />
         ) : null}
+      </div>
+    </>
+  )
+}
+
+/** 标签面板：列表（含附注标记）+ 新建（可选附注信息）+ 推送 + 删除（点两次确认）。 */
+function TagsPanel({
+  t, tags, loading, error, busy, hasRemote, onCreate, onDelete, onPush, onRefresh,
+}: {
+  t: (key: string) => string
+  tags: TagView[]
+  loading: boolean
+  error: string
+  busy: boolean
+  hasRemote: boolean
+  onCreate: (name: string, message: string) => Promise<unknown>
+  onDelete: (name: string) => Promise<unknown>
+  onPush: (name: string) => Promise<unknown>
+  onRefresh: () => Promise<void>
+}) {
+  const [name, setName] = useState('')
+  const [tagNote, setTagNote] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState('')
+  const create = () => {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    void onCreate(trimmed, tagNote.trim()).then(() => {
+      setName('')
+      setTagNote('')
+    })
+  }
+  return (
+    <>
+      <div className="dgp-gw-searchbar">
+        <input className="dgp-input dgp-gw-search" placeholder={t('wbTagName')} value={name} onChange={(event) => setName(event.target.value)} />
+        <input className="dgp-input dgp-gw-search" placeholder={t('wbTagNote')} value={tagNote} onChange={(event) => setTagNote(event.target.value)} />
+        <button type="button" className="dgp-btn primary" disabled={busy || name.trim().length === 0} onClick={create}>
+          {t('wbTagCreate')}
+        </button>
+        <button type="button" className="dgp-gw-textbtn" disabled={busy} onClick={() => void onRefresh()}>{t('refresh')}</button>
+      </div>
+      <div className="dgp-gw-scroll">
+        {loading && tags.length === 0 ? (
+          <Skeleton rows={6} />
+        ) : error ? (
+          <div className="dgp-err">{error}</div>
+        ) : tags.length === 0 ? (
+          <EmptyState title={t('wbNoTags')} hint={t('wbNoTagsHint')} />
+        ) : (
+          <div className="dgp-gw-log" role="list">
+            {tags.map((tag) => (
+              <div key={tag.name} className="dgp-gw-logrow" role="listitem" data-tag={tag.annotated ? '1' : '0'}>
+                <span className="dgp-gw-loghash">{tag.hash}</span>
+                <span className="dgp-gw-logmsg" title={tag.subject}>{tag.name}</span>
+                {tag.annotated ? <span className="dgp-graph-ref" data-kind="tag">{t('wbTagAnnotated')}</span> : null}
+                <span className="dgp-gw-logmeta">{shortDate(tag.date)}</span>
+                <button type="button" className="dgp-gw-textbtn" disabled={busy || !hasRemote} onClick={() => void onPush(tag.name)}>{t('wbTagPush')}</button>
+                {confirmDelete === tag.name ? (
+                  <button
+                    type="button"
+                    className="dgp-gw-textbtn"
+                    data-danger="1"
+                    disabled={busy}
+                    onClick={() => {
+                      setConfirmDelete('')
+                      void onDelete(tag.name)
+                    }}
+                  >
+                    {t('wbConfirmDelete')}
+                  </button>
+                ) : (
+                  <button type="button" className="dgp-gw-textbtn" data-danger="1" onClick={() => setConfirmDelete(tag.name)}>{t('wbDelete')}</button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </>
+  )
+}
+
+/** 贮藏面板：列表（含分支与说明）+ 保存（可选说明、可选包含未跟踪）+ pop/apply/drop。 */
+function StashPanel({
+  t, stashes, loading, error, busy, onSave, onAction, onRefresh,
+}: {
+  t: (key: string) => string
+  stashes: StashView[]
+  loading: boolean
+  error: string
+  busy: boolean
+  onSave: (message: string, includeUntracked: boolean) => Promise<unknown>
+  onAction: (action: 'pop' | 'apply' | 'drop', index: number) => Promise<unknown>
+  onRefresh: () => Promise<void>
+}) {
+  const [stashNote, setStashNote] = useState('')
+  const [withUntracked, setWithUntracked] = useState(true)
+  return (
+    <>
+      <div className="dgp-gw-searchbar">
+        <input
+          className="dgp-input dgp-gw-search"
+          placeholder={t('wbStashNote')}
+          value={stashNote}
+          onChange={(event) => setStashNote(event.target.value)}
+        />
+        <label className="dgp-gw-amend">
+          <input type="checkbox" checked={withUntracked} onChange={(event) => setWithUntracked(event.target.checked)} />
+          {t('wbStashUntracked')}
+        </label>
+        <button
+          type="button"
+          className="dgp-btn primary"
+          disabled={busy}
+          onClick={() => void onSave(stashNote.trim(), withUntracked).then(() => setStashNote(''))}
+        >
+          {t('wbStashSave')}
+        </button>
+        <button type="button" className="dgp-gw-textbtn" disabled={busy} onClick={() => void onRefresh()}>{t('refresh')}</button>
+      </div>
+      <div className="dgp-gw-scroll">
+        {loading && stashes.length === 0 ? (
+          <Skeleton rows={5} />
+        ) : error ? (
+          <div className="dgp-err">{error}</div>
+        ) : stashes.length === 0 ? (
+          <EmptyState title={t('wbNoStashes')} hint={t('wbNoStashesHint')} />
+        ) : (
+          <div className="dgp-gw-log" role="list">
+            {stashes.map((item) => (
+              <div key={item.ref} className="dgp-gw-logrow" role="listitem">
+                <span className="dgp-gw-loghash">{item.ref}</span>
+                <span className="dgp-gw-logmsg" title={item.subject}>{item.subject || t('wbStashNoSubject')}</span>
+                {item.branch ? <span className="dgp-graph-ref" data-kind="head">{item.branch}</span> : null}
+                <button type="button" className="dgp-gw-textbtn" disabled={busy} onClick={() => void onAction('pop', item.index)}>{t('wbStashPop')}</button>
+                <button type="button" className="dgp-gw-textbtn" disabled={busy} onClick={() => void onAction('apply', item.index)}>{t('wbStashApply')}</button>
+                <button type="button" className="dgp-gw-textbtn" data-danger="1" disabled={busy} onClick={() => void onAction('drop', item.index)}>{t('wbStashDrop')}</button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </>
   )
@@ -1045,7 +1556,7 @@ function CommitDetailModal({ t, cwd, rev, onClose }: { t: (key: string) => strin
             ))}
           </ul>
           <div className="dgp-gw-secttitle">diff</div>
-          <pre className="dgp-gw-diff"><code>{detail.diff || t('diffEmpty')}</code></pre>
+          <DiffView t={t} text={detail.diff} lang={langOfPath(detail.files[0]?.path ?? '')} />
         </div>
       ) : null}
     </Modal>

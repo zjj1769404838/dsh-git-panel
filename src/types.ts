@@ -11,6 +11,16 @@ export interface WebServerRegisterOptions {
   handler: (req: any, res: any) => void | Promise<void>
 }
 
+/** 宿主 llm 服务的最小面：只用到「准备一次调用 + 拿回流的入口」。 */
+export interface LlmServiceLike {
+  prepareCall: (config: Record<string, unknown>, signal?: unknown, configure?: unknown) => Promise<any>
+}
+
+/** 宿主默认模型选择服务的最小面（跟随会话默认模型）。 */
+export interface DefaultModelServiceLike {
+  currentSelection: () => { provider: string; model: string }
+}
+
 export interface Context {
   logger?: Logger
   effect?: (fn: () => (() => void) | void, label?: string) => void
@@ -18,4 +28,8 @@ export interface Context {
   webServer?: {
     register?: (options: WebServerRegisterOptions) => (() => void) | void
   }
+  /** 宿主模型服务（软取：ctx.get('llm')）。缺失时「生成提交信息」降级为不可用。 */
+  llm?: LlmServiceLike
+  /** 宿主默认模型选择（软取：ctx.get('agentDefaultModel')）。 */
+  agentDefaultModel?: DefaultModelServiceLike
 }

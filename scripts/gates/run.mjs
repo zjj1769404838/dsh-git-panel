@@ -94,6 +94,11 @@ const clientSrcAll = [
   await readText(resolve(root, 'src/client/workbench.tsx')),
   await readText(resolve(root, 'src/client/settings.tsx')),
   await readText(resolve(root, 'src/client/onboard.tsx')),
+  await readText(resolve(root, 'src/client/diffview.tsx')),
+  await readText(resolve(root, 'src/client/filebrowser.tsx')),
+  await readText(resolve(root, 'src/client/highlight.ts')),
+  await readText(resolve(root, 'src/client/prism-env.ts')),
+  await readText(resolve(root, 'src/client/graphview.tsx')),
 ].join('\n')
 const sharedSrc = await readText(resolve(root, 'src/client/shared.tsx'))
 check('client 产物非空', (clientOut?.length ?? 0) > 1000, `${clientOut?.length ?? 0} 字节`)
@@ -202,7 +207,7 @@ if (clientOut) {
   check('client 一级菜单不再内嵌分支拓扑（index.tsx 不再引用 GraphView）', !clientSrc.includes('GraphView'))
   check('client 一级菜单不再内嵌改动明细（index.tsx 不再有 ChangesList）', !clientSrc.includes('ChangesList'))
   check('client 工作台 portal 到 body（createPortal + document.body）', clientOut.includes('document.body') && portalImported >= 2)
-  check('client BUILD 版本已推进（dgp-v18）', clientOut.includes('dgp-v18'))
+  check('client BUILD 版本已推进（dgp-v19）', clientOut.includes('dgp-v19'))
   // ---- i18n 键完整性：任何 t('x') 用到的键都必须在 ZH/EN 字典里存在（防 wbCancel 类漏键） ----
   const clientNorm = clientSrc.replace(/\r\n/g, '\n')
   const dictStart = clientNorm.indexOf('const ZH: Dict = {')
@@ -210,7 +215,7 @@ if (clientOut) {
   const zhBlock = dictStart >= 0 && dictEnd > dictStart ? clientNorm.slice(dictStart, dictEnd) : ''
   const definedKeys = new Set([...zhBlock.matchAll(/^\s{2}([A-Za-z][A-Za-z0-9_]*):/gmu)].map((m) => m[1]))
   const usedKeys = new Set()
-  for (const file of ['index.tsx', 'workbench.tsx', 'graphview.tsx', 'settings.tsx', 'onboard.tsx']) {
+  for (const file of ['index.tsx', 'workbench.tsx', 'graphview.tsx', 'settings.tsx', 'onboard.tsx', 'diffview.tsx', 'filebrowser.tsx']) {
     const src = await readText(resolve(root, 'src/client', file))
     if (!src) continue
     for (const m of src.replace(/\r\n/g, '\n').matchAll(/t\(\s*'([A-Za-z0-9_]+)'\s*\)/gu)) usedKeys.add(m[1])
@@ -284,7 +289,30 @@ if (clientOut) {
   check('概览授权仓库只数可访问档位（排除 none）', clientSrcAll.includes("perm !== 'none'") && clientSrcAll.includes('statsReposHintDefault'))
   check('死字典键已清（抽查 8 个不再出现）', ['scopeGrantAll', 'graphHead', 'statsReposHintAll', 'initStepConfirm', 'loadingLabel', 'toastCopiedFailed', 'wbDiffTab', 'branchDetailLoading'].every((key) => !clientSrcAll.includes(`  ${key}:`)))
   check('client 分支详情不单独做按钮（Git 只有一个 chip 入口）', !clientSrcAll.includes('dgp-branchbtn'))
-  check('client BUILD 版本已推进（dgp-v18）', clientOut.includes('dgp-v18'))
+  // ---- dgp-v19：差异视图 / 文件浏览 / 历史搜索 / 标签 / 贮藏 / AI 提交信息 ----
+  check('client 差异视图拆到独立模块（diffview.tsx 导出 DiffView）', clientSrcAll.includes('export function DiffView'))
+  check('client 差异视图解析 hunk 行号（parseDiff 返回 oldNo/newNo）', clientSrcAll.includes('export function parseDiff') && clientSrcAll.includes('oldNo') && clientSrcAll.includes('newNo'))
+  check('client 差异视图支持并排/统一两种布局（buildSplit + DiffLayout）', clientSrcAll.includes('export function buildSplit') && clientSrcAll.includes("'split'") && clientSrcAll.includes("'unified'"))
+  check('client 差异视图有就地查找（Ctrl/⌘+F + F3）', clientSrcAll.includes("key === 'f'") && clientSrcAll.includes("key === 'f3'"))
+  check('client 差异视图做词级高亮（diffSegments 前缀/后缀对齐）', clientSrcAll.includes('export function diffSegments') && clientSrcAll.includes('aMid') && clientSrcAll.includes('bMid'))
+  check('client 差异视图折叠未变更块（foldRows + FOLD_MIN）', clientSrcAll.includes('export function foldRows') && clientSrcAll.includes('FOLD_MIN'))
+  check('client 差异布局与高亮选择会持久化（readPref/writePref）', clientSrcAll.includes('PREF_DIFF_LAYOUT') && clientSrcAll.includes('PREF_HIGHLIGHT') && clientSrcAll.includes('export function readPref') && clientSrcAll.includes('export function writePref'))
+  check('client 语法高亮只用 Prism 字符串 API（不扫 DOM）', clientSrcAll.includes("import './prism-env.js'") && clientSrcAll.includes('manual = true') && clientSrcAll.includes('Prism.highlight'))
+  check('client token 配色并入同一份样式表（TOKEN_CSS 插值进 CSS）', /export const CSS = `[\s\S]*\$\{TOKEN_CSS\}/u.test(clientSrcAll))
+  check('client 文件浏览拆到独立模块（filebrowser.tsx 导出 FileBrowser）', clientSrcAll.includes('export function FileBrowser'))
+  check('client 文件浏览走 /repo/tree 与 /repo/file', clientSrcAll.includes('/repo/tree?') && clientSrcAll.includes('/repo/file?'))
+  check('client 工作台历史支持关键词搜索（search 参数）', clientSrcAll.includes("params.set('search'") && clientSrcAll.includes('wbSearchCommit'))
+  check('client 工作台历史支持加载更多（offset 翻页 + COMMIT_PAGE）', clientSrcAll.includes('COMMIT_PAGE') && clientSrcAll.includes('loadMoreCommits'))
+  check('client 工作台可切换多仓库（/repo/discover + activeRoot）', clientSrcAll.includes('/repo/discover') && clientSrcAll.includes('switchRepo') && clientSrcAll.includes('activeRoot'))
+  check('client 工作台标签页（/repo/tags 三端点）', clientSrcAll.includes('/repo/tags') && clientSrcAll.includes('/repo/tags/create') && clientSrcAll.includes('/repo/tags/delete') && clientSrcAll.includes('/repo/tags/push'))
+  check('client 工作台贮藏页（/repo/stash 保存与动作）', clientSrcAll.includes('/repo/stash') && clientSrcAll.includes('/repo/stash/save') && clientSrcAll.includes('/repo/stash/action'))
+  check('client 工作台可 AI 生成提交信息（/repo/suggest-message）', clientSrcAll.includes('/repo/suggest-message') && clientSrcAll.includes('wbSuggest'))
+  check('client 差异渲染统一走 DiffView（不再有裸 dgp-gw-diff pre）', !clientSrcAll.includes('className="dgp-gw-diff"'))
+  check('client 有窄屏断点（@media max-width:760px）', clientSrcAll.includes('@media (max-width:760px)'))
+  check('client chip 有干净/脏二态（data-dirty）', clientSrcAll.includes('data-dirty') && clientSrcAll.includes('.dgp-chip[data-dirty="1"]'))
+  check('client 有版本检查（GitHub releases/latest + 5 秒超时）', clientSrcAll.includes('/releases/latest') && clientSrcAll.includes('5000') && clientSrcAll.includes('export function isNewer') && clientSrcAll.includes('export function parseVersion'))
+  check('client 版本提示不打扰（预发布不提示 + 只在打开菜单时查）', clientSrcAll.includes('prerelease') && clientSrcAll.includes('useLatestVersion(open)') && clientSrcAll.includes('menuNewVersion'))
+  check('client BUILD 版本已推进（dgp-v19）', clientOut.includes('dgp-v19'))
 }
 // ---- node 半边：git-ops 命令层与工作台端点 ----
 {
@@ -338,6 +366,33 @@ if (clientOut) {
     if (gitOpsSrc2) {
       check('git-ops 提供 remote URL → owner/repo 解析（parseRemoteRepo）', gitOpsSrc2.includes('export function parseRemoteRepo'))
       check('git-ops readCommits 支持按 ref 取日志', /readCommits[\s\S]{0,200}ref\??:/.test(gitOpsSrc2))
+      // ---- dgp-v19：标签 / 贮藏 / 提交搜索 ----
+      check('git-ops 标签读写（readTags/createTag/deleteTag/pushTag）', ['readTags', 'createTag', 'deleteTag', 'pushTag'].every((name) => gitOpsSrc2.includes(`export async function ${name}`)))
+      check('git-ops 标签读取走 for-each-ref 并标注附注', gitOpsSrc2.includes('for-each-ref') && gitOpsSrc2.includes('annotated'))
+      check('git-ops 贮藏读写（readStashes/stashSave/stashAction）', ['readStashes', 'stashSave', 'stashAction'].every((name) => gitOpsSrc2.includes(`export async function ${name}`)))
+      check('git-ops 贮藏序号做白名单校验（stashIndex 0..999）', /function stashIndex[\s\S]{0,400}999/u.test(gitOpsSrc2))
+      check('git-ops readCommits 支持关键词搜索（--grep）', gitOpsSrc2.includes('--grep=') && gitOpsSrc2.includes('--fixed-strings'))
+    }
+    const filesSrc = await readText(resolve(root, 'src/node/files.ts'))
+    if (filesSrc) {
+      check('files 提供目录列举与文件读取（listDir/readTextFile）', filesSrc.includes('export async function listDir') && filesSrc.includes('export async function readTextFile'))
+      check('files 越界判定走 realpath 相对路径（不用字符串前缀）', filesSrc.includes('realpath') && filesSrc.includes('relative('))
+      check('files 拒绝 .. 与 .git 段（normalizeRel）', /function normalizeRel[\s\S]{0,600}\.\./u.test(filesSrc) && filesSrc.includes("'.git'"))
+      check('files 二进制文件按 NUL 嗅探判定', filesSrc.includes('includes(0)'))
+      check('files 提供扩展名 → 语言标识映射（langOf）', filesSrc.includes('export function langOf'))
+    }
+    for (const route of ['/repo/tags', '/repo/stash', '/repo/tree', '/repo/file', '/repo/tags/create', '/repo/tags/delete', '/repo/tags/push', '/repo/stash/save', '/repo/stash/action', '/repo/suggest-message']) {
+      check(`handler 挂载 v19 端点 ${route}`, handlerSrc.includes(`'${route}'`))
+    }
+    check('handler /repo/tags/push 走远端归属闸门', /\/repo\/tags\/push[\s\S]{0,600}requireRemoteWritable/u.test(handlerSrc))
+    check('handler /repo/suggest-message 只读（requireRead，不落盘）', /\/repo\/suggest-message[\s\S]{0,400}requireRead/u.test(handlerSrc))
+    check('handler /repo/stash/action 校验 action 白名单', handlerSrc.includes('不支持的贮藏操作'))
+    const suggestSrc = await readText(resolve(root, 'src/node/suggest.ts'))
+    if (suggestSrc) {
+      check('suggest 用宿主 llm.prepareCall + stream（不静态依赖 dsh-llm）', suggestSrc.includes('prepareCall') && suggestSrc.includes('call.stream'))
+      check('suggest 模型取当前会话默认（currentSelection）', suggestSrc.includes('currentSelection'))
+      check('suggest 有超时保护（AbortController）', suggestSrc.includes('AbortController'))
+      check('suggest 只输出一行并清洗围栏/引号（cleanMessage）', suggestSrc.includes('cleanMessage'))
     }
   }
 }

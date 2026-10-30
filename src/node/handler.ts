@@ -23,12 +23,21 @@ import {
   readCommits,
   readDiff,
   readRemotes,
+  readStashes,
+  readTags,
   removeRemote,
   renameBranch,
   stageAll,
   stagePaths,
+  stashAction,
+  stashSave,
+  createTag,
+  deleteTag,
+  pushTag,
   unstagePaths,
 } from './git-ops.js'
+import { listDir, readTextFile } from './files.js'
+import { suggestCommitMessage, type DefaultModelLike, type LlmLike } from './suggest.js'
 import { pollDeviceFlow, PROVIDERS, providerOf, startDeviceFlow, verifyToken, listAccountRepos, createAccountRepo } from './providers.js'
 import { redact } from './vault.js'
 
@@ -109,6 +118,10 @@ export interface HandlerDeps {
   version: string
   log?: (level: string, message: string) => void
   startedAt?: number
+  /** 宿主模型服务（软取，缺失时「生成提交信息」明确不可用）。 */
+  llm?: LlmLike
+  /** 宿主默认模型选择（跟随会话默认模型）。 */
+  defaultModel?: DefaultModelLike
 }
 
 /**
@@ -322,7 +335,8 @@ export function createHandler(deps: HandlerDeps) {
         return
       }
 
-      // 提交历史：只读，limit/offset 分页；可选 ref（分支/标签/提交号）限定历史范围。
+      // 提交历史：只读，limit/offset 分页；可选 ref（分支/标签/提交号）限定历史范围；
+      // 可选 search 走 git --grep（服务端过滤，配合「加载更多」才能翻到旧提交）。
       if (method === 'GET' && path === '/repo/commits') {
         const cwd = str(url.searchParams.get('cwd')).trim()
         const dir = requireRead(cwd, { commits: [] })
@@ -330,17 +344,84 @@ export function createHandler(deps: HandlerDeps) {
         const limit = Number.parseInt(url.searchParams.get('limit') ?? '', 10)
         const offset = Number.parseInt(url.searchParams.get('offset') ?? '', 10)
         const ref = str(url.searchParams.get('ref')).trim()
+        const search = str(url.searchParams.get('search')).trim()
         const result = await readCommits(
           dir,
           Number.isFinite(limit) ? limit : 30,
           Number.isFinite(offset) ? offset : 0,
           ref || undefined,
+          search || undefined,
         )
         if (!result.ok) {
           sendJson(res, 200, { ok: false, error: result.error, commits: [] })
           return
         }
         sendJson(res, 200, { ok: true, root: result.root, commits: result.commits, truncated: result.truncated })
+        return
+      }
+
+      // 标签列表：只读。
+      if (method === 'GET' && path === '/repo/tags') {
+        const cwd = str(url.searchParams.get('cwd')).trim()
+        const dir = requireRead(cwd, { tags: [] })
+        if (!dir) return
+        const result = await readTags(dir)
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error, tags: [] })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root, tags: result.tags })
+        return
+      }
+
+      // 贮藏列表：只读。
+      if (method === 'GET' && path === '/repo/stash') {
+        const cwd = str(url.searchParams.get('cwd')).trim()
+        const dir = requireRead(cwd, { stashes: [] })
+        if (!dir) return
+        const result = await readStashes(dir)
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error, stashes: [] })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root, stashes: result.stashes })
+        return
+      }
+
+      // 文件浏览：列目录（懒加载，界面按层调用）。
+      if (method === 'GET' && path === '/repo/tree') {
+        const cwd = str(url.searchParams.get('cwd')).trim()
+        const dir = requireRead(cwd, { entries: [] })
+        if (!dir) return
+        const result = await listDir(dir, str(url.searchParams.get('path')).trim())
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error, entries: [] })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root, path: result.path, entries: result.entries, truncated: result.truncated })
+        return
+      }
+
+      // 文件浏览：读单个文件（文本，二进制判定 + 截断）。
+      if (method === 'GET' && path === '/repo/file') {
+        const cwd = str(url.searchParams.get('cwd')).trim()
+        const dir = requireRead(cwd, { content: '' })
+        if (!dir) return
+        const result = await readTextFile(dir, str(url.searchParams.get('path')).trim())
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error, content: '' })
+          return
+        }
+        sendJson(res, 200, {
+          ok: true,
+          root: result.root,
+          path: result.path,
+          content: result.content,
+          size: result.size,
+          truncated: result.truncated,
+          binary: result.binary,
+          lang: result.lang,
+        })
         return
       }
 
@@ -542,6 +623,26 @@ export function createHandler(deps: HandlerDeps) {
         return
       }
 
+      // 生成提交信息草稿（AI）：只读仓库内容，不暂存不提交，结果由用户确认后再走 /repo/commit。
+      if (path === '/repo/suggest-message') {
+        const dir = requireRead(body.cwd, { message: '', source: 'none' })
+        if (!dir) return
+        const result = await suggestCommitMessage(
+          { llm: deps.llm, defaultModel: deps.defaultModel, log: deps.log },
+          dir,
+          str(body.hint),
+        )
+        sendJson(res, 200, {
+          ok: result.ok,
+          error: result.error,
+          message: result.message,
+          source: result.source,
+          provider: result.provider,
+          model: result.model,
+        })
+        return
+      }
+
       // 新建分支（可选立即切换）。
       if (path === '/repo/branches/create') {
         const cwd = requireWrite(body.cwd)
@@ -717,6 +818,81 @@ export function createHandler(deps: HandlerDeps) {
         if (!cwd) return
         const conflicted = await hasMergeConflicts(cwd)
         sendJson(res, 200, { ok: true, conflicted })
+        return
+      }
+
+      // ---- 标签（tag）写端点 ----
+      // 新建标签：轻量 / 附注（给 message 即附注）。
+      if (path === '/repo/tags/create') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const result = await createTag(cwd, str(body.name), str(body.ref), str(body.message))
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root })
+        return
+      }
+
+      // 删除本地标签。
+      if (path === '/repo/tags/delete') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const result = await deleteTag(cwd, str(body.name))
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root })
+        return
+      }
+
+      // 推送标签：属于远端写操作，过归属授权闸门。
+      if (path === '/repo/tags/push') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const targetRemote = str(body.remote).trim() || 'origin'
+        for (const url of await remoteUrlsOf(cwd, targetRemote)) {
+          if (!(await requireRemoteWritable(cwd, body, url))) return
+        }
+        const result = await pushTag(cwd, targetRemote, str(body.name))
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root })
+        return
+      }
+
+      // ---- 贮藏（stash）写端点 ----
+      if (path === '/repo/stash/save') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const result = await stashSave(cwd, str(body.message), body.includeUntracked === true)
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root })
+        return
+      }
+
+      // pop / apply / drop 共用一个端点，action 白名单校验。
+      if (path === '/repo/stash/action') {
+        const cwd = requireWrite(body.cwd)
+        if (!cwd) return
+        const action = str(body.action).trim()
+        if (action !== 'pop' && action !== 'apply' && action !== 'drop') {
+          sendJson(res, 400, { ok: false, error: `不支持的贮藏操作：${action || '(空)'}` })
+          return
+        }
+        const result = await stashAction(cwd, action, body.index)
+        if (!result.ok) {
+          sendJson(res, 200, { ok: false, error: result.error })
+          return
+        }
+        sendJson(res, 200, { ok: true, root: result.root })
         return
       }
 

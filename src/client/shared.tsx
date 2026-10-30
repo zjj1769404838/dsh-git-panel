@@ -5,6 +5,8 @@
  */
 import { useEffect } from 'react'
 import { createPortal } from 'react-dom'
+// 语法高亮只贡献一段 token 配色，与样式表一起注入，避免第二份 <style> 节点。
+import { TOKEN_CSS } from './highlight.js'
 
 export const NS = 'dsh-git-panel'
 export const ROUTE = '/dsh-git-panel'
@@ -175,6 +177,74 @@ export interface RepoGraphView {
   authorized?: boolean
 }
 
+// ---- dgp-v19 新增：标签 / 贮藏 / 文件浏览 / 提交搜索 / 版本检查 ----
+
+/** /repo/tags 行。 */
+export interface TagView {
+  name: string
+  hash: string
+  subject: string
+  date: string
+  /** 附注标签（有 tagger）；轻量标签为 false。 */
+  annotated: boolean
+}
+
+/** /repo/stash 行。 */
+export interface StashView {
+  index: number
+  ref: string
+  branch: string
+  subject: string
+}
+
+/** /repo/tree 条目。 */
+export interface FileEntryView {
+  name: string
+  path: string
+  kind: 'file' | 'dir'
+  size: number
+  lang: string
+}
+
+/** /repo/file 结果。 */
+export interface FileReadView {
+  ok: boolean
+  root: string
+  path: string
+  content: string
+  size: number
+  truncated: boolean
+  binary: boolean
+  lang: string
+  error?: string
+}
+
+/** 差异视图呈现方式：并排 / 统一。用户选择记忆在 localStorage。 */
+export type DiffLayout = 'split' | 'unified'
+
+/** 差异呈现偏好与语法高亮的本地记忆键。 */
+export const PREF_DIFF_LAYOUT = 'dgp.diffLayout'
+export const PREF_HIGHLIGHT = 'dgp.highlight'
+
+/** 读本地偏好（localStorage 不可用时回退默认值，不抛）。 */
+export function readPref(key: string, fallback: string): string {
+  try {
+    const value = window.localStorage.getItem(key)
+    return value === null || value === '' ? fallback : value
+  } catch {
+    return fallback
+  }
+}
+
+/** 写本地偏好（隐私模式 / 配额满时静默忽略）。 */
+export function writePref(key: string, value: string): void {
+  try {
+    window.localStorage.setItem(key, value)
+  } catch {
+    /* 偏好写不进去不影响功能 */
+  }
+}
+
 /** 全部样式（.dgp-* 体系）。index 与 workbench 共用一份，id 幂等注入。 */
 export const CSS = `
 /* 作用域：只影响插件自己的 DOM。颜色/圆角/动效一律取宿主主题 token，
@@ -275,6 +345,8 @@ export const CSS = `
 .dgp-chip[data-warn="1"]{color:var(--dgp-danger)}
 .dgp-chip[data-warn="1"] svg{opacity:1}
 .dgp-chip[data-norepo="1"]{color:var(--dgp-faint)}
+.dgp-chip[data-dirty="1"]{color:var(--dgp-warn,#b45309)}
+.dgp-chip[data-dirty="1"] svg{opacity:1}
 .dgp-chip[data-open="1"]{background:var(--dgp-hover);color:var(--dgp-fg2)}
 .dgp-chip-wrap{position:relative;display:inline-flex;align-items:center;gap:4px}
 .dgp-menu{display:flex;flex-direction:column;position:fixed;z-index:1200;min-width:236px;max-width:320px;max-height:min(340px,60vh);overflow-y:auto;padding:4px;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-md);background:var(--dsw-alias-bg-layer-1,var(--dgp-bg,#fff));box-shadow:var(--dsw-elevation-prominent,0 8px 28px #00000026);font-family:var(--dsw-font-family,inherit);font-size:12px;line-height:18px;color:var(--dgp-fg2);box-sizing:border-box}
@@ -293,6 +365,9 @@ export const CSS = `
 .dgp-menu-note{padding:7px 9px;color:var(--dgp-muted);font-size:11px;line-height:16px}
 .dgp-menu-note[data-tone="error"]{color:var(--dgp-danger)}
 .dgp-menu-note[data-tone="ok"]{color:var(--dsw-alias-state-success-primary,#22c55e)}
+.dgp-menu-note[data-tone="warn"]{color:var(--dgp-warn,#b45309)}
+a.dgp-menu-note{display:block;text-decoration:none;border-radius:6px}
+a.dgp-menu-note:hover{background:var(--dgp-hover,rgba(127,127,127,.1))}
 .dgp-menu-sep{height:.5px;background:var(--dgp-line);margin:3px 6px}
 /* 菜单分组标题：把「仓库动作」与「打开/设置」分开，避免一堆同级项平铺。 */
 .dgp-menu-group{padding:6px 9px 3px;color:var(--dgp-faint);font-size:10.5px;line-height:15px;letter-spacing:.03em;text-transform:uppercase}
@@ -565,6 +640,82 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 .dgp-modal-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:4px;font-family:var(--dgp-code);font-size:11px;color:var(--dgp-fg2)}
 .dgp-modal-list li{display:flex;align-items:center;gap:8px;justify-content:space-between;word-break:break-all}
 .dgp-modal-foot .dgp-btn{min-width:78px}
+/* ------------------------------------------------------------------ */
+/* 差异视图（dgp-v19：行号 + 查找 + 并排/统一 + 词级高亮 + 折叠）        */
+/* ------------------------------------------------------------------ */
+.dgp-dv{display:flex;flex-direction:column;gap:0;min-width:0;min-height:0;flex:1 1 auto}
+.dgp-dv-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:0 0 8px;flex:0 0 auto}
+.dgp-dv-bar .dgp-seg{flex:0 0 auto}
+.dgp-dv-find{display:flex;align-items:center;gap:6px;flex:1 1 200px;min-width:140px}
+.dgp-dv-find .dgp-input{flex:1 1 auto;min-width:0;height:26px;font-size:12px;padding:0 8px}
+.dgp-dv-findcount{font-size:11px;line-height:16px;color:var(--dgp-faint);font-variant-numeric:tabular-nums;white-space:nowrap;flex:0 0 auto}
+.dgp-dv-findcount[data-empty="1"]{color:var(--dgp-danger)}
+.dgp-dv-body{flex:1 1 auto;min-height:0;overflow:auto;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-sm);background:var(--dgp-inset)}
+.dgp-dv-table{display:flex;flex-direction:column;min-width:100%;font-family:var(--dgp-code);font-size:10.5px;line-height:16px}
+.dgp-dv-row{display:flex;align-items:stretch;min-width:0}
+.dgp-dv-row[data-kind="hunk"]{background:color-mix(in srgb,var(--dgp-accent) 7%,transparent);color:var(--dgp-muted)}
+.dgp-dv-row[data-kind="meta"]{color:var(--dgp-faint)}
+.dgp-dv-row[data-kind="add"]{background:color-mix(in srgb,#16a34a 9%,transparent)}
+.dgp-dv-row[data-kind="del"]{background:color-mix(in srgb,#dc2626 9%,transparent)}
+.dgp-dv-row[data-kind="fold"]{background:var(--dgp-hover);cursor:pointer;color:var(--dgp-muted)}
+.dgp-dv-row[data-kind="fold"]:hover{color:var(--dgp-fg)}
+.dgp-dv-side{display:flex;min-width:0;flex:1 1 0;border-right:.5px solid var(--dgp-line)}
+.dgp-dv-side:last-child{border-right:0}
+.dgp-dv-no{flex:0 0 auto;width:38px;padding:0 6px;text-align:right;color:var(--dgp-faint);font-variant-numeric:tabular-nums;user-select:none;background:color-mix(in srgb,#000 3%,transparent)}
+.dgp-dv-sign{flex:0 0 auto;width:10px;text-align:center;color:var(--dgp-muted);user-select:none}
+.dgp-dv-code{flex:1 1 auto;min-width:0;padding:0 6px 0 2px;white-space:pre;overflow:hidden;text-overflow:clip}
+.dgp-dv-code[data-hit="1"]{background:color-mix(in srgb,var(--dgp-warn,#b45309) 26%,transparent);border-radius:2px}
+.dgp-dv-code[data-hit="2"]{background:color-mix(in srgb,var(--dgp-warn,#b45309) 52%,transparent)}
+.dgp-dv-word[data-w="add"]{background:color-mix(in srgb,#16a34a 30%,transparent);border-radius:2px}
+.dgp-dv-word[data-w="del"]{background:color-mix(in srgb,#dc2626 30%,transparent);border-radius:2px}
+.dgp-dv-tok[data-t="kw"]{color:#a626a4}
+.dgp-dv-tok[data-t="str"]{color:#50a14f}
+.dgp-dv-tok[data-t="num"]{color:#986801}
+.dgp-dv-tok[data-t="cmt"]{color:var(--dgp-faint);font-style:italic}
+.dgp-dv-tok[data-t="fn"]{color:#4078f2}
+.dgp-dv-empty{padding:16px;text-align:center;color:var(--dgp-muted);font-size:12px}
+/* ------------------------------------------------------------------ */
+/* 文件浏览（dgp-v19：懒加载树 + 预览）                                 */
+/* ------------------------------------------------------------------ */
+.dgp-fb{display:grid;grid-template-columns:minmax(0,240px) minmax(0,1fr);gap:0;min-height:0;flex:1 1 auto;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-sm);overflow:hidden}
+.dgp-fb-tree{display:flex;flex-direction:column;min-height:0;overflow:auto;border-right:.5px solid var(--dgp-line);background:var(--dgp-inset);padding:4px 0}
+.dgp-fb-row{display:flex;align-items:center;gap:5px;appearance:none;border:0;background:transparent;color:var(--dgp-fg2);font:inherit;font-size:12px;line-height:20px;padding:2px 8px;cursor:pointer;text-align:left;min-width:0;border-radius:0}
+.dgp-fb-row:hover{background:var(--dgp-hover)}
+.dgp-fb-row[data-on="1"]{background:color-mix(in srgb,var(--dgp-accent) 12%,transparent);color:var(--dgp-fg)}
+.dgp-fb-row[data-ignored="1"]{opacity:.5}
+.dgp-fb-caret{flex:0 0 auto;width:9px;color:var(--dgp-faint);font-size:9px;line-height:1}
+.dgp-fb-name{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dgp-fb-view{display:flex;flex-direction:column;min-width:0;min-height:0;overflow:auto;background:var(--dgp-bg,#fff)}
+.dgp-fb-head{display:flex;align-items:center;gap:8px;padding:6px 10px;border-bottom:.5px solid var(--dgp-line);position:sticky;top:0;background:inherit;flex:0 0 auto}
+.dgp-fb-path{flex:1 1 auto;min-width:0;font-family:var(--dgp-code);font-size:11px;color:var(--dgp-fg2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dgp-fb-code{margin:0;padding:8px 10px;font-family:var(--dgp-code);font-size:11px;line-height:17px;color:var(--dgp-fg2);white-space:pre;overflow:auto;flex:1 1 auto;min-height:0}
+.dgp-fb-code[data-wrap="1"]{white-space:pre-wrap;overflow-wrap:anywhere}
+.dgp-fb-img{max-width:100%;max-height:100%;object-fit:contain;padding:10px}
+/* ------------------------------------------------------------------ */
+/* 窄屏（dgp-v19：≤760px 单栏钻取；宿主侧栏面板常在此宽度）             */
+/* ------------------------------------------------------------------ */
+@media (max-width:760px){
+  .dgp-gw{width:calc(100vw - 16px);height:calc(100vh - 16px);border-radius:var(--dgp-r-md,10px)}
+  .dgp-gw-body{flex-direction:column}
+  .dgp-gw-rail{flex:0 0 auto;flex-direction:row;overflow-x:auto;border-right:0;border-bottom:.5px solid var(--dgp-line);padding:0 4px}
+  .dgp-gw-railbtn{flex:0 0 auto;white-space:nowrap}
+  .dgp-gw-top{flex-wrap:wrap;gap:6px}
+  .dgp-gw-repo{max-width:100%}
+  .dgp-gw-main{min-height:0}
+  .dgp-fb{grid-template-columns:minmax(0,1fr)}
+  .dgp-fb-tree{border-right:0;border-bottom:.5px solid var(--dgp-line);max-height:40%}
+  .dgp-fb[data-focus="1"] .dgp-fb-tree{display:none}
+  .dgp-fb[data-focus="0"] .dgp-fb-view{display:none}
+  .dgp-dv-side[data-role="right"]{display:none}
+  .dgp-dv-row[data-kind="add"] .dgp-dv-side[data-role="left"],.dgp-dv-row[data-kind="del"] .dgp-dv-side[data-role="right"]{flex:1 1 100%}
+  .dgp-modal{width:calc(100vw - 20px) !important;max-height:calc(100vh - 20px)}
+  .dgp-iw{grid-template-columns:minmax(0,1fr)}
+  .dgp-iw-right{position:static}
+  .dgp-iw-grid2{grid-template-columns:minmax(0,1fr)}
+  .dgp-gw-commitbar{flex-wrap:wrap}
+  .dgp-gw-batch{flex-wrap:wrap}
+}
+${TOKEN_CSS}
 `
 
 /** 幂等注入样式（同 id 只更新内容）。 */

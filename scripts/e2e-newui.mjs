@@ -84,7 +84,19 @@ await context.addCookies([{ ...cookie, domain: new URL(guiUrl).hostname, path: '
 
 const page = await context.newPage()
 const errors = []
-page.on('pageerror', (error) => errors.push(String(error)))
+// 只收集「本插件相关」的页面错误：环境里并存多个第三方 DSH 插件，
+// 它们的 slot 抢占冲突（如 `single slot "conversation.input.model.label"
+// already has a registration` 来自 dsh-connect-trae-client）在任意页面都会抛，
+// 与本插件无关。计入断言只会让回归长期假红，所以按归因过滤。
+const IGNORED_ERROR_PATTERNS = [/single slot "[^"]+" already has a registration/u]
+function isOwnError(text) {
+  if (/dgp|dsh-git-panel|GitPanel/iu.test(text)) return true
+  return !IGNORED_ERROR_PATTERNS.some((re) => re.test(text))
+}
+page.on('pageerror', (error) => {
+  const text = String(error)
+  if (isOwnError(text)) errors.push(text)
+})
 
 try {
   await page.goto(guiUrl, { waitUntil: 'domcontentloaded', timeout: 30_000 })
