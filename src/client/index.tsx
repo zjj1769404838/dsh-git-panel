@@ -23,13 +23,14 @@ import {
   type RepoPermission,
   type RepoStatusView,
 } from './shared.js'
-import { Workbench, Modal } from './workbench.js'
+import { Workbench } from './workbench.js'
 import { GitSection } from './settings.js'
+import { InitWizard, BranchDetailModal } from './onboard.js'
 
 /** 服务短名（不是 package.json 里的全名）。 */
 export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
-const BUILD = 'dgp-v16'
+const BUILD = 'dgp-v17'
 
 const ZH: Dict = {
   entry: 'Git',
@@ -97,6 +98,8 @@ const ZH: Dict = {
   menuInitHint: '只创建 .git 目录，不会删除或覆盖现有文件',
   menuSettings: '打开 Git 设置',
   menuOpenDir: '打开项目目录',
+  menuGroupRepo: '仓库',
+  menuGroupOpen: '打开',
   toastOpened: '已在文件管理器中打开项目目录',
   openFailed: '打开项目目录失败',
   menuCopyPath: '复制目录路径',
@@ -182,6 +185,9 @@ const ZH: Dict = {
   wbHistory: '历史',
   wbGraph: '分支图',
   wbDiffTab: 'Diff',
+  wbChangesTab: '改动',
+  wbStageAll: '全部暂存',
+  wbDiffTitle: '差异预览',
   wbMsgPlaceholder: '提交信息（必填）',
   wbAmend: '修补上次提交',
   wbCommit: '提交',
@@ -400,6 +406,8 @@ const EN: Dict = {
   menuInitHint: 'Creates only the .git directory; existing files are kept as-is',
   menuSettings: 'Open Git settings',
   menuOpenDir: 'Open project folder',
+  menuGroupRepo: 'Repository',
+  menuGroupOpen: 'Open',
   toastOpened: 'Project folder opened in file manager',
   openFailed: 'Failed to open project folder',
   menuCopyPath: 'Copy directory path',
@@ -486,6 +494,9 @@ const EN: Dict = {
   wbHistory: 'History',
   wbGraph: 'Graph',
   wbDiffTab: 'Diff',
+  wbChangesTab: 'Changes',
+  wbStageAll: 'Stage all',
+  wbDiffTitle: 'Diff preview',
   wbMsgPlaceholder: 'Commit message (required)',
   wbAmend: 'Amend last commit',
   wbCommit: 'Commit',
@@ -874,567 +885,6 @@ async function openSettingsFallback(ctx?: {
 }
 
 /* ------------------------------------------------------------------ */
-/* 分步初始化向导                                                      */
-/* ------------------------------------------------------------------ */
-
-interface InitWizardProps {
-  t: (key: string) => string
-  cwd: string
-  accounts: AccountView[]
-  /** 账号 → 已授权仓库（owner/repo）列表，用于在列举失败时仍可选择。 */
-  authorizedRepos: (accountId: string) => string[]
-  /** 宿主快捷键服务：用于程序化打开设置页。 */
-  shortcuts?: { registry?: { invoke?: (id: string, context: any) => void } }
-  /** 没有可用账号时的兜底：只做本地初始化（POST /repo/init）。 */
-  onQuickInit: () => void
-  onClose: () => void
-  onDone: () => void
-}
-
-/**
- * 初始化向导：账号 → 远程仓库 → 分支 → 确认 → 结果。
- * 失败时保留原因并允许【返回上一步】回到出错的那一步修改后重试。
- */
-function InitWizard({ t, cwd, accounts, authorizedRepos, shortcuts, onQuickInit, onClose, onDone }: InitWizardProps) {
-  /** 当前步骤：0=账号 1=远程仓库 2=分支 3=确认 4=结果。 */
-  const [initStep, setInitStep] = useState(0)
-  const [initAccountId, setInitAccountId] = useState('')
-  const [initRepos, setInitRepos] = useState<AccountRepoView[]>([])
-  const [initReposLoading, setInitReposLoading] = useState(false)
-  const [initReposError, setInitReposError] = useState('')
-  const [initRemoteMode, setInitRemoteMode] = useState<'existing' | 'new'>('existing')
-  const [initRepoFullName, setInitRepoFullName] = useState('')
-  const [initRemoteUrl, setInitRemoteUrl] = useState('')
-  const [initBranchMode, setInitBranchMode] = useState<'existing' | 'new'>('new')
-  const [initBranchName, setInitBranchName] = useState('main')
-  const [initCommitMessage, setInitCommitMessage] = useState('')
-  const [initBusy, setInitBusy] = useState(false)
-  const [initError, setInitError] = useState('')
-  const [initResult, setInitResult] = useState<{ root: string; branch: string; remoteName: string; remoteUrl: string; steps: string[] } | null>(null)
-
-  /** 返回上一步：失败后回到出错的那一步，允许修改后重试。 */
-  const initBack = useCallback(() => {
-    setInitError('')
-    setInitStep((value) => Math.max(0, value - 1))
-  }, [])
-
-  /** 拉取该账号的远程仓库列表（失败时降级为手填）。 */
-  const loadInitRepos = useCallback(
-    async (accountId: string) => {
-      if (!accountId) return
-      setInitReposLoading(true)
-      setInitReposError('')
-      try {
-        const data = await api<{ ok: boolean; repos?: AccountRepoView[]; error?: string }>(
-          `/account/repos?accountId=${encodeURIComponent(accountId)}`,
-        )
-        if (!data.ok) {
-          setInitRepos([])
-          setInitReposError(data.error || t('reposFailed'))
-          return
-        }
-        setInitRepos(Array.isArray(data.repos) ? data.repos : [])
-      } catch (err) {
-        setInitRepos([])
-        setInitReposError(err instanceof Error ? err.message : t('reposFailed'))
-      } finally {
-        setInitReposLoading(false)
-      }
-    },
-    [t],
-  )
-
-  const stepLabels = [t('initStepAccount'), t('initStepRemote'), t('initStepBranch'), t('initStepConfirm'), t('initStepResult')]
-
-  const selectedAccount = accounts.find((item) => item.id === initAccountId)
-  const selectedRepo = initRepos.find((item) => item.fullName === initRepoFullName)
-  const allowedManualRepos = initAccountId ? authorizedRepos(initAccountId) : []
-
-  /** 每一步的「能否继续」判定：没选完不能进下一步。 */
-  const canNext =
-    initStep === 0
-      ? initAccountId !== ''
-      : initStep === 1
-        ? initRemoteMode === 'new'
-          ? initRemoteUrl.trim() !== ''
-          : initRepoFullName !== ''
-        : initStep === 2
-          ? initBranchName.trim() !== ''
-          : true
-
-  const runBootstrap = async () => {
-    setInitBusy(true)
-    setInitError('')
-    try {
-      const data = await api<{
-        ok: boolean
-        error?: string
-        root?: string
-        branch?: string
-        remoteName?: string
-        remoteUrl?: string
-        steps?: string[]
-      }>('/repo/bootstrap', {
-        cwd,
-        accountId: initAccountId,
-        remoteMode: initRemoteMode,
-        ...(initRemoteMode === 'existing' ? { repoFullName: initRepoFullName } : { remoteUrl: initRemoteUrl.trim() }),
-        branchMode: initBranchMode,
-        branchName: initBranchName.trim(),
-        ...(initCommitMessage.trim() ? { initialCommitMessage: initCommitMessage.trim() } : {}),
-      })
-      if (!data.ok) {
-        setInitError(data.error || t('initFailed'))
-        setInitStep(4)
-        return
-      }
-      setInitResult({
-        root: data.root ?? '',
-        branch: data.branch ?? initBranchName.trim(),
-        remoteName: data.remoteName ?? 'origin',
-        remoteUrl: data.remoteUrl ?? '',
-        steps: Array.isArray(data.steps) ? data.steps : [],
-      })
-      setInitStep(4)
-      onDone()
-    } catch (err) {
-      setInitError(err instanceof Error ? err.message : t('initFailed'))
-      setInitStep(4)
-    } finally {
-      setInitBusy(false)
-    }
-  }
-
-  const footer = (
-    <>
-      <button
-        type="button"
-        className="dgp-btn ghost"
-        disabled={initBusy || initStep === 0 || initStep === 4}
-        onClick={initBack}
-      >
-        {t('initBack')}
-      </button>
-      <button type="button" className="dgp-btn ghost" disabled={initBusy} onClick={onClose}>
-        {t('initCancel')}
-      </button>
-      {initStep < 3 ? (
-        <button
-          type="button"
-          className="dgp-btn primary"
-          disabled={!canNext || initBusy}
-          onClick={() => setInitStep((value) => value + 1)}
-        >
-          {t('initNext')}
-        </button>
-      ) : null}
-      {initStep === 3 ? (
-        <button type="button" className="dgp-btn primary" disabled={initBusy} onClick={() => void runBootstrap()}>
-          {initBusy ? t('loadingLabel') : t('initStart')}
-        </button>
-      ) : null}
-    </>
-  )
-
-  return (
-    <Modal title={t('initTitle')} onClose={onClose} footer={footer} width={620}>
-      <div className="dgp-steps">
-        {stepLabels.map((label, index) => (
-          <span key={label}>
-            {index > 0 ? <span className="dgp-step-sep">›</span> : null}
-            <span className="dgp-step" data-on={initStep === index ? '1' : '0'} data-done={initStep > index ? '1' : '0'}>
-              {label}
-            </span>
-          </span>
-        ))}
-      </div>
-
-      {initStep === 0 ? (
-        <div>
-          {accounts.length === 0 ? (
-            <>
-              <EmptyState title={t('initNoAccount')} hint={t('initGoConnect')} />
-              <div className="dgp-line-side" style={{ paddingTop: 6 }}>
-                <button
-                  type="button"
-                  className="dgp-btn"
-                  onClick={() => {
-                    onClose()
-                    void openSettingsSection({ shortcuts }, t('navLabel'))
-                  }}
-                >
-                  {t('initGoConnect')}
-                </button>
-                <button type="button" className="dgp-btn ghost" onClick={onQuickInit}>
-                  {t('initQuickLocal')}
-                </button>
-              </div>
-            </>
-          ) : (
-            <ul className="dgp-options">
-              {accounts.map((account) => (
-                <li key={account.id}>
-                  <label className="dgp-option" data-on={initAccountId === account.id ? '1' : '0'}>
-                    <input
-                      type="radio"
-                      name="dgp-init-account"
-                      checked={initAccountId === account.id}
-                      onChange={() => {
-                        setInitAccountId(account.id)
-                        setInitRepoFullName('')
-                        void loadInitRepos(account.id)
-                      }}
-                    />
-                    <span className="dgp-option-main">
-                      <span className="dgp-option-title">{account.login || account.displayName || account.id}</span>
-                      <span className="dgp-option-hint">
-                        {account.provider} · {account.kind === 'oauth' ? 'OAuth' : 'PAT'}
-                        {account.host ? ` · ${account.host}` : ''}
-                      </span>
-                    </span>
-                  </label>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      ) : null}
-
-      {initStep === 1 ? (
-        <div>
-          {initReposLoading ? <Skeleton rows={3} /> : null}
-
-          {!initReposLoading && initReposError ? (
-            <div className="dgp-err">{fmt(t('initRepoListFailed'), { reason: initReposError })}</div>
-          ) : null}
-
-          {!initReposLoading && !initReposError && initRepos.length === 0 && allowedManualRepos.length === 0 ? (
-            <EmptyState title={t('initRepoListEmpty')} hint={t('initManualRepoHint')} />
-          ) : null}
-
-          {initRepos.length > 0 ? (
-            <ul className="dgp-options">
-              {initRepos.map((repo) => (
-                <li key={repo.fullName}>
-                  <label className="dgp-option" data-on={initRemoteMode === 'existing' && initRepoFullName === repo.fullName ? '1' : '0'}>
-                    <input
-                      type="radio"
-                      name="dgp-init-repo"
-                      checked={initRemoteMode === 'existing' && initRepoFullName === repo.fullName}
-                      onChange={() => {
-                        setInitRemoteMode('existing')
-                        setInitRepoFullName(repo.fullName)
-                        if (repo.defaultBranch) {
-                          setInitBranchMode('existing')
-                          setInitBranchName(repo.defaultBranch)
-                        }
-                      }}
-                    />
-                    <span className="dgp-option-main">
-                      <span className="dgp-option-title">{repo.fullName}</span>
-                      <span className="dgp-option-hint">
-                        {repo.private ? t('repoPrivate') : t('repoPublic')}
-                        {repo.defaultBranch ? ` · ${fmt(t('repoDefaultBranch'), { branch: repo.defaultBranch })}` : ''}
-                      </span>
-                    </span>
-                  </label>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-
-          {allowedManualRepos.length > 0 ? (
-            <>
-              <div className="dgp-group-title">{t('initAuthorizedRepos')}</div>
-              <ul className="dgp-options">
-                {allowedManualRepos.map((repoFullName) => (
-                  <li key={`auth:${repoFullName}`}>
-                    <label className="dgp-option" data-on={initRemoteMode === 'existing' && initRepoFullName === repoFullName ? '1' : '0'}>
-                      <input
-                        type="radio"
-                        name="dgp-init-repo"
-                        checked={initRemoteMode === 'existing' && initRepoFullName === repoFullName}
-                        onChange={() => {
-                          setInitRemoteMode('existing')
-                          setInitRepoFullName(repoFullName)
-                        }}
-                      />
-                      <span className="dgp-option-main">
-                        <span className="dgp-option-title">{repoFullName}</span>
-                      </span>
-                    </label>
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : null}
-
-          <label className="dgp-option" data-on={initRemoteMode === 'new' ? '1' : '0'}>
-            <input
-              type="radio"
-              name="dgp-init-repo-mode"
-              checked={initRemoteMode === 'new'}
-              onChange={() => setInitRemoteMode('new')}
-            />
-            <span className="dgp-option-main">
-              <span className="dgp-option-title">{t('initNewRemote')}</span>
-              <span className="dgp-option-hint">{t('initRemoteUrlHint')}</span>
-            </span>
-          </label>
-
-          {initRemoteMode === 'new' ? (
-            <div className="dgp-field">
-              <label className="dgp-label">{t('initRemoteUrl')}</label>
-              <input
-                className="dgp-input"
-                value={initRemoteUrl}
-                placeholder="https://github.com/owner/repo.git"
-                onChange={(event) => setInitRemoteUrl(event.target.value)}
-              />
-            </div>
-          ) : null}
-
-          {/* 列举失败时的兜底：手工填 owner/repo（node 侧按规范化键匹配）。 */}
-          <div className="dgp-field">
-            <label className="dgp-label">{t('initManualRepo')}</label>
-            <input
-              className="dgp-input"
-              value={initRepoFullName}
-              placeholder="owner/repo"
-              onChange={(event) => {
-                setInitRemoteMode('existing')
-                setInitRepoFullName(event.target.value.trim())
-              }}
-            />
-          </div>
-        </div>
-      ) : null}
-
-      {initStep === 2 ? (
-        <div>
-          {selectedRepo?.defaultBranch ? (
-            <label className="dgp-option" data-on={initBranchMode === 'existing' ? '1' : '0'}>
-              <input
-                type="radio"
-                name="dgp-init-branch-mode"
-                checked={initBranchMode === 'existing'}
-                onChange={() => {
-                  setInitBranchMode('existing')
-                  setInitBranchName(selectedRepo.defaultBranch)
-                }}
-              />
-              <span className="dgp-option-main">
-                <span className="dgp-option-title">{fmt(t('initUseRemoteDefault'), { branch: selectedRepo.defaultBranch })}</span>
-              </span>
-            </label>
-          ) : (
-            <div className="dgp-hint">{t('initNoBranches')}</div>
-          )}
-
-          <label className="dgp-option" data-on={initBranchMode === 'new' ? '1' : '0'}>
-            <input
-              type="radio"
-              name="dgp-init-branch-mode"
-              checked={initBranchMode === 'new'}
-              onChange={() => setInitBranchMode('new')}
-            />
-            <span className="dgp-option-main">
-              <span className="dgp-option-title">{t('initNewBranch')}</span>
-            </span>
-          </label>
-
-          <div className="dgp-field">
-            <label className="dgp-label">{t('initBranchName')}</label>
-            <input className="dgp-input" value={initBranchName} onChange={(event) => setInitBranchName(event.target.value)} />
-          </div>
-
-          <div className="dgp-field">
-            <label className="dgp-label">{t('initCommitMessage')}</label>
-            <input className="dgp-input" value={initCommitMessage} onChange={(event) => setInitCommitMessage(event.target.value)} />
-          </div>
-        </div>
-      ) : null}
-
-      {initStep === 3 ? (
-        <div>
-          <div className="dgp-group-title">{t('initConfirmTitle')}</div>
-          <ul className="dgp-plan">
-            <li>{t('initPlanInit')}</li>
-            <li>
-              {t('initPlanRemote')}
-              {initRemoteMode === 'existing' && initRepoFullName ? ` · ${initRepoFullName}` : ''}
-              {initRemoteMode === 'new' && initRemoteUrl.trim() ? ` · ${initRemoteUrl.trim()}` : ''}
-            </li>
-            <li>{fmt(t('initPlanBranch'), { branch: initBranchName.trim() })}</li>
-            {initCommitMessage.trim() ? <li>{t('initPlanCommit')}</li> : null}
-          </ul>
-        </div>
-      ) : null}
-
-      {initStep === 4 ? (
-        <div className="dgp-init-result">
-          {initError ? (
-            <>
-              <div className="dgp-err">
-                {t('initFailed')}：{initError}
-              </div>
-              <ul className="dgp-plan" data-tone="error">
-                <li>{t('initBack')}</li>
-              </ul>
-            </>
-          ) : (
-            <>
-              <div className="dgp-ok">{t('initSuccess')}</div>
-              <dl className="dgp-init-summary">
-                <dt>{t('initResultRoot')}</dt>
-                <dd>{initResult?.root ?? cwd}</dd>
-                <dt>{t('initResultBranch')}</dt>
-                <dd>{initResult?.branch ?? initBranchName.trim()}</dd>
-                <dt>{t('initResultRemote')}</dt>
-                <dd>{initResult?.remoteUrl ?? ''}</dd>
-              </dl>
-              {initResult && initResult.steps.length > 0 ? (
-                <>
-                  <div className="dgp-group-title">{t('initStepsTitle')}</div>
-                  <ul className="dgp-plan">
-                    {initResult.steps.map((step) => (
-                      <li key={step}>{step}</li>
-                    ))}
-                  </ul>
-                </>
-              ) : null}
-            </>
-          )}
-        </div>
-      ) : null}
-    </Modal>
-  )
-}
-
-/* ------------------------------------------------------------------ */
-/* 当前分支详情                                                        */
-/* ------------------------------------------------------------------ */
-
-/** 当前分支详情弹窗：展示该分支的提交记录（信息/标识/作者/时间）。 */
-function BranchDetailModal({
-  t,
-  cwd,
-  branch,
-  onClose,
-}: {
-  t: (key: string) => string
-  cwd: string
-  branch: string
-  onClose: () => void
-}) {
-  const [commits, setCommits] = useState<Array<{ hash: string; shortHash: string; author: string; email: string; date: string; subject: string; refs: string; parents: string[] }>>([])
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState('')
-  const [truncated, setTruncated] = useState(false)
-
-  useEffect(() => {
-    let alive = true
-    setLoading(true)
-    setError('')
-    api<{ ok: boolean; commits?: Array<{ hash: string; shortHash: string; author: string; email: string; date: string; subject: string; refs: string; parents: string[] }>; truncated?: boolean; error?: string }>(
-      `/repo/commits?cwd=${encodeURIComponent(cwd)}&ref=${encodeURIComponent(branch)}`,
-    )
-      .then((data) => {
-        if (!alive) return
-        if (!data.ok) {
-          setError(data.error || t('branchDetailFailed'))
-          setCommits([])
-          return
-        }
-        setCommits(Array.isArray(data.commits) ? data.commits : [])
-        setTruncated(data.truncated === true)
-      })
-      .catch((err) => {
-        if (!alive) return
-        setError(err instanceof Error ? err.message : t('branchDetailFailed'))
-        setCommits([])
-      })
-      .finally(() => {
-        if (alive) setLoading(false)
-      })
-    return () => {
-      alive = false
-    }
-  }, [cwd, branch, t])
-
-  return (
-    <Modal
-      title={`${t('branchDetailTitle')} · ${branch}`}
-      onClose={onClose}
-      width={720}
-      footer={
-        <button type="button" className="dgp-btn" onClick={onClose}>
-          {t('branchDetailClose')}
-        </button>
-      }
-    >
-      {loading ? <Skeleton rows={5} /> : null}
-      {!loading && error ? <div className="dgp-err">{t('branchDetailFailed')}：{error}</div> : null}
-      {!loading && !error && commits.length === 0 ? (
-        <EmptyState title={t('branchDetailEmpty')} hint={t('branchDetailEmptyHint')} />
-      ) : null}
-      {!loading && !error && commits.length > 0 ? (
-        <>
-          <div className="dgp-commits">
-            {commits.map((commit) => (
-              <div className="dgp-commitrow" key={commit.hash || commit.shortHash}>
-                <div className="dgp-commitrow-main">
-                  <div className="dgp-commitrow-subject">{commit.subject || '(no subject)'}</div>
-                  <div className="dgp-commitrow-meta">
-                    <span className="dgp-commitrow-hash">{commit.shortHash || commit.hash}</span>
-                    <span className="dgp-commitrow-author">{commit.author}</span>
-                    <span className="dgp-commitrow-date">{commit.date}</span>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-          {truncated ? <div className="dgp-hint">{fmt(t('branchDetailTruncated'), { n: commits.length })}</div> : null}
-        </>
-      ) : null}
-    </Modal>
-  )
-}
-
-/* ------------------------------------------------------------------ */
-/* 分支拓扑图：车道式 DAG 渲染                                          */
-/* 图元只有三种（节点 / 同车道竖线 / 跨车道 S 形转折线），一条分支跨 N   */
-/* 行靠 N 个竖线段拼出，不存在跨行长连线，因此连线永不穿过中间节点。      */
-/* ------------------------------------------------------------------ */
-
-const LANE_W = 13
-const ROW_H = 34
-const LANE_PAD = 9
-const DOT_R = 4
-
-function laneColor(lane: number): string {
-  return `var(--dgp-lane-${((lane % 8) + 8) % 8})`
-}
-
-function laneX(lane: number): number {
-  return LANE_PAD + lane * LANE_W
-}
-
-function rowY(row: number): number {
-  return row * ROW_H + ROW_H / 2
-}
-
-/** 跨车道转折线：三次贝塞尔，控制点各占半个行高，形成 S 形，与 gitk 视觉一致。 */
-function curvePath(from: number, to: number, row: number): string {
-  const x1 = laneX(from)
-  const y1 = rowY(row)
-  const x2 = laneX(to)
-  const y2 = rowY(row + 1)
-  const half = ROW_H / 2
-  return `M${x1} ${y1} C${x1} ${y1 + half} ${x2} ${y2 - half} ${x2} ${y2}`
-}
-
-/* ------------------------------------------------------------------ */
 /* composer 状态 chip（opencode 风格）                                  */
 /* ------------------------------------------------------------------ */
 
@@ -1549,19 +999,29 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
     }
   }, [])
 
+  // 摘要刷新策略：只在「真的可能变了」的时刻取一次，不做定时轮询。
+  //   ① cwd 变化（切换项目/会话）  ② 窗口重新获得焦点（用户可能刚在外部改了仓库）
+  //   ③ 打开菜单时（已有 toggle 里显式 reload）  ④ 工作台/向导关闭后（动作反馈）
+  // 这样 composer 常驻的 chip 不再每 15 秒打一次 node 半边。
   useEffect(() => {
     setStatus(null)
     setDetectError('')
     if (!cwd) return
     let alive = true
     const load = () => {
-      if (alive) void reload()
+      if (alive && document.visibilityState !== 'hidden') void reload()
     }
     load()
-    const timer = window.setInterval(load, 15_000)
+    const onFocus = () => load()
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') load()
+    }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisible)
     return () => {
       alive = false
-      window.clearInterval(timer)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisible)
     }
   }, [cwd, reload])
 
@@ -1805,19 +1265,10 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
             </button>
           ) : null}
 
-          {/* 已初始化：刷新 + 工作台 + 设置入口 / 工作目录入口 / 当前分支详情。 */}
+          {/* 已初始化：动作按「仓库 / 打开 / 设置」分组，主行动（工作台）单独一组置顶。 */}
           {isRepo ? (
             <>
-              <button type="button" className="dgp-menu-item" role="menuitem" onMouseDown={(e) => e.preventDefault()} onClick={() => void reload()}>
-                <RefreshIcon />
-                <span className="dgp-menu-item-main">
-                  <span className="dgp-menu-item-title">{t('menuRefresh')}</span>
-                  <span className="dgp-menu-item-hint">{aux || t('alreadyRepo')}</span>
-                </span>
-              </button>
-
-              {/* 打开 Git 工作台主面板（IDEA 式）：chip 的主行动。
-                  工作台自身对未初始化目录有 wbInitHint 引导，故始终可达。 */}
+              <span className="dgp-menu-group">{t('menuGroupRepo')}</span>
               <button
                 type="button"
                 className="dgp-menu-item"
@@ -1836,13 +1287,43 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
                 </span>
               </button>
 
-              {/* 工作目录入口：打开项目目录。 */}
+              <button type="button" className="dgp-menu-item" role="menuitem" onMouseDown={(e) => e.preventDefault()} onClick={() => void reload()}>
+                <RefreshIcon />
+                <span className="dgp-menu-item-main">
+                  <span className="dgp-menu-item-title">{t('menuRefresh')}</span>
+                  <span className="dgp-menu-item-hint">{aux || t('alreadyRepo')}</span>
+                </span>
+              </button>
+
+              {status?.branch ? (
+                <button
+                  type="button"
+                  className="dgp-menu-item"
+                  role="menuitem"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    setOpen(false)
+                    setBranchDetailOpen(true)
+                  }}
+                >
+                  <BranchIcon />
+                  <span className="dgp-menu-item-main">
+                    <span className="dgp-menu-item-title">{t('branchDetail')}</span>
+                    <span className="dgp-menu-item-hint">{status.branch}</span>
+                  </span>
+                </button>
+              ) : null}
+
+              <span className="dgp-menu-sep" />
+              <span className="dgp-menu-group">{t('menuGroupOpen')}</span>
               <button type="button" className="dgp-menu-item" role="menuitem" onMouseDown={(e) => e.preventDefault()} onClick={() => { setOpen(false); void openDir() }}>
                 <FolderIcon />
                 <span className="dgp-menu-item-main">
                   <span className="dgp-menu-item-title">{t('menuOpenDir')}</span>
                 </span>
               </button>
+
+              <span className="dgp-menu-sep" />
             </>
           ) : null}
 
@@ -1862,26 +1343,6 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
               <span className="dgp-menu-item-title">{t('menuSettings')}</span>
             </span>
           </button>
-
-          {/* 当前分支详情：仅已初始化且有分支名时可用（未初始化不展示）。 */}
-          {isRepo && status?.branch ? (
-            <button
-              type="button"
-              className="dgp-menu-item"
-              role="menuitem"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => {
-                setOpen(false)
-                setBranchDetailOpen(true)
-              }}
-            >
-              <BranchIcon />
-              <span className="dgp-menu-item-main">
-                <span className="dgp-menu-item-title">{t('branchDetail')}</span>
-                <span className="dgp-menu-item-hint">{status.branch}</span>
-              </span>
-            </button>
-          ) : null}
             </span>,
             document.body,
           )

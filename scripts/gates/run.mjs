@@ -84,6 +84,7 @@ const clientSrcAll = [
   await readText(resolve(root, 'src/client/shared.tsx')),
   await readText(resolve(root, 'src/client/workbench.tsx')),
   await readText(resolve(root, 'src/client/settings.tsx')),
+  await readText(resolve(root, 'src/client/onboard.tsx')),
 ].join('\n')
 check('client 产物非空', (clientOut?.length ?? 0) > 1000, `${clientOut?.length ?? 0} 字节`)
 if (clientOut) {
@@ -157,7 +158,11 @@ if (clientOut) {
   check('client 旧 note 动态反馈机制已移除（改用 toast）', !clientOut.includes('setNote'))
   check('client 菜单静态提示行仍保留（dgp-menu-note）', clientOut.includes('dgp-menu-note'))
   // ---- 2026-10-29 Git 工作台（IDEA 式主面板 + 二级弹窗）----
-  check('client 渲染 Git 工作台主面板（dgp-wb）', clientOut.includes('dgp-wb') && clientOut.includes('wbTitle'))
+  check('client 渲染 Git 工作台抽屉（dgp-gw）', clientOut.includes('dgp-gw') && clientOut.includes('wbTitle'))
+  check('client 工作台改贴右抽屉（dgp-gw-mask + dgp-gw-body）', clientOut.includes('dgp-gw-mask') && clientOut.includes('dgp-gw-body'))
+  check('client 工作台用左侧竖排导航（dgp-gw-rail，取代三 tab 平铺）', clientOut.includes('dgp-gw-rail') && clientOut.includes('dgp-gw-railbtn'))
+  check('client 工作台不再用旧类名（无 dgp-wb）', !clientOut.includes('dgp-wb'))
+  check('client diff 改为预览层（wbDiffTitle + dgp-gw-diff）', clientOut.includes('wbDiffTitle') && clientOut.includes('dgp-gw-diff'))
   check('client 工作台顶栏有 Fetch/Pull/Push', clientOut.includes('/repo/fetch') && clientOut.includes('/repo/pull') && clientOut.includes('/repo/push'))
   check('client 工作台左侧变更列表带勾选与批量操作', clientOut.includes('/repo/stage') && clientOut.includes('/repo/unstage') && clientOut.includes('/repo/discard'))
   check('client discard 强制二次确认（confirmed:true）', clientOut.includes('confirmed: true'))
@@ -186,7 +191,7 @@ if (clientOut) {
   check('client 一级菜单不再内嵌分支拓扑（index.tsx 不再引用 GraphView）', !clientSrc.includes('GraphView'))
   check('client 一级菜单不再内嵌改动明细（index.tsx 不再有 ChangesList）', !clientSrc.includes('ChangesList'))
   check('client 工作台 portal 到 body（createPortal + document.body）', clientOut.includes('document.body') && portalImported >= 2)
-  check('client BUILD 版本已推进（dgp-v16）', clientOut.includes('dgp-v16'))
+  check('client BUILD 版本已推进（dgp-v17）', clientOut.includes('dgp-v17'))
   // ---- i18n 键完整性：任何 t('x') 用到的键都必须在 ZH/EN 字典里存在（防 wbCancel 类漏键） ----
   const clientNorm = clientSrc.replace(/\r\n/g, '\n')
   const dictStart = clientNorm.indexOf('const ZH: Dict = {')
@@ -194,7 +199,7 @@ if (clientOut) {
   const zhBlock = dictStart >= 0 && dictEnd > dictStart ? clientNorm.slice(dictStart, dictEnd) : ''
   const definedKeys = new Set([...zhBlock.matchAll(/^\s{2}([A-Za-z][A-Za-z0-9_]*):/gmu)].map((m) => m[1]))
   const usedKeys = new Set()
-  for (const file of ['index.tsx', 'workbench.tsx', 'graphview.tsx', 'settings.tsx']) {
+  for (const file of ['index.tsx', 'workbench.tsx', 'graphview.tsx', 'settings.tsx', 'onboard.tsx']) {
     const src = await readText(resolve(root, 'src/client', file))
     if (!src) continue
     for (const m of src.replace(/\r\n/g, '\n').matchAll(/t\(\s*'([A-Za-z0-9_]+)'\s*\)/gu)) usedKeys.add(m[1])
@@ -233,9 +238,13 @@ if (clientOut) {
   check('client 保存账号级仓库权限（repoPermissions）', clientSrcAll.includes('repoPermissions'))
   check('client 展示仓库权限三档（full/read/none）', clientSrcAll.includes("'full'") && clientSrcAll.includes("'read'") && clientSrcAll.includes("'none'"))
   check('client 提供分步初始化向导（bootstrap 端点）', clientSrcAll.includes('/repo/bootstrap'))
-  check('client 初始化向导分步推进（initStep）', clientSrcAll.includes('initStep'))
-  check('client 初始化失败可返回上一步（initBack）', clientSrcAll.includes('initBack'))
+  check('client 初始化向导改单页表单（无 setInitStep 分步推进）', !clientSrcAll.includes('setInitStep') && !clientSrcAll.includes('initStep:'))
+  check('client 初始化向导拆到独立模块（onboard.tsx 导出 InitWizard）', clientSrcAll.includes('export function InitWizard'))
+  check('client 初始化向导带右侧实时计划（dgp-iw-right + dgp-plan）', clientSrcAll.includes('dgp-iw-right') && clientSrcAll.includes('dgp-plan'))
+  check('client 初始化失败就地重试（不再有 initBack 回上一步）', !clientSrcAll.includes("t('initBack')"))
   check('client 当前分支详情入口（branchDetail）', clientSrcAll.includes('branchDetail'))
+  check('client 分支详情改时间线（dgp-tl，取代 dgp-commitrow）', clientSrcAll.includes('dgp-tl-item') && !clientSrcAll.includes('dgp-commitrow'))
+  check('client 分支详情拆到独立模块（onboard.tsx 导出 BranchDetailModal）', clientSrcAll.includes('export function BranchDetailModal'))
   // ---- 2026-10-30 审核后重构：设置页 Git 分节 ----
   check('client 账号行合并重复入口（不再单独渲染 reauth 按钮）', !/t\('reauth'\)/u.test(clientSrcAll))
   check('client 权限只提交单条（/repo/permission）', clientSrcAll.includes('/repo/permission'))
@@ -257,7 +266,7 @@ if (clientOut) {
 
   check('client 分支详情按 ref 取提交（ref=）', clientSrcAll.includes('ref=') && clientSrcAll.includes('/repo/commits'))
   check('client 分支详情不单独做按钮（Git 只有一个 chip 入口）', !clientSrcAll.includes('dgp-branchbtn'))
-  check('client BUILD 版本已推进（dgp-v16）', clientOut.includes('dgp-v16'))
+  check('client BUILD 版本已推进（dgp-v17）', clientOut.includes('dgp-v17'))
 }
 // ---- node 半边：git-ops 命令层与工作台端点 ----
 {

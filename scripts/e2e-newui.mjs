@@ -239,14 +239,14 @@ try {
     check('点分支详情打开弹窗（.dgp-modal）', opened)
     // 等弹窗内容落地：提交行或错误文案（二者必居其一），否则下面读到的是空壳
     await page
-      .waitForSelector('.dgp-modal .dgp-commitrow, .dgp-modal .dgp-err, .dgp-modal .dgp-empty', { timeout: 8_000 })
+      .waitForSelector('.dgp-modal .dgp-tl-item, .dgp-modal .dgp-err, .dgp-modal .dgp-empty', { timeout: 8_000 })
       .catch(() => {})
 
     const modal = await page.evaluate(() => {
       const el = document.querySelector('.dgp-modal')
       if (!el) return null
       const rect = el.getBoundingClientRect()
-      const row = el.querySelector('.dgp-commitrow')
+      const row = el.querySelector('.dgp-tl-item')
       return {
         title: el.querySelector('.dgp-modal-title')?.textContent?.trim() ?? '',
         hasClose: !!el.querySelector('.dgp-modal-x'),
@@ -258,7 +258,7 @@ try {
           left: Math.round(rect.left),
         },
         viewport: { w: window.innerWidth, h: window.innerHeight },
-        commits: el.querySelectorAll('.dgp-commitrow').length,
+        commits: el.querySelectorAll('.dgp-tl-item').length,
         err: el.querySelector('.dgp-err')?.textContent?.trim().slice(0, 160) ?? '',
         rowText: row?.textContent?.trim().slice(0, 300) ?? '',
       }

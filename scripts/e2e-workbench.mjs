@@ -195,21 +195,21 @@ try {
       const target = items.find((item) => item.textContent?.includes('Git 工作台'))
       target?.click()
     })
-    await page.waitForSelector('.dgp-wb', { timeout: 5_000 })
-    check('点击后 Git 工作台面板出现（.dgp-wb）', (await page.locator('.dgp-wb').count()) === 1)
-    check('工作台带「Git 工作台」标题或空态', (await page.locator('.dgp-wb-head, .dgp-wb-state').count()) >= 1)
+    await page.waitForSelector('.dgp-gw', { timeout: 5_000 })
+    check('点击后 Git 工作台面板出现（.dgp-gw）', (await page.locator('.dgp-gw').count()) === 1)
+    check('工作台带「Git 工作台」标题或空态', (await page.locator('.dgp-gw-top, .dgp-gw-state').count()) >= 1)
 
     // node 半边是旧版时 status 接口仍可用（老路由），面板会渲染三种首态之一：
     // 正常面板 / 未初始化 / 授权提示。任一都算「面板活着」。
-    const stateCount = await page.locator('.dgp-wb-state').count()
-    const mainCount = await page.locator('.dgp-wb-main').count()
+    const stateCount = await page.locator('.dgp-gw-state').count()
+    const mainCount = await page.locator('.dgp-gw-main').count()
     check('工作台渲染出主面板或状态首屏', stateCount >= 1 || mainCount >= 1, `state=${stateCount} main=${mainCount}`)
-    check('面板有可交互的关闭按钮', (await page.locator('.dgp-wb .dgp-wb-x').count()) >= 1)
+    check('面板有可交互的关闭按钮', (await page.locator('.dgp-gw .dgp-gw-x').count()) >= 1)
 
     // 工作台已 portal 到 body：composer 行有 container-type:inline-size（layout containment），
     // 留在原地会让 position:fixed 的包含块降级成那一行——遮罩铺不满、面板被裁、点击冒泡进输入区。
     check('工作台挂在 body 直属层（脱离 composer 包含块）', (await page.evaluate(() => {
-      const panel = document.querySelector('.dgp-wb')
+      const panel = document.querySelector('.dgp-gw')
       return !!panel && panel.parentElement === document.body
     })))
 
@@ -217,7 +217,7 @@ try {
     // 整棵 React 子树被卸载，弹窗与 chip 一起消失。这里点开分支管理，三件事必须同时成立。
     // 会话目录不是仓库时（未初始化首屏）没有分支按钮，该组断言按 skip 处理，
     // 由 gates 的「无裸 createPortal」静态断言兜底。
-    const branchBtn = page.locator('.dgp-wb-branch')
+    const branchBtn = page.locator('.dgp-gw-branch')
     if ((await branchBtn.count()) === 0) {
       check('工作台顶栏有分支管理入口', 'skip')
       check('点分支管理打开二级弹窗（.dgp-modal）', 'skip')
@@ -227,14 +227,14 @@ try {
       check('弹窗期间无页面 JS 错误', 'skip')
     } else {
       check('工作台顶栏有分支管理入口', true)
-      await page.evaluate(() => document.querySelector('.dgp-wb-branch')?.click())
+      await page.evaluate(() => document.querySelector('.dgp-gw-branch')?.click())
       const modalOpened = await page
         .waitForSelector('.dgp-modal', { timeout: 5_000 })
         .then(() => true)
         .catch(() => false)
       check('点分支管理打开二级弹窗（.dgp-modal）', modalOpened)
       check('弹窗打开后 chip 仍在（无 React 崩溃）', (await page.locator('.dgp-chip').count()) === 1)
-      check('弹窗打开后工作台仍在（无 React 崩溃）', (await page.locator('.dgp-wb').count()) === 1)
+      check('弹窗打开后工作台仍在（无 React 崩溃）', (await page.locator('.dgp-gw').count()) === 1)
       check('弹窗挂在 body 直属层（未被 composer 包含块裁切）', (await page.evaluate(() => {
         const modal = document.querySelector('.dgp-modal')
         return !!modal && modal.parentElement?.parentElement === document.body
@@ -246,7 +246,7 @@ try {
       const snapshot = () =>
         page.evaluate(() => ({
           modal: document.querySelectorAll('.dgp-modal').length,
-          wb: document.querySelectorAll('.dgp-wb').length,
+          wb: document.querySelectorAll('.dgp-gw').length,
           chip: document.querySelectorAll('.dgp-chip').length,
         }))
       const closeModal = () =>
@@ -258,7 +258,7 @@ try {
       await page.waitForTimeout(400)
 
       // ① 分支管理弹窗：点「新建分支」进入二级表单，再点输入框/复选/关闭。
-      await page.evaluate(() => document.querySelector('.dgp-wb-branch')?.click())
+      await page.evaluate(() => document.querySelector('.dgp-gw-branch')?.click())
       await page.waitForSelector('.dgp-modal', { timeout: 5_000 })
       const branchSteps = []
       await page.evaluate(() => {
@@ -288,7 +288,7 @@ try {
       // ② Pull / 远程仓库弹窗：点标题与正文区域（非按钮）也不能关。
       for (const [label, keyword] of [['Pull', 'Pull'], ['远程仓库', '远程仓库']]) {
         const opened = await page.evaluate((text) => {
-          const btn = [...document.querySelectorAll('.dgp-wb-head button')].find((b) => (b.textContent ?? '').includes(text))
+          const btn = [...document.querySelectorAll('.dgp-gw-top button')].find((b) => (b.textContent ?? '').includes(text))
           if (!btn) return false
           btn.click()
           return true
@@ -312,8 +312,14 @@ try {
       }
 
       // ③ 提交详情弹窗：点标题栏与内容区。
+      // 提交详情只从历史视图的提交行进入：先切到「历史」，再点第一行。
+      await page.evaluate(() => {
+        const rail = [...document.querySelectorAll('.dgp-gw-railbtn')].find((b) => (b.textContent ?? '').includes('历史'))
+        if (rail instanceof HTMLElement) rail.click()
+      })
+      await page.waitForTimeout(700)
       const commitOpened = await page.evaluate(() => {
-        const row = document.querySelector('.dgp-wb-commit, .dgp-wb-logrow, .dgp-wb-row')
+        const row = document.querySelector('.dgp-gw-logrow')
         if (!row) return false
         row.click()
         return true
@@ -333,11 +339,11 @@ try {
         await page.waitForTimeout(400)
       }
 
-      // ④ 顶栏工具与 tab 切换：刷新 / 历史 / 分支图 / Diff。
+      // ④ 顶栏工具与左侧竖排导航切换：改动 / 历史 / 分支图（Diff 已改为预览层）。
       const tabResults = []
-      for (const keyword of ['历史', '分支图', 'Diff']) {
+      for (const keyword of ['改动', '历史', '分支图']) {
         const ok = await page.evaluate((text) => {
-          const btn = [...document.querySelectorAll('.dgp-wb-tabs button, .dgp-wb-right button')].find((b) => (b.textContent ?? '').includes(text))
+          const btn = [...document.querySelectorAll('.dgp-gw-railbtn')].find((b) => (b.textContent ?? '').includes(text))
           if (!btn) return false
           btn.click()
           return true
@@ -346,12 +352,12 @@ try {
         tabResults.push({ keyword, ok, state: await snapshot() })
       }
       check(
-        '切 tab 不会关掉工作台',
+        '切左侧导航不会关掉工作台',
         tabResults.filter((r) => r.ok).every((r) => r.state.wb === 1 && r.state.chip === 1),
         JSON.stringify(tabResults),
       )
       const refreshed = await page.evaluate(() => {
-        const btn = document.querySelector('.dgp-wb-head .dgp-wb-icon')
+        const btn = document.querySelector('.dgp-gw-top .dgp-gw-icon')
         if (!btn) return false
         btn.click()
         return true
@@ -362,9 +368,9 @@ try {
 
       // ⑤ 勾选/预览改动行：点复选框与文件名。
       const fileClicked = await page.evaluate(() => {
-        const box = document.querySelector('.dgp-wb-file input[type="checkbox"]')
+        const box = document.querySelector('.dgp-gw-row input[type="checkbox"]')
         if (box instanceof HTMLElement) box.click()
-        const path = document.querySelector('.dgp-wb-filepath')
+        const path = document.querySelector('.dgp-gw-path')
         if (path instanceof HTMLElement) path.click()
         return true
       })

@@ -174,3 +174,49 @@
 | `npm run test:e2e:newui` | 19 项通过 |
 
 截图：`scripts/shot-settings.mjs` 会自动清掉宿主引导浮层（dsh-auto-memory 向导、dsh-purge 用户须知）再出图。
+
+---
+
+## 五、第三阶段：chip 后置页面完全重做（BUILD `dgp-v17`，2026-10-30）
+
+第二阶段只重做了「设置」里的 Git 分节；chip 点击后打开的**工作台、初始化页、当前分支详情**仍是旧设计。用户要求这三页同样「忘记旧设计、完全重做」，于是再做一轮，数据契约与端点调用一律不动。
+
+### 5.1　被丢弃的旧结构
+
+| 旧结构 | 问题 | 新结构 |
+| --- | --- | --- |
+| 工作台 `.dgp-wb`：760px 居中弹窗、`max-height:min(600px,80vh)` | 屏幕中部悬浮一块小窗，仓库内容多时纵向挤成一团，与宿主界面抢焦点 | **贴右全高抽屉 `.dgp-gw`**：`position:fixed;top:0;right:0;bottom:0;width:min(1080px,calc(100vw - 80px))`，进入有 0.2s 滑入（`prefers-reduced-motion` 关闭） |
+| 左右 44% / 56% 双栏（左改动、右三 tab） | 两侧都在争宽度，改动列表被压到 44%，提交框又被挤到最底部 | **左窄竖排导航 `.dgp-gw-rail`（改动 / 历史 / 分支图）+ 右主区**，一次只渲染一个视图，主区拿到全部剩余宽度 |
+| 提交框固定在整块面板底部 `.dgp-wb-foot` | 改动多时要滚到最底才能提交，且与列表分离 | 提交框上移到**改动视图顶部** `.dgp-gw-commit`（暂存区 → 写信息 → 提交 → 已暂存计数），符合「先看暂存再提交」 |
+| Diff 占一个常驻 tab | 不选文件时该 tab 是空的，占了 1/3 导航位 | Diff 降级为**按需弹层**（`layer==='diff'`，标题「差异预览」），点某行才出现 |
+| 初始化向导 5 步 stepper（`initStep` 0→4） | 每步都要点「下一步」，且确认清单要单独占一步才看得到 | **单页表单 + 右侧实时计划 `.dgp-iw`**：左侧一次填完（账号 / 远程 / 分支与首次提交），右侧 `position:sticky` 常驻显示将执行的动作清单与就绪状态，提交后就地变执行结果 |
+| 分支详情 `.dgp-commitrow` 平铺列表 | 看不出提交的先后关系与「当前 HEAD」 | **时间线 `.dgp-tl`**：左侧竖线 + 圆点节点，首条节点用 accent 色加光晕；每行 = 提交信息 / 短哈希 / 作者 / 时间 |
+| chip 菜单 5 项平铺 | 仓库操作与「打开目录」混在一起 | **分组菜单**：`仓库` 组（Git 工作台 / 刷新状态 / 当前分支详情）、`打开` 组（打开项目目录），设置独立一行且任何状态可达 |
+| chip 每 15 秒 `setInterval` 轮询 `/repo/status` | 空闲时也在打接口，且状态最多滞后 15 秒 | **事件驱动**：cwd 变化、窗口获焦、页面重新可见、打开菜单四个时机才请求；工作台/初始化页关闭后再刷一次 |
+| 死代码：`laneColor/laneX/rowY/curvePath`（与 `graphview.tsx` 重复）、`detectFailedNote()`（永远 return null） | 读代码时误以为还有第二条渲染路径 | 全部删除 |
+
+### 5.2　新文件划分
+
+- `src/client/workbench.tsx`：抽屉式工作台 + 6 个二级弹窗（分支 / 新建分支 / 提交详情 / 远程 / Pull / Diff）+ `Modal`。
+- `src/client/onboard.tsx`（新）：`InitWizard`（单页表单 + 实时计划）与 `BranchDetailModal`（时间线）。
+- `src/client/index.tsx`：只留 chip 与注册（2044 → 1484 行）。
+- `src/client/shared.tsx`：`.dgp-wb-*` / `.dgp-steps` / `.dgp-commitrow*` 全部换成 `.dgp-gw-*` / `.dgp-iw*` / `.dgp-tl*` / `.dgp-menu-group`。
+
+### 5.3　第三阶段验证
+
+| 项目 | 结果 |
+| --- | --- |
+| `npm run typecheck` | 0 错误 |
+| `npm run bundle` | `lib/client.js` 232.1kb |
+| `npm run gates` | **182 项通过**（+8：抽屉结构 / 竖排导航 / 旧 `dgp-wb` 为 0 / 单页向导 / 时间线 / 分组菜单） |
+| `npm run test:hardening` | **194 项通过** |
+| `npm run test:e2e` | **23 项通过** |
+| `npm run test:e2e:wb` | **27 项通过**（选择器全部迁到 `.dgp-gw*`，提交详情改为先切「历史」再点行） |
+| `npm run test:e2e:newui` | **19 项通过**（时间线 `.dgp-tl-item`） |
+
+### 5.4　本轮踩到的坑
+
+- **按行区间替换 CSS 时连带删掉了 `.dgp-modal-*` 整组**，弹窗失去 `position:fixed` 遮罩与居中 → e2e 读到 `top:900 left:0` 溢出视口。修法：替换后必须 `grep -c` 校验关键类名仍在，并从 `git show HEAD:src/client/shared.tsx` 取回原样式补上。
+- gates 断言不能写 `!includes('initStep')`——字典键 `initStepAccount/initStepRemote/initStepBranch/initStepsTitle` 会误伤，必须收紧成 `setInitStep` / `initStep:`。
+- `dgp-v16` 在 gates 里出现 4 次（2 处断言 + 2 处描述文本），`str.replace(a,b,N)` 前先 `assert s.count(a)==N`，否则断言失败。
+- 工作台 e2e 里直接点 `.dgp-gw-commit, .dgp-gw-logrow, .dgp-gw-row` 会先命中改动行，提交详情弹窗根本打不开 → 必须先点竖排导航的「历史」再点日志行。

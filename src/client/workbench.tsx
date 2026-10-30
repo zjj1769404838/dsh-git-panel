@@ -1,30 +1,30 @@
 /**
- * Git 工作台主面板（IDEA 式 Git 工具窗）：由 BranchChip 点击打开。
- * 布局（参照 IDEA Commit 工具窗 + Git Log 三栏）：
- *   顶栏 = 仓库 · 分支▾ · ↑↓N* · Fetch/Pull/Push · ⟳ · ⚙
- *   左栏 = 变更列表（未暂存/已暂存/未跟踪，勾选 + stage/unstage/discard）
- *   右栏 = tabs（历史 | 分支图 | Diff 预览）
- *   底栏 = 提交消息框 + Amend + Commit
- * 配置类操作（分支管理/新建分支/提交详情/远程仓库）走二级弹窗，层级与 IDEA 对齐。
+ * Git 工作台（BUILD dgp-v17，完全重写）。
+ *
+ * 与旧版的差别不是微调，是换形态：
+ *   - 旧版是 760px 居中弹窗 + 左 44% 变更 / 右 56% 三 tab 平铺 + 底部提交框；
+ *   - 新版是贴右全高抽屉（宽 min(1080px, 100vw-80px)），左侧竖排导航（改动 / 历史 / 分支图），
+ *     主区一次只呈现一件事；提交区提到「改动」视图顶部，形成「先看改动 → 再提交」的单列流程。
+ *   - Diff 不再占一个常驻 tab，改为点文件时弹出的预览层（看完即走，不抢主区）。
+ *
+ * 数据契约完全沿用既有 node 端点，不新增接口：
+ *   /repo/status|changes|commits|branches|remotes|graph|diff|commit|stage|unstage|discard|fetch|pull|push|init|remotes/*
  */
 import { useEffect, useState } from 'react'
 import {
   api,
   useStyles,
   Toast,
-  Dot,
   EmptyState,
   Skeleton,
   createPortal,
   BranchIcon,
   RefreshIcon,
   GearIcon,
-  CopyIcon,
   PlusIcon,
   type RepoStatusView,
   type RepoChangesView,
   type RepoGraphView,
-  type Dict,
 } from './shared.js'
 import { GraphView } from './graphview.js'
 
@@ -68,8 +68,14 @@ interface SyncView {
   missingConfig: boolean
 }
 
-/** fetch / pull / push / stage 等异步操作的进行中状态（防重复提交 + 按钮反馈）。 */
+/** 异步操作进行中状态（防重复提交 + 按钮反馈）。 */
 type BusyKind = 'none' | 'commit' | 'pull' | 'push' | 'fetch' | 'stage' | 'unstage' | 'discard' | 'branch' | 'remote' | 'init'
+
+/** 主区视图：一次只呈现一件事，靠左侧导航切换。 */
+type ViewKind = 'changes' | 'history' | 'graph'
+
+/** 二级层：同一时刻最多一层。 */
+type LayerKind = 'none' | 'branches' | 'newBranch' | 'commit' | 'remote' | 'pull' | 'diff'
 
 export interface WorkbenchProps {
   t: (key: string) => string
@@ -105,7 +111,7 @@ function shortDate(iso: string): string {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-/** Modal 骨架：二级弹窗统一容器（遮罩 + 面板 + 标题 + 关闭），层级与 IDEA 对齐。 */
+/** Modal 骨架：二级弹窗统一容器（遮罩 + 面板 + 标题 + 关闭）。设置页的连接弹窗也复用它。 */
 export function Modal({
   title,
   onClose,
@@ -133,7 +139,6 @@ export function Modal({
           <span className="dgp-modal-title">{title}</span>
           <button type="button" className="dgp-modal-x" aria-label="close" onClick={onClose}>
             ×
-            {/* 关闭叉 */}
           </button>
         </div>
         <div className="dgp-modal-body">{children}</div>
@@ -146,7 +151,7 @@ export function Modal({
 
 export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSettings }: WorkbenchProps) {
   useStyles()
-  const [tab, setTab] = useState<'history' | 'graph' | 'diff'>('history')
+  const [view, setView] = useState<ViewKind>('changes')
   const [changes, setChanges] = useState<RepoChangesView | null>(null)
   const [changesLoading, setChangesLoading] = useState(false)
   const [changesError, setChangesError] = useState('')
@@ -166,29 +171,22 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
   const [busy, setBusy] = useState<BusyKind>('none')
   const [toast, setToast] = useState<{ tone: 'ok' | 'error' | 'info'; text: string } | null>(null)
 
-  // 二级弹窗（同一时刻最多一个，IDEA 式层级）。
-  const [modal, setModal] = useState<'none' | 'branches' | 'newBranch' | 'commit' | 'remote' | 'pull'>('none')
+  const [layer, setLayer] = useState<LayerKind>('none')
   const [detailRev, setDetailRev] = useState('')
-  const [diffMode, setDiffMode] = useState<'worktree' | 'staged'>('worktree')
   const [diffText, setDiffText] = useState('')
   const [diffError, setDiffError] = useState('')
   const [diffLoading, setDiffLoading] = useState(false)
   const [diffTruncated, setDiffTruncated] = useState(false)
   const [diffPath, setDiffPath] = useState('')
+  const [diffMode, setDiffMode] = useState<'worktree' | 'staged'>('worktree')
 
   const isRepo = status !== null && status.isRepo
   const authorized = status !== null && status.authorized !== false
-  // 初始化表单：仓库名（默认=当前会话目录名）与可选远程地址。
-  const [initName, setInitName] = useState(cwd.split(/[\/]/).filter(Boolean).pop() || '')
+  const [initName, setInitName] = useState(cwd.split(/[\\/]/).filter(Boolean).pop() || '')
   const [initRemote, setInitRemote] = useState('')
+  const [discardPending, setDiscardPending] = useState<string[] | null>(null)
 
   const showToast = (tone: 'ok' | 'error' | 'info', text: string) => setToast({ tone, text })
-
-  /** 全量刷新：状态 + 变更 + 历史 + 分支 + 远程（写操作后统一走这里）。 */
-  const refreshAll = async () => {
-    if (!cwd) return
-    await Promise.all([loadStatus(), loadChanges(), loadCommits(), loadBranches(), loadRemotes()])
-  }
 
   const loadStatus = async () => {
     try {
@@ -225,7 +223,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     if (!cwd || !isRepo) return
     setCommitsLoading(true)
     try {
-      const data = await api<{ ok: boolean; commits?: CommitRow[]; error?: string }>(`/repo/commits?cwd=${encodeURIComponent(cwd)}&limit=60`)
+      const data = await api<{ ok: boolean; commits?: CommitRow[]; error?: string }>(`/repo/commits?cwd=${encodeURIComponent(cwd)}&limit=80`)
       if (data.ok && Array.isArray(data.commits)) {
         setCommits(data.commits)
         setCommitsError('')
@@ -271,7 +269,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     if (!cwd || !isRepo) return
     setGraphLoading(true)
     try {
-      const data = await api<{ ok: boolean; graph?: RepoGraphView; error?: string }>(`/repo/graph?cwd=${encodeURIComponent(cwd)}&limit=30`)
+      const data = await api<{ ok: boolean; graph?: RepoGraphView; error?: string }>(`/repo/graph?cwd=${encodeURIComponent(cwd)}&limit=40`)
       if (data.ok && data.graph) {
         setGraph(data.graph)
         setGraphError('')
@@ -310,25 +308,24 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     }
   }
 
-  // 初次挂载/仓库变化：全量拉取。
+  /** 全量刷新：写操作成功后统一走这里（不做定时轮询，只在打开与动作后取一次）。 */
+  const refreshAll = async () => {
+    if (!cwd) return
+    await Promise.all([loadStatus(), loadChanges(), loadCommits(), loadBranches(), loadRemotes()])
+  }
+
   useEffect(() => {
     if (!cwd) return
     void refreshAll()
-    if (isRepo) {
-      void loadGraph()
-      void loadDiff(diffMode, '')
-    }
+    if (isRepo) void loadGraph()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cwd, isRepo])
 
-  // 右栏在「历史 | 分支图」之间切换时懒加载对应数据。
   useEffect(() => {
-    if (!isRepo) return
-    if (tab === 'graph') void loadGraph()
+    if (view === 'graph' && isRepo && !graph) void loadGraph()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, isRepo])
+  }, [view, isRepo])
 
-  /** 未暂存文件的 porcelain 双列状态码（index 列 + worktree 列）。 */
   const unstaged = (changes?.files ?? []).filter((file) => !file.staged)
   const stagedFiles = (changes?.files ?? []).filter((file) => file.staged)
   const untracked = unstaged.filter((file) => file.worktree === '?')
@@ -381,9 +378,6 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
   const unstageSelected = (paths: string[]) =>
     run('unstage', () => api<{ ok: boolean; error?: string }>('/repo/unstage', { cwd, paths }), t('toastUnstaged'))
 
-  /** discard 需要用户在确认弹窗里再点一次（后端强制 confirmed:true）。 */
-  const [discardPending, setDiscardPending] = useState<string[] | null>(null)
-
   const doDiscard = (paths: string[]) =>
     run('discard', () => api<{ ok: boolean; error?: string }>('/repo/discard', { cwd, paths, confirmed: true }), t('toastDiscarded'))
 
@@ -393,6 +387,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
         if (ok) {
           setMessage('')
           setAmend(false)
+          setSelected(new Set())
         }
       },
     )
@@ -408,14 +403,6 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     run('push', () => api<SyncView>('/repo/push', { cwd, remote: remotes[0]?.name ?? '', branch: currentBranch, setUpstream }), t('toastPushed')).then((ok) => {
       if (!ok) void loadStatus()
     })
-
-  /** pull/push 结果的专用错误解读：冲突/被拒/缺配置给不同文案与引导。 */
-  const syncErrorText = (view: SyncView): string => {
-    if (view.conflicted) return t('syncConflicted')
-    if (view.rejected) return t('syncRejected')
-    if (view.missingConfig) return t('syncMissingConfig')
-    return view.error || t('syncFailed')
-  }
 
   const doInit = () =>
     run('init', () => api<{ ok: boolean; error?: string; result?: { created?: boolean; branch?: string } }>('/repo/init', { cwd, branch: 'main' }), t('initDone'))
@@ -437,7 +424,14 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
 
   const openDetail = (rev: string) => {
     setDetailRev(rev)
-    setModal('commit')
+    setLayer('commit')
+  }
+
+  const openDiff = (mode: 'worktree' | 'staged', path: string) => {
+    setDiffMode(mode)
+    setDiffPath(path)
+    setLayer('diff')
+    void loadDiff(mode, path)
   }
 
   const currentBranchRow = branches.find((branch) => branch.kind === 'local' && branch.current)
@@ -446,338 +440,411 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
   const canPull = isRepo && authorized && busy === 'none'
   const canPush = isRepo && authorized && hasRemote && currentBranch.length > 0 && busy === 'none'
 
-  // ---------- 各状态的首屏 ----------
+  const closeAll = () => {
+    onClose()
+  }
+
+  // ---------- 首屏：无状态 / 非仓库 / 未授权 ----------
   if (!status) {
     return (
-      <><div className="dgp-portal dgp-wb-mask" onMouseDown={(event) => event.target === event.currentTarget && onClose()} /><div className="dgp-root dgp-wb" role="dialog" aria-label={t('wbTitle')}>
-        <div className="dgp-wb-head">
-          <span className="dgp-wb-title">{t('wbTitle')}</span>
-          <button type="button" className="dgp-wb-x" onClick={onClose} aria-label="close">×</button>
+      <>
+        <div className="dgp-portal dgp-gw-mask" onMouseDown={(event) => event.target === event.currentTarget && closeAll()} />
+        <div className="dgp-root dgp-gw" role="dialog" aria-label={t('wbTitle')} data-state="loading">
+          <div className="dgp-gw-top">
+            <span className="dgp-gw-crumb">{t('wbTitle')}</span>
+            <span className="dgp-gw-spacer" />
+            <button type="button" className="dgp-gw-x" onClick={closeAll} aria-label="close">×</button>
+          </div>
+          <div className="dgp-gw-state"><Skeleton rows={5} /></div>
         </div>
-        <div className="dgp-wb-state"><Skeleton rows={4} /></div>
-      </div>
-    </>
+      </>
     )
   }
 
   if (!isRepo) {
     return (
-      <><div className="dgp-portal dgp-wb-mask" onMouseDown={(event) => event.target === event.currentTarget && onClose()} /><div className="dgp-root dgp-wb" role="dialog" aria-label={t('wbTitle')}>
-        <div className="dgp-wb-head">
-          <span className="dgp-wb-title">{t('wbTitle')}</span>
-          <button type="button" className="dgp-wb-x" onClick={onClose} aria-label="close">×</button>
-        </div>
-        <div className="dgp-wb-state">
-          <EmptyState title={t('notRepo')} hint={t('wbInitHint')} />
-          <div className="dgp-wb-initform">
-            <label className="dgp-wb-initfield">
-              <span className="dgp-label">{t('wbInitName')}</span>
-              <input className="dgp-input" value={initName} onChange={(event) => setInitName(event.target.value)} />
-            </label>
-            <label className="dgp-wb-initfield">
-              <span className="dgp-label">{t('wbInitRemote')}</span>
-              <input className="dgp-input" value={initRemote} onChange={(event) => setInitRemote(event.target.value)} placeholder="https://github.com/user/repo.git" />
-            </label>
-            <button type="button" className="dgp-btn primary" disabled={busy !== 'none'} onClick={() => void doInitWithForm()}>
-              <PlusIcon />
-              {t('menuInit')}
-            </button>
+      <>
+        <div className="dgp-portal dgp-gw-mask" onMouseDown={(event) => event.target === event.currentTarget && closeAll()} />
+        <div className="dgp-root dgp-gw" role="dialog" aria-label={t('wbTitle')} data-state="no-repo">
+          <div className="dgp-gw-top">
+            <span className="dgp-gw-crumb">{t('wbTitle')}</span>
+            <span className="dgp-gw-spacer" />
+            <button type="button" className="dgp-gw-x" onClick={closeAll} aria-label="close">×</button>
           </div>
+          <div className="dgp-gw-state">
+            <EmptyState title={t('notRepo')} hint={t('wbInitHint')} />
+            <div className="dgp-gw-initform">
+              <label className="dgp-field">
+                <span className="dgp-label">{t('wbInitName')}</span>
+                <input className="dgp-input" value={initName} onChange={(event) => setInitName(event.target.value)} />
+              </label>
+              <label className="dgp-field">
+                <span className="dgp-label">{t('wbInitRemote')}</span>
+                <input className="dgp-input" value={initRemote} onChange={(event) => setInitRemote(event.target.value)} placeholder="https://github.com/user/repo.git" />
+              </label>
+              <button type="button" className="dgp-btn primary" disabled={busy !== 'none'} onClick={() => void doInitWithForm()}>
+                <PlusIcon />
+                {t('menuInit')}
+              </button>
+            </div>
+          </div>
+          {toast ? <Toast tone={toast.tone} text={toast.text} onDone={() => setToast(null)} /> : null}
         </div>
-      </div>
-    </>
+      </>
     )
   }
 
   if (!authorized) {
     return (
-      <><div className="dgp-portal dgp-wb-mask" onMouseDown={(event) => event.target === event.currentTarget && onClose()} /><div className="dgp-root dgp-wb" role="dialog" aria-label={t('wbTitle')}>
-        <div className="dgp-wb-head">
-          <span className="dgp-wb-title">{t('wbTitle')}</span>
-          <button type="button" className="dgp-wb-x" onClick={onClose} aria-label="close">×</button>
+      <>
+        <div className="dgp-portal dgp-gw-mask" onMouseDown={(event) => event.target === event.currentTarget && closeAll()} />
+        <div className="dgp-root dgp-gw" role="dialog" aria-label={t('wbTitle')} data-state="unauthorized">
+          <div className="dgp-gw-top">
+            <span className="dgp-gw-crumb">{t('wbTitle')}</span>
+            <span className="dgp-gw-spacer" />
+            <button type="button" className="dgp-gw-x" onClick={closeAll} aria-label="close">×</button>
+          </div>
+          <div className="dgp-gw-state">
+            <EmptyState title={t('unauthorizedRoot')} hint={t('wbUnauthorizedHint')} />
+            <button
+              type="button"
+              className="dgp-btn"
+              onClick={() => {
+                closeAll()
+                onOpenSettings()
+              }}
+            >
+              <GearIcon />
+              {t('menuSettings')}
+            </button>
+          </div>
         </div>
-        <div className="dgp-wb-state">
-          <EmptyState title={t('unauthorizedRoot')} hint={t('wbUnauthorizedHint')} />
-          <button
-            type="button"
-            className="dgp-btn"
-            onClick={() => {
-              onClose()
-              onOpenSettings()
-            }}
-          >
-            <GearIcon />
-            {t('menuSettings')}
-          </button>
-        </div>
-      </div>
-    </>
+      </>
     )
   }
 
-  // ---------- 正常主面板 ----------
+  // ---------- 主面板：左侧竖排导航 + 主区 ----------
+  const railItems: Array<{ key: ViewKind; label: string; count: number }> = [
+    { key: 'changes', label: t('wbChangesTab'), count: changes?.files.length ?? 0 },
+    { key: 'history', label: t('wbHistory'), count: commits.length },
+    { key: 'graph', label: t('wbGraph'), count: graph?.rows.length ?? 0 },
+  ]
+
   return (
-    <><div className="dgp-portal dgp-wb-mask" onMouseDown={(event) => event.target === event.currentTarget && onClose()} /><div className="dgp-root dgp-wb" role="dialog" aria-label={t('wbTitle')}>
-      {/* 顶栏：仓库 · 分支 · 同步按钮 · 设置 */}
-      <div className="dgp-wb-head">
-        <span className="dgp-wb-repo" title={status.root || cwd}>
-          <BranchIcon />
-          {status.root?.split(/[\\/]/).pop() || cwd}
-        </span>
-        <button type="button" className="dgp-wb-branch" data-current={currentBranchRow ? '1' : '0'} onClick={() => setModal('branches')}>
-          {currentBranch || 'HEAD'} <span className="dgp-wb-caret">▾</span>
-        </button>
-        <span className="dgp-wb-aux">
-          {status.ahead > 0 ? `↑${status.ahead}` : ''}
-          {status.behind > 0 ? `↓${status.behind}` : ''}
-          {status.changed > 0 ? `${status.changed}*` : ''}
-        </span>
-        <span className="dgp-wb-spacer" />
-        <button type="button" className="dgp-btn ghost" disabled={!canPull} onClick={() => void doFetch()}>{t('wbFetch')}</button>
-        <button type="button" className="dgp-btn" disabled={!canPull} onClick={() => setModal('pull')}>{t('wbPull')}</button>
-        <button type="button" className="dgp-btn primary" disabled={!canPush} onClick={() => void doPush(false)}>{t('wbPush')}</button>
-        <button type="button" className="dgp-btn ghost" onClick={() => setModal('remote')}>{t('wbRemoteTitle')}</button>
-        <button type="button" className="dgp-wb-icon" disabled={busy !== 'none'} onClick={() => void refreshAll()} aria-label={t('refresh')}>
-          <RefreshIcon />
-        </button>
-        <button type="button" className="dgp-wb-icon" onClick={() => { onClose(); onOpenSettings() }} aria-label={t('menuSettings')}>
-          <GearIcon />
-        </button>
-        <button type="button" className="dgp-wb-x" onClick={onClose} aria-label="close">×</button>
-      </div>
+    <>
+      <div className="dgp-portal dgp-gw-mask" onMouseDown={(event) => event.target === event.currentTarget && closeAll()} />
+      <div className="dgp-root dgp-gw" role="dialog" aria-label={t('wbTitle')} data-state="ready">
+        {/* 顶栏：仓库 · 分支 · 同步动作 · 关闭 */}
+        <div className="dgp-gw-top">
+          <span className="dgp-gw-repo" title={status.root || cwd}>
+            <BranchIcon />
+            {status.root?.split(/[\\/]/).pop() || cwd}
+          </span>
+          <button type="button" className="dgp-gw-branch" data-current={currentBranchRow ? '1' : '0'} onClick={() => setLayer('branches')}>
+            {currentBranch || 'HEAD'} <span className="dgp-gw-caret">▾</span>
+          </button>
+          <span className="dgp-gw-aux">
+            {status.ahead > 0 ? `↑${status.ahead}` : ''}
+            {status.behind > 0 ? `↓${status.behind}` : ''}
+            {status.changed > 0 ? `${status.changed}*` : ''}
+          </span>
+          <span className="dgp-gw-spacer" />
+          <span className="dgp-gw-btnbar">
+            <button type="button" className="dgp-btn ghost" disabled={!canPull} onClick={() => void doFetch()}>{t('wbFetch')}</button>
+            <button type="button" className="dgp-btn" disabled={!canPull} onClick={() => setLayer('pull')}>{t('wbPull')}</button>
+            <button type="button" className="dgp-btn primary" disabled={!canPush} onClick={() => void doPush(false)}>{t('wbPush')}</button>
+          </span>
+          <span className="dgp-gw-btnbar">
+            <button type="button" className="dgp-btn ghost" onClick={() => setLayer('remote')}>{t('wbRemoteTitle')}</button>
+            <button type="button" className="dgp-gw-icon" disabled={busy !== 'none'} onClick={() => void refreshAll()} aria-label={t('refresh')}>
+              <RefreshIcon />
+            </button>
+            <button type="button" className="dgp-gw-icon" onClick={() => { closeAll(); onOpenSettings() }} aria-label={t('menuSettings')}>
+              <GearIcon />
+            </button>
+          </span>
+          <button type="button" className="dgp-gw-x" onClick={closeAll} aria-label="close">×</button>
+        </div>
 
-      {detectFailedNote()}
+        <div className="dgp-gw-body">
+          {/* 左侧竖排导航：一次只切一件事，数量徽标常驻 */}
+          <nav className="dgp-gw-rail" aria-label={t('wbTitle')}>
+            {railItems.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                className="dgp-gw-railbtn"
+                data-on={view === item.key ? '1' : '0'}
+                onClick={() => setView(item.key)}
+              >
+                <span className="dgp-gw-railbtn-label">{item.label}</span>
+                {item.count > 0 ? <span className="dgp-gw-railbtn-count">{item.count}</span> : null}
+              </button>
+            ))}
+          </nav>
 
-      {/* 中部：左变更 / 右信息 tabs */}
-      <div className="dgp-wb-main">
-        <section className="dgp-wb-left" aria-label={t('changesTitle')}>
-          <div className="dgp-wb-left-head">
-            <span>{t('changesTitle')}</span>
-            <span className="dgp-wb-count">{changes?.files.length ?? 0}</span>
-          </div>
-          {changesLoading && !changes ? (
-            <Skeleton rows={5} />
-          ) : changesError ? (
-            <div className="dgp-err" style={{ padding: '8px 10px' }}>{changesError}</div>
-          ) : !changes || changes.files.length === 0 ? (
-            <EmptyState title={t('changesEmpty')} hint={t('wbCleanHint')} />
-          ) : (
-            <div className="dgp-wb-filelist">
-              {/* 已暂存 */}
-              {stagedFiles.length > 0 ? (
-                <div className="dgp-wb-group">
-                  <label className="dgp-wb-group-title">
-                    <input
-                      type="checkbox"
-                      checked={stagedFiles.every((file) => selected.has(file.path))}
-                      onChange={(event) => selectAll(stagedFiles.map((file) => file.path), event.target.checked)}
-                    />
-                    {t('changesStaged')} · {stagedFiles.length}
-                  </label>
-                  {stagedFiles.map((file) => (
-                    <FileRow
-                      key={`s-${file.path}`}
-                      file={file}
-                      checked={selected.has(file.path)}
-                      onToggle={() => toggleSelect(file.path)}
-                      onPreview={() => { setDiffMode('staged'); setDiffPath(file.path); void loadDiff('staged', file.path); setTab('diff') }}
-                      onAction={() => void unstageSelected([file.path])}
-                      actionLabel={t('wbUnstage')}
-                      actionDanger={false}
-                      t={t}
-                    />
-                  ))}
+          <div className="dgp-gw-main">
+            {/* 改动视图：提交区在顶部，列表在下方，形成单列流程 */}
+            {view === 'changes' ? (
+              <>
+                <div className="dgp-gw-commit">
+                  <textarea
+                    className="dgp-gw-msg"
+                    placeholder={t('wbMsgPlaceholder')}
+                    value={message}
+                    onChange={(event) => setMessage(event.target.value)}
+                    rows={3}
+                  />
+                  <div className="dgp-gw-commitbar">
+                    <label className="dgp-gw-amend">
+                      <input type="checkbox" checked={amend} onChange={(event) => setAmend(event.target.checked)} />
+                      {t('wbAmend')}
+                    </label>
+                    <span className="dgp-gw-spacer" />
+                    <span className="dgp-gw-staged-count">{stagedFiles.length}</span>
+                    <button type="button" className="dgp-btn primary" disabled={!canCommit} onClick={() => void doCommit()}>{t('wbCommit')}</button>
+                  </div>
+                  {stagedFiles.length === 0 && (message.trim().length > 0 || amend) ? (
+                    <div className="dgp-hint">{t('wbCommitNeedsStaged')}</div>
+                  ) : null}
                 </div>
-              ) : null}
-              {/* 未暂存（已跟踪） */}
-              {modified.length > 0 ? (
-                <div className="dgp-wb-group">
-                  <label className="dgp-wb-group-title">
-                    <input
-                      type="checkbox"
-                      checked={modified.every((file) => selected.has(file.path))}
-                      onChange={(event) => selectAll(modified.map((file) => file.path), event.target.checked)}
-                    />
-                    {t('wbUnstaged')} · {modified.length}
-                  </label>
-                  {modified.map((file) => (
-                    <FileRow
-                      key={`w-${file.path}`}
-                      file={file}
-                      checked={selected.has(file.path)}
-                      onToggle={() => toggleSelect(file.path)}
-                      onPreview={() => { setDiffMode('worktree'); setDiffPath(file.path); void loadDiff('worktree', file.path); setTab('diff') }}
-                      onAction={() => void stageSelected([file.path])}
-                      actionLabel={t('wbStage')}
-                      actionDanger={false}
-                      t={t}
-                    />
-                  ))}
-                </div>
-              ) : null}
-              {/* 未跟踪 */}
-              {untracked.length > 0 ? (
-                <div className="dgp-wb-group">
-                  <label className="dgp-wb-group-title">
-                    <input
-                      type="checkbox"
-                      checked={untracked.every((file) => selected.has(file.path))}
-                      onChange={(event) => selectAll(untracked.map((file) => file.path), event.target.checked)}
-                    />
-                    {t('wbUntracked')} · {untracked.length}
-                  </label>
-                  {untracked.map((file) => (
-                    <FileRow
-                      key={`u-${file.path}`}
-                      file={file}
-                      checked={selected.has(file.path)}
-                      onToggle={() => toggleSelect(file.path)}
-                      onPreview={() => undefined}
-                      onAction={() => void stageSelected([file.path])}
-                      actionLabel={t('wbStage')}
-                      actionDanger={false}
-                      t={t}
-                    />
-                  ))}
-                </div>
-              ) : null}
-            </div>
-          )}
-          {/* 左栏批量操作条 */}
-          {selected.size > 0 ? (
-            <div className="dgp-wb-actions">
-              <button type="button" className="dgp-btn" disabled={busy !== 'none'} onClick={() => void stageSelected([...selected])}>{t('wbStage')} ({selected.size})</button>
-              <button type="button" className="dgp-btn" disabled={busy !== 'none'} onClick={() => void unstageSelected([...selected])}>{t('wbUnstage')}</button>
-              <button type="button" className="dgp-btn danger" disabled={busy !== 'none'} onClick={() => setDiscardPending([...selected])}>{t('wbDiscard')}</button>
-            </div>
-          ) : null}
-        </section>
 
-        <section className="dgp-wb-right">
-          <div className="dgp-wb-tabs" role="tablist">
-            <button type="button" className="dgp-tab" data-on={tab === 'history' ? '1' : '0'} onClick={() => setTab('history')}>{t('wbHistory')}</button>
-            <button type="button" className="dgp-tab" data-on={tab === 'graph' ? '1' : '0'} onClick={() => setTab('graph')}>{t('wbGraph')}</button>
-            <button type="button" className="dgp-tab" data-on={tab === 'diff' ? '1' : '0'} onClick={() => setTab('diff')}>{t('wbDiffTab')}</button>
-          </div>
-          <div className="dgp-wb-rightbody">
-            {tab === 'history' ? (
-              commitsLoading && commits.length === 0 ? (
-                <Skeleton rows={6} />
-              ) : commitsError ? (
-                <div className="dgp-err" style={{ padding: '8px 10px' }}>{commitsError}</div>
-              ) : commits.length === 0 ? (
-                <EmptyState title={t('wbNoCommits')} hint={t('wbNoCommitsHint')} />
-              ) : (
-                <div className="dgp-wb-log" role="list">
-                  {commits.map((commit) => (
-                    <button key={commit.hash} type="button" className="dgp-wb-logrow" role="listitem" onClick={() => openDetail(commit.hash)}>
-                      <span className="dgp-wb-loghash">{commit.shortHash}</span>
-                      <span className="dgp-wb-logmsg" title={commit.subject}>{commit.subject}</span>
-                      {parseRefs(commit.refs).map((ref) => (
-                        <span key={ref.text} className="dgp-graph-ref" data-kind={ref.kind === 'head' ? 'head' : ref.kind}>{ref.text}</span>
-                      ))}
-                      <span className="dgp-wb-logauthor">{commit.author}</span>
-                      <span className="dgp-wb-logdate">{shortDate(commit.date)}</span>
-                    </button>
-                  ))}
+                <div className="dgp-gw-lists">
+                  {changesLoading && !changes ? (
+                    <Skeleton rows={6} />
+                  ) : changesError ? (
+                    <div className="dgp-err">{changesError}</div>
+                  ) : !changes || changes.files.length === 0 ? (
+                    <EmptyState title={t('changesEmpty')} hint={t('wbCleanHint')} />
+                  ) : (
+                    <>
+                      {stagedFiles.length > 0 ? (
+                        <section className="dgp-gw-group">
+                          <header className="dgp-gw-grouphead">
+                            <label className="dgp-gw-checkall">
+                              <input
+                                type="checkbox"
+                                checked={stagedFiles.every((file) => selected.has(file.path))}
+                                onChange={(event) => selectAll(stagedFiles.map((file) => file.path), event.target.checked)}
+                              />
+                              {t('changesStaged')}
+                            </label>
+                            <span className="dgp-gw-count">{stagedFiles.length}</span>
+                            <span className="dgp-gw-spacer" />
+                            <button type="button" className="dgp-gw-textbtn" disabled={busy !== 'none'} onClick={() => void unstageSelected(stagedFiles.map((file) => file.path))}>
+                              {t('wbUnstage')}
+                            </button>
+                          </header>
+                          {stagedFiles.map((file) => (
+                            <ChangeRow
+                              key={`s-${file.path}`}
+                              file={file}
+                              checked={selected.has(file.path)}
+                              onToggle={() => toggleSelect(file.path)}
+                              onPreview={() => openDiff('staged', file.path)}
+                              onAction={() => void unstageSelected([file.path])}
+                              actionLabel={t('wbUnstage')}
+                              danger={false}
+                            />
+                          ))}
+                        </section>
+                      ) : null}
+
+                      {modified.length > 0 ? (
+                        <section className="dgp-gw-group">
+                          <header className="dgp-gw-grouphead">
+                            <label className="dgp-gw-checkall">
+                              <input
+                                type="checkbox"
+                                checked={modified.every((file) => selected.has(file.path))}
+                                onChange={(event) => selectAll(modified.map((file) => file.path), event.target.checked)}
+                              />
+                              {t('wbUnstaged')}
+                            </label>
+                            <span className="dgp-gw-count">{modified.length}</span>
+                            <span className="dgp-gw-spacer" />
+                            <button type="button" className="dgp-gw-textbtn" disabled={busy !== 'none'} onClick={() => void stageSelected(modified.map((file) => file.path))}>
+                              {t('wbStageAll')}
+                            </button>
+                          </header>
+                          {modified.map((file) => (
+                            <ChangeRow
+                              key={`w-${file.path}`}
+                              file={file}
+                              checked={selected.has(file.path)}
+                              onToggle={() => toggleSelect(file.path)}
+                              onPreview={() => openDiff('worktree', file.path)}
+                              onAction={() => void stageSelected([file.path])}
+                              actionLabel={t('wbStage')}
+                              danger={false}
+                            />
+                          ))}
+                        </section>
+                      ) : null}
+
+                      {untracked.length > 0 ? (
+                        <section className="dgp-gw-group">
+                          <header className="dgp-gw-grouphead">
+                            <label className="dgp-gw-checkall">
+                              <input
+                                type="checkbox"
+                                checked={untracked.every((file) => selected.has(file.path))}
+                                onChange={(event) => selectAll(untracked.map((file) => file.path), event.target.checked)}
+                              />
+                              {t('wbUntracked')}
+                            </label>
+                            <span className="dgp-gw-count">{untracked.length}</span>
+                            <span className="dgp-gw-spacer" />
+                            <button type="button" className="dgp-gw-textbtn" disabled={busy !== 'none'} onClick={() => void stageSelected(untracked.map((file) => file.path))}>
+                              {t('wbStageAll')}
+                            </button>
+                          </header>
+                          {untracked.map((file) => (
+                            <ChangeRow
+                              key={`u-${file.path}`}
+                              file={file}
+                              checked={selected.has(file.path)}
+                              onToggle={() => toggleSelect(file.path)}
+                              onPreview={() => undefined}
+                              onAction={() => void stageSelected([file.path])}
+                              actionLabel={t('wbStage')}
+                              danger={false}
+                            />
+                          ))}
+                        </section>
+                      ) : null}
+                    </>
+                  )}
                 </div>
-              )
+
+                {selected.size > 0 ? (
+                  <div className="dgp-gw-batch">
+                    <span className="dgp-gw-batch-count">{selected.size}</span>
+                    <button type="button" className="dgp-btn" disabled={busy !== 'none'} onClick={() => void stageSelected([...selected])}>{t('wbStage')}</button>
+                    <button type="button" className="dgp-btn" disabled={busy !== 'none'} onClick={() => void unstageSelected([...selected])}>{t('wbUnstage')}</button>
+                    <button type="button" className="dgp-btn danger" disabled={busy !== 'none'} onClick={() => setDiscardPending([...selected])}>{t('wbDiscard')}</button>
+                    <span className="dgp-gw-spacer" />
+                    <button type="button" className="dgp-gw-textbtn" onClick={() => setSelected(new Set())}>{t('wbCancel')}</button>
+                  </div>
+                ) : null}
+              </>
             ) : null}
-            {tab === 'graph' ? <GraphView t={t} graph={graph} loading={graphLoading} error={graphError} /> : null}
-            {tab === 'diff' ? (
-              <div className="dgp-wb-diffwrap">
-                <div className="dgp-wb-diffbar">
-                  <span className="dgp-wb-diffpath">{diffPath || (diffMode === 'staged' ? t('changesStaged') : t('wbUnstaged'))}</span>
-                  <button type="button" className="dgp-wb-icon" onClick={() => void loadDiff(diffMode, diffPath)} aria-label={t('refresh')}>
-                    <RefreshIcon />
-                  </button>
-                </div>
-                {diffLoading ? (
-                  <Skeleton rows={6} />
-                ) : diffError ? (
-                  <div className="dgp-err" style={{ padding: '8px 10px' }}>{diffError}</div>
-                ) : diffText ? (
-                  <pre className="dgp-wb-diff"><code>{diffText}</code></pre>
+
+            {/* 历史视图 */}
+            {view === 'history' ? (
+              <div className="dgp-gw-scroll">
+                {commitsLoading && commits.length === 0 ? (
+                  <Skeleton rows={8} />
+                ) : commitsError ? (
+                  <div className="dgp-err">{commitsError}</div>
+                ) : commits.length === 0 ? (
+                  <EmptyState title={t('wbNoCommits')} hint={t('wbNoCommitsHint')} />
                 ) : (
-                  <EmptyState title={t('diffEmpty')} hint={t('diffEmptyHint')} />
+                  <div className="dgp-gw-log" role="list">
+                    {commits.map((commit) => (
+                      <button key={commit.hash} type="button" className="dgp-gw-logrow" role="listitem" onClick={() => openDetail(commit.hash)}>
+                        <span className="dgp-gw-loghash">{commit.shortHash}</span>
+                        <span className="dgp-gw-logmsg" title={commit.subject}>{commit.subject}</span>
+                        {parseRefs(commit.refs).map((ref) => (
+                          <span key={ref.text} className="dgp-graph-ref" data-kind={ref.kind === 'head' ? 'head' : ref.kind}>{ref.text}</span>
+                        ))}
+                        <span className="dgp-gw-logmeta">{commit.author} · {shortDate(commit.date)}</span>
+                      </button>
+                    ))}
+                  </div>
                 )}
-                {diffTruncated ? <div className="dgp-hint" style={{ padding: '4px 10px' }}>{t('diffTruncated')}</div> : null}
+              </div>
+            ) : null}
+
+            {/* 分支图视图 */}
+            {view === 'graph' ? (
+              <div className="dgp-gw-scroll">
+                <GraphView t={t} graph={graph} loading={graphLoading} error={graphError} />
               </div>
             ) : null}
           </div>
-        </section>
+        </div>
+
+        {toast ? <Toast tone={toast.tone} text={toast.text} onDone={() => setToast(null)} /> : null}
+
+        {discardPending ? (
+          <Modal title={t('wbDiscardTitle')} onClose={() => setDiscardPending(null)} width={440}>
+            <p className="dgp-modal-text">{t('wbDiscardText')}</p>
+            <ul className="dgp-modal-list">
+              {discardPending.map((path) => (
+                <li key={path}><code>{path}</code></li>
+              ))}
+            </ul>
+            <div className="dgp-modal-foot" style={{ borderTop: 'none', padding: '10px 0 0' }}>
+              <button type="button" className="dgp-btn" onClick={() => setDiscardPending(null)}>{t('wbCancel')}</button>
+              <button
+                type="button"
+                className="dgp-btn danger"
+                disabled={busy !== 'none'}
+                onClick={() => {
+                  const paths = discardPending
+                  setDiscardPending(null)
+                  void doDiscard(paths)
+                }}
+              >
+                {t('wbDiscard')}
+              </button>
+            </div>
+          </Modal>
+        ) : null}
+
+        {layer === 'diff' ? (
+          <Modal title={`${t('wbDiffTitle')} · ${diffPath || (diffMode === 'staged' ? t('changesStaged') : t('wbUnstaged'))}`} onClose={() => setLayer('none')} width={880}>
+            {diffLoading ? <Skeleton rows={8} /> : diffError ? <div className="dgp-err">{diffError}</div> : diffText ? (
+              <pre className="dgp-gw-diff"><code>{diffText}</code></pre>
+            ) : (
+              <EmptyState title={t('diffEmpty')} hint={t('diffEmptyHint')} />
+            )}
+            {diffTruncated ? <div className="dgp-hint">{t('diffTruncated')}</div> : null}
+          </Modal>
+        ) : null}
+
+        {layer === 'branches' ? (
+          <BranchesModal
+            t={t}
+            cwd={cwd}
+            branches={branches}
+            current={currentBranch}
+            onClose={() => setLayer('none')}
+            onChanged={refreshAll}
+            run={run}
+            onNewBranch={() => setLayer('newBranch')}
+          />
+        ) : null}
+        {layer === 'newBranch' ? <NewBranchModal t={t} cwd={cwd} onClose={() => setLayer('none')} onChanged={refreshAll} run={run} /> : null}
+        {layer === 'commit' ? <CommitDetailModal t={t} cwd={cwd} rev={detailRev} onClose={() => setLayer('none')} /> : null}
+        {layer === 'remote' ? <RemoteModal t={t} cwd={cwd} remotes={remotes} onClose={() => setLayer('none')} onChanged={refreshAll} run={run} /> : null}
+        {layer === 'pull' ? (
+          <PullModal
+            t={t}
+            onClose={() => setLayer('none')}
+            onPull={(strategy) => {
+              setLayer('none')
+              void doPull(strategy)
+            }}
+            upstream={upstream}
+            hasRemote={hasRemote}
+          />
+        ) : null}
       </div>
-
-      {/* 底栏：提交框（暂存为空或消息为空时禁用并说明） */}
-      <div className="dgp-wb-foot">
-        <textarea
-          className="dgp-wb-msg"
-          placeholder={t('wbMsgPlaceholder')}
-          value={message}
-          onChange={(event) => setMessage(event.target.value)}
-          rows={2}
-        />
-        <label className="dgp-wb-amend">
-          <input type="checkbox" checked={amend} onChange={(event) => setAmend(event.target.checked)} />
-          {t('wbAmend')}
-        </label>
-        <button type="button" className="dgp-btn primary" disabled={!canCommit} onClick={() => void doCommit()}>{t('wbCommit')}</button>
-      </div>
-      {stagedFiles.length === 0 && (message.trim().length > 0 || amend) ? (
-        <div className="dgp-hint" style={{ padding: '0 12px 8px' }}>{t('wbCommitNeedsStaged')}</div>
-      ) : null}
-
-      {/* toast 与二级弹窗 */}
-      {toast ? <Toast tone={toast.tone} text={toast.text} onDone={() => setToast(null)} /> : null}
-
-      {/* 破坏性操作确认：丢弃改动 */}
-      {discardPending ? (
-        <Modal title={t('wbDiscardTitle')} onClose={() => setDiscardPending(null)} width={440}>
-          <p className="dgp-modal-text">{t('wbDiscardText')}</p>
-          <ul className="dgp-modal-list">
-            {discardPending.map((path) => (
-              <li key={path}><code>{path}</code></li>
-            ))}
-          </ul>
-        </Modal>
-      ) : null}
-
-      {modal === 'branches' ? <BranchesModal t={t} cwd={cwd} branches={branches} current={currentBranch} onClose={() => setModal('none')} onChanged={refreshAll} run={run} onNewBranch={() => setModal('newBranch')} /> : null}
-      {modal === 'newBranch' ? <NewBranchModal t={t} cwd={cwd} onClose={() => setModal('none')} onChanged={refreshAll} run={run} /> : null}
-      {modal === 'commit' ? <CommitDetailModal t={t} cwd={cwd} rev={detailRev} onClose={() => setModal('none')} /> : null}
-      {modal === 'remote' ? <RemoteModal t={t} cwd={cwd} remotes={remotes} onClose={() => setModal('none')} onChanged={refreshAll} run={run} /> : null}
-      {modal === 'pull' ? (
-        <PullModal
-          t={t}
-          onClose={() => setModal('none')}
-          onPull={(strategy) => {
-            setModal('none')
-            void doPull(strategy)
-          }}
-          upstream={upstream}
-          hasRemote={hasRemote}
-        />
-      ) : null}
-    </div>
     </>
   )
 }
 
-/** 顶部：授权目录外的黄条提醒（读得到状态但写入会被拒）。 */
-function detectFailedNote(): React.ReactNode {
-  return null
-}
-
-/** 变更列表单行：状态码 + 路径 + 增删 + hover 动作（stage/unstage）。 */
-function FileRow({
+/** 变更单行：状态码 + 路径 + 增删 + 行内动作（stage/unstage）。 */
+function ChangeRow({
   file,
   checked,
   onToggle,
   onPreview,
   onAction,
   actionLabel,
-  actionDanger,
-  t,
+  danger,
 }: {
   file: { path: string; index: string; worktree: string; added: number; deleted: number; staged: boolean }
   checked: boolean
@@ -785,27 +852,26 @@ function FileRow({
   onPreview: () => void
   onAction: () => void
   actionLabel: string
-  actionDanger: boolean
-  t: (key: string) => string
+  danger: boolean
 }) {
   const code = file.staged ? file.index || 'M' : file.worktree === '?' ? '??' : file.worktree || 'M'
   return (
-    <div className="dgp-wb-file" data-staged={file.staged ? '1' : '0'}>
+    <div className="dgp-gw-row" data-staged={file.staged ? '1' : '0'}>
       <input type="checkbox" checked={checked} onChange={onToggle} aria-label={file.path} />
-      <button type="button" className="dgp-wb-filecode" data-code={code} onClick={onPreview}>{code}</button>
-      <button type="button" className="dgp-wb-filepath" onClick={onPreview} title={file.path}>{file.path}</button>
+      <button type="button" className="dgp-gw-code" data-code={code} onClick={onPreview}>{code}</button>
+      <button type="button" className="dgp-gw-path" onClick={onPreview} title={file.path}>{file.path}</button>
       {file.added > 0 || file.deleted > 0 ? (
-        <span className="dgp-wb-filestat">
+        <span className="dgp-gw-stat">
           {file.added > 0 ? <b data-sign="add">+{file.added}</b> : null}
           {file.deleted > 0 ? <b data-sign="del">-{file.deleted}</b> : null}
         </span>
       ) : null}
-      <button type="button" className="dgp-wb-fileact" data-danger={actionDanger ? '1' : '0'} onClick={onAction}>{actionLabel}</button>
+      <button type="button" className="dgp-gw-rowact" data-danger={danger ? '1' : '0'} onClick={onAction}>{actionLabel}</button>
     </div>
   )
 }
 
-/** 分支管理弹窗（IDEA 分支弹窗简化：Local/Remote 两组 + 切换/新建/删除）。 */
+/** 分支管理：本地/远程两组 + 切换/新建/删除（删除需点两次）。 */
 function BranchesModal({
   t, cwd, branches, current, onClose, onChanged, run, onNewBranch,
 }: {
@@ -816,31 +882,35 @@ function BranchesModal({
   onClose: () => void
   onChanged: () => Promise<void>
   run: (kind: BusyKind, action: () => Promise<{ ok: boolean; error?: string }>, okText: string) => Promise<boolean>
-  /** 转到新建分支弹窗（修复死按钮：此前只 onClose 无动作）。 */
   onNewBranch: () => void
 }) {
   const local = branches.filter((branch) => branch.kind === 'local')
   const remote = branches.filter((branch) => branch.kind === 'remote')
   const [confirmDelete, setConfirmDelete] = useState('')
   return (
-    <Modal title={t('wbBranchTitle')} onClose={onClose} width={480}>
-      <div className="dgp-wb-branchcols">
+    <Modal
+      title={t('wbBranchTitle')}
+      onClose={onClose}
+      width={520}
+      footer={<button type="button" className="dgp-btn primary" onClick={onNewBranch}>{t('wbNewBranch')}</button>}
+    >
+      <div className="dgp-gw-branchcols">
         <div>
-          <div className="dgp-wb-group-title" style={{ padding: '2px 0 6px' }}>{t('wbLocalBranches')}</div>
+          <div className="dgp-gw-secttitle">{t('wbLocalBranches')}</div>
           {local.map((branch) => (
-            <div key={branch.name} className="dgp-wb-branchrow" data-current={branch.current ? '1' : '0'}>
-              <span className="dgp-wb-branchname">{branch.name}{branch.current ? ' ✓' : ''}</span>
-              <span className="dgp-wb-branchmeta">
+            <div key={branch.name} className="dgp-gw-branchrow" data-current={branch.current ? '1' : '0'}>
+              <span className="dgp-gw-branchname">{branch.name}{branch.current ? ' ✓' : ''}</span>
+              <span className="dgp-gw-branchmeta">
                 {branch.ahead > 0 ? `↑${branch.ahead}` : ''}
                 {branch.behind > 0 ? `↓${branch.behind}` : ''}
               </span>
               {!branch.current ? (
                 <>
-                  <button type="button" className="dgp-btn" onClick={() => void run('branch', () => api('/repo/branches/checkout', { cwd, name: branch.name }), t('toastCheckedOut')).then((ok) => ok && onChanged()).then(() => onClose())}>{t('wbCheckout')}</button>
+                  <button type="button" className="dgp-gw-textbtn" onClick={() => void run('branch', () => api('/repo/branches/checkout', { cwd, name: branch.name }), t('toastCheckedOut')).then((ok) => ok && onChanged()).then(() => onClose())}>{t('wbCheckout')}</button>
                   {confirmDelete === branch.name ? (
-                    <button type="button" className="dgp-btn danger" onClick={() => void run('branch', () => api('/repo/branches/delete', { cwd, name: branch.name, force: false }), t('toastBranchDeleted')).then((ok) => ok && onChanged()).then(() => setConfirmDelete(''))}>{t('wbConfirmDelete')}</button>
+                    <button type="button" className="dgp-gw-textbtn" data-danger="1" onClick={() => void run('branch', () => api('/repo/branches/delete', { cwd, name: branch.name, force: false }), t('toastBranchDeleted')).then((ok) => ok && onChanged()).then(() => setConfirmDelete(''))}>{t('wbConfirmDelete')}</button>
                   ) : (
-                    <button type="button" className="dgp-btn danger" onClick={() => setConfirmDelete(branch.name)}>{t('wbDelete')}</button>
+                    <button type="button" className="dgp-gw-textbtn" data-danger="1" onClick={() => setConfirmDelete(branch.name)}>{t('wbDelete')}</button>
                   )}
                 </>
               ) : null}
@@ -848,23 +918,20 @@ function BranchesModal({
           ))}
         </div>
         <div>
-          <div className="dgp-wb-group-title" style={{ padding: '2px 0 6px' }}>{t('wbRemoteBranches')}</div>
+          <div className="dgp-gw-secttitle">{t('wbRemoteBranches')}</div>
           {remote.length === 0 ? <div className="dgp-hint">{t('wbNoRemoteBranches')}</div> : null}
           {remote.map((branch) => (
-            <div key={branch.name} className="dgp-wb-branchrow">
-              <span className="dgp-wb-branchname">{branch.name}</span>
+            <div key={branch.name} className="dgp-gw-branchrow">
+              <span className="dgp-gw-branchname">{branch.name}</span>
             </div>
           ))}
         </div>
-      </div>
-      <div className="dgp-modal-foot" style={{ borderTop: 'none' }}>
-        <button type="button" className="dgp-btn primary" onClick={onNewBranch}>{t('wbNewBranch')}</button>
       </div>
     </Modal>
   )
 }
 
-/** 新建分支弹窗。 */
+/** 新建分支。 */
 function NewBranchModal({
   t, cwd, onClose, onChanged, run,
 }: {
@@ -877,7 +944,7 @@ function NewBranchModal({
   const [name, setName] = useState('')
   const [checkout, setCheckout] = useState(true)
   return (
-    <Modal title={t('wbNewBranch')} onClose={onClose} width={420}
+    <Modal title={t('wbNewBranch')} onClose={onClose} width={440}
       footer={
         <>
           <button type="button" className="dgp-btn" onClick={onClose}>{t('wbCancel')}</button>
@@ -904,7 +971,7 @@ function NewBranchModal({
   )
 }
 
-/** 提交详情弹窗：元信息 + 文件表 + diff。 */
+/** 提交详情：元信息 + 文件表 + diff。 */
 function CommitDetailModal({ t, cwd, rev, onClose }: { t: (key: string) => string; cwd: string; rev: string; onClose: () => void }) {
   const [detail, setDetail] = useState<{ commit: CommitRow & { message?: string }; files: Array<{ path: string; added: number; deleted: number }>; diff: string } | null>(null)
   const [error, setError] = useState('')
@@ -927,9 +994,9 @@ function CommitDetailModal({ t, cwd, rev, onClose }: { t: (key: string) => strin
     }
   }, [cwd, rev, t])
   return (
-    <Modal title={`${t('wbCommitDetail')} ${rev.slice(0, 8)}`} onClose={onClose} width={720}>
+    <Modal title={`${t('wbCommitDetail')} ${rev.slice(0, 8)}`} onClose={onClose} width={760}>
       {loading ? <Skeleton rows={6} /> : error ? <div className="dgp-err">{error}</div> : detail ? (
-        <div className="dgp-wb-detail">
+        <div className="dgp-gw-detail">
           <dl className="dgp-kv">
             <dt>hash</dt><dd><code>{detail.commit.hash}</code></dd>
             <dt>{t('wbAuthor')}</dt><dd>{detail.commit.author} &lt;{detail.commit.email}&gt;</dd>
@@ -941,28 +1008,28 @@ function CommitDetailModal({ t, cwd, rev, onClose }: { t: (key: string) => strin
               </>
             ) : null}
           </dl>
-          <pre className="dgp-wb-msgtext">{detail.commit.message || detail.commit.subject}</pre>
-          <div className="dgp-wb-group-title" style={{ padding: '6px 0' }}>{t('wbFiles')} · {detail.files.length}</div>
+          <pre className="dgp-gw-msgtext">{detail.commit.message || detail.commit.subject}</pre>
+          <div className="dgp-gw-secttitle">{t('wbFiles')} · {detail.files.length}</div>
           <ul className="dgp-modal-list">
             {detail.files.map((file) => (
               <li key={file.path}>
                 <code>{file.path}</code>
-                <span className="dgp-wb-filestat">
+                <span className="dgp-gw-stat">
                   {file.added > 0 ? <b data-sign="add">+{file.added}</b> : null}
                   {file.deleted > 0 ? <b data-sign="del">-{file.deleted}</b> : null}
                 </span>
               </li>
             ))}
           </ul>
-          <div className="dgp-wb-group-title" style={{ padding: '6px 0' }}>diff</div>
-          <pre className="dgp-wb-diff"><code>{detail.diff || t('diffEmpty')}</code></pre>
+          <div className="dgp-gw-secttitle">diff</div>
+          <pre className="dgp-gw-diff"><code>{detail.diff || t('diffEmpty')}</code></pre>
         </div>
       ) : null}
     </Modal>
   )
 }
 
-/** 远程仓库管理弹窗（IDEA Manage Remotes：name—url 列表 + 增删）。 */
+/** 远程仓库管理：name—url 列表 + 增删。 */
 function RemoteModal({
   t, cwd, remotes, onClose, onChanged, run,
 }: {
@@ -976,13 +1043,13 @@ function RemoteModal({
   const [name, setName] = useState('')
   const [url, setUrl] = useState('')
   return (
-    <Modal title={t('wbRemoteTitle')} onClose={onClose} width={520}>
-      {remotes.length === 0 ? <div className="dgp-hint" style={{ padding: '4px 0 8px' }}>{t('wbNoRemotes')}</div> : null}
+    <Modal title={t('wbRemoteTitle')} onClose={onClose} width={560}>
+      {remotes.length === 0 ? <div className="dgp-hint">{t('wbNoRemotes')}</div> : null}
       {remotes.map((remote) => (
-        <div key={remote.name} className="dgp-wb-branchrow">
-          <span className="dgp-wb-branchname">{remote.name}</span>
-          <code className="dgp-wb-remoteurl">{remote.url}</code>
-          <button type="button" className="dgp-btn danger" onClick={() => void run('remote', () => api('/repo/remotes/remove', { cwd, name: remote.name }), t('toastRemoteRemoved')).then((ok) => ok && onChanged())}>{t('wbRemove')}</button>
+        <div key={remote.name} className="dgp-gw-branchrow">
+          <span className="dgp-gw-branchname">{remote.name}</span>
+          <code className="dgp-gw-remoteurl">{remote.url}</code>
+          <button type="button" className="dgp-gw-textbtn" data-danger="1" onClick={() => void run('remote', () => api('/repo/remotes/remove', { cwd, name: remote.name }), t('toastRemoteRemoved')).then((ok) => ok && onChanged())}>{t('wbRemove')}</button>
         </div>
       ))}
       <div className="dgp-sep" />
@@ -994,7 +1061,7 @@ function RemoteModal({
         <span className="dgp-label">{t('wbRemoteUrl')}</span>
         <input className="dgp-input" value={url} onChange={(event) => setUrl(event.target.value)} placeholder="https://github.com/user/repo.git" />
       </div>
-      <div className="dgp-modal-foot" style={{ borderTop: 'none' }}>
+      <div className="dgp-modal-foot" style={{ borderTop: 'none', padding: '10px 0 0' }}>
         <button
           type="button"
           className="dgp-btn primary"
@@ -1008,7 +1075,7 @@ function RemoteModal({
   )
 }
 
-/** Pull 策略选择弹窗（IDEA Update Project：merge / rebase 二选一）。 */
+/** Pull 策略选择：merge / rebase 二选一。 */
 function PullModal({
   t, onClose, onPull, upstream, hasRemote,
 }: {
@@ -1019,7 +1086,7 @@ function PullModal({
   hasRemote: boolean
 }) {
   return (
-    <Modal title={t('wbPullTitle')} onClose={onClose} width={440}
+    <Modal title={t('wbPullTitle')} onClose={onClose} width={460}
       footer={
         <>
           <button type="button" className="dgp-btn" onClick={onClose}>{t('wbCancel')}</button>
