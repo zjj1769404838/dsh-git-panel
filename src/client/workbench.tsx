@@ -330,7 +330,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
 
   const loadStatus = async () => {
     try {
-      const data = await api<{ ok: boolean; status?: RepoStatusView }>(`/repo/status?dir=${encodeURIComponent(dir)}`)
+      const data = await api<{ ok: boolean; status?: RepoStatusView }>(`/repo/status?cwd=${encodeURIComponent(dir)}`)
       if (data.ok && data.status) onStatusChange(data.status)
     } catch {
       /* 状态失败不阻塞其它面板数据 */
@@ -341,7 +341,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     if (!dir || !isRepo) return
     setChangesLoading(true)
     try {
-      const data = await api<{ ok: boolean; changes?: RepoChangesView; error?: string }>(`/repo/changes?dir=${encodeURIComponent(dir)}`)
+      const data = await api<{ ok: boolean; changes?: RepoChangesView; error?: string }>(`/repo/changes?cwd=${encodeURIComponent(dir)}`)
       if (data.ok && data.changes) {
         setChanges(data.changes)
         setChangesError('')
@@ -396,7 +396,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
   const loadBranches = async () => {
     if (!dir || !isRepo) return
     try {
-      const data = await api<{ ok: boolean; branches?: BranchRow[]; current?: string; error?: string }>(`/repo/branches?dir=${encodeURIComponent(dir)}`)
+      const data = await api<{ ok: boolean; branches?: BranchRow[]; current?: string; error?: string }>(`/repo/branches?cwd=${encodeURIComponent(dir)}`)
       if (data.ok) {
         setBranches(data.branches ?? [])
         setCurrentBranch(data.current ?? '')
@@ -409,7 +409,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
   const loadRemotes = async () => {
     if (!dir || !isRepo) return
     try {
-      const data = await api<{ ok: boolean; remotes?: RemoteRow[]; upstream?: string }>(`/repo/remotes?dir=${encodeURIComponent(dir)}`)
+      const data = await api<{ ok: boolean; remotes?: RemoteRow[]; upstream?: string }>(`/repo/remotes?cwd=${encodeURIComponent(dir)}`)
       if (data.ok) {
         setRemotes(data.remotes ?? [])
         setUpstream(data.upstream ?? '')
@@ -426,7 +426,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
       // 行数走偏好（20~200），后端会再夹到 5..100；历史泳道与提交列表对齐靠它一次拉够。
       const want = Number.parseInt(readPref(PREF_GRAPH_LIMIT, '60'), 10)
       const limit = Number.isFinite(want) ? Math.min(100, Math.max(20, want)) : 60
-      const data = await api<{ ok: boolean; graph?: RepoGraphView; error?: string }>(`/repo/graph?dir=${encodeURIComponent(dir)}&limit=${limit}`)
+      const data = await api<{ ok: boolean; graph?: RepoGraphView; error?: string }>(`/repo/graph?cwd=${encodeURIComponent(dir)}&limit=${limit}`)
       if (data.ok && data.graph) {
         setGraph(data.graph)
         setGraphError('')
@@ -446,7 +446,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     if (!dir || !isRepo) return
     setTagsLoading(true)
     try {
-      const data = await api<{ ok: boolean; tags?: TagView[]; error?: string }>(`/repo/tags?dir=${encodeURIComponent(dir)}`)
+      const data = await api<{ ok: boolean; tags?: TagView[]; error?: string }>(`/repo/tags?cwd=${encodeURIComponent(dir)}`)
       if (data.ok && Array.isArray(data.tags)) {
         setTags(data.tags)
         setTagsError('')
@@ -466,7 +466,7 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     if (!dir || !isRepo) return
     setStashesLoading(true)
     try {
-      const data = await api<{ ok: boolean; stashes?: StashView[]; error?: string }>(`/repo/stash?dir=${encodeURIComponent(dir)}`)
+      const data = await api<{ ok: boolean; stashes?: StashView[]; error?: string }>(`/repo/stash?cwd=${encodeURIComponent(dir)}`)
       if (data.ok && Array.isArray(data.stashes)) {
         setStashes(data.stashes)
         setStashesError('')

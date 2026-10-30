@@ -213,7 +213,7 @@ dsh plugin --profile desktop remove @zjj/dsh-git-panel
 ```bash
 npm run bundle        # 构建 lib/index.js + lib/client.js
 npm run typecheck     # tsc --noEmit
-npm run gates         # 283 项插件契约门禁
+npm run gates         # 284 项插件契约门禁
 npm run test:hardening# 197 项加固回归（含真实 git 仓库端到端 + 仓库权限档位 + 单条权限写入 + 新建远程仓库）
 npm run test:e2e      # 23 项设置页 GUI 端到端验证（需要本机 Edge + DSH Web 在跑）
 npm run test:e2e:wb   # 29 项 Git 工作台 GUI 端到端验证（含居中模态框形态、点弹窗不消失回归）

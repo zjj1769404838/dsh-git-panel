@@ -385,6 +385,11 @@ if (clientOut) {
   check('client 差异渲染统一走 DiffView（不再有裸 dgp-gw-diff pre）', !clientSrcAll.includes('className="dgp-gw-diff"'))
   check('client 有窄屏断点（@media max-width:760px）', clientSrcAll.includes('@media (max-width:760px)'))
   check('client chip 有干净/脏二态（data-dirty）', clientSrcAll.includes('data-dirty') && clientSrcAll.includes('.dgp-chip[data-dirty="1"]'))
+  // ---- dgp-v20 修复：工作台 GET 查询串参数名必须是 cwd（node 侧只认 cwd，曾误写成 dir 导致全部 400）----
+  check(
+    'client 工作台 GET 请求只用 cwd 参数（没有 ?dir=）',
+    !clientSrcAll.includes('?dir=') && clientSrcAll.includes('?cwd=${encodeURIComponent(dir)}'),
+  )
   check('client 有版本检查（GitHub releases/latest + 5 秒超时）', clientSrcAll.includes('/releases/latest') && clientSrcAll.includes('5000') && clientSrcAll.includes('export function isNewer') && clientSrcAll.includes('export function parseVersion'))
   check('client 版本提示不打扰（预发布不提示 + 只在打开菜单时查）', clientSrcAll.includes('prerelease') && clientSrcAll.includes('useLatestVersion(open)') && clientSrcAll.includes('menuNewVersion'))
   check('e2e v20 走查脚本存在且已接入 npm script', (await exists(resolve(root, 'scripts/e2e-v20.mjs'))) && JSON.stringify(pkg.scripts ?? {}).includes('e2e-v20'))
