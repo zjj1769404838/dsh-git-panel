@@ -782,6 +782,9 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 .dgp-fb-md hr{margin:14px 0;border:0;border-top:.5px solid var(--dgp-line)}
 .dgp-fb-md a{color:var(--dgp-accent);text-decoration:none}
 .dgp-fb-md a:hover{text-decoration:underline}
+.dgp-fb-md table.dgp-md-table{width:100%;border-collapse:collapse;margin:10px 0;font-size:12px;display:block;overflow-x:auto}
+.dgp-fb-md table.dgp-md-table th,.dgp-fb-md table.dgp-md-table td{border:.5px solid var(--dgp-line2);padding:5px 8px;vertical-align:top;line-height:18px}
+.dgp-fb-md table.dgp-md-table th{background:var(--dgp-inset);font-weight:600;color:var(--dgp-fg);white-space:nowrap}
 .dgp-fb-img{display:block;max-width:100%;max-height:100%;object-fit:contain;padding:10px;cursor:zoom-in;transition:transform var(--dgp-fast) var(--dgp-ease)}
 .dgp-fb-img[data-zoom="1"]{max-width:none;max-height:none;cursor:zoom-out}
 .dgp-fb-imgbox{flex:1 1 auto;min-height:0;overflow:auto;display:flex;align-items:flex-start;justify-content:center;background:repeating-conic-gradient(var(--dgp-inset) 0% 25%,transparent 0% 50%) 50%/16px 16px}

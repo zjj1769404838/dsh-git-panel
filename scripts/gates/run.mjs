@@ -111,6 +111,7 @@ const clientSrcAll = [
 ].join('\n')
 const sharedSrc = await readText(resolve(root, 'src/client/shared.tsx'))
 const markdownSrc = await readText(resolve(root, 'src/client/markdown.ts'))
+const settingsSrc = await readText(resolve(root, 'src/client/settings.tsx'))
 check('client 产物非空', (clientOut?.length ?? 0) > 1000, `${clientOut?.length ?? 0} 字节`)
 if (clientOut) {
   check('client 产物带 ModuleLoader banner', clientOut.includes('__ModuleLoader__.load'))
@@ -309,6 +310,7 @@ if (clientOut) {
   check('client 图片预览支持点图切原尺寸（data-zoom）', clientSrcAll.includes('data-zoom') && sharedSrc.includes('.dgp-fb-imgbox'))
   check('client Markdown 渲染器自带转义（不引第三方解析库）', markdownSrc.includes('escapeHtml') && markdownSrc.includes('export function renderMarkdown') && !markdownSrc.includes('marked('))
   check('client Markdown 可切回源码（fbRendered + dgp-fb-md）', clientSrcAll.includes('fbRendered') && sharedSrc.includes('.dgp-fb-md'))
+  check('client Markdown 渲染表格（含列对齐，且段落不吞表格行）', markdownSrc.includes('dgp-md-table') && markdownSrc.includes('text-align:') && /\\s\\*\\|/u.test(markdownSrc) && sharedSrc.includes('table.dgp-md-table'))
   check('client 620 窄屏断点存在（一次只干一件事）', sharedSrc.includes('@media (max-width:620px)'))
   check('client 提交详情提供回退/撤销入口（reset + revert）', clientSrcAll.includes('wbResetSoft') && clientSrcAll.includes('wbRevert') && clientSrcAll.includes('confirmHard'))
   check('client 设置页可固定 AI 模型（PREF_AI_MODEL + /llm/models 下拉）', clientSrcAll.includes('PREF_AI_MODEL') && clientSrcAll.includes('prefAiModel') && clientSrcAll.includes('/llm/models'))
@@ -316,6 +318,8 @@ if (clientOut) {
   check('client 偏好变更即时广播（subscribePref 监听自定义事件）', sharedSrc.includes('PREF_EVENT') && sharedSrc.includes('export function subscribePref'))
   check('client 改动视图有汇总统计条（dgp-gw-summary）', clientSrcAll.includes('changeSummary') && sharedSrc.includes('.dgp-gw-summary'))
   check('client 设置页有「界面」分节（InterfacePanel）', clientSrcAll.includes('function InterfacePanel') && clientSrcAll.includes('interfaceShow'))
+  check('client 设置页折叠面板展开后自动滚到可见处（data-panel + revealPanel）', clientSrcAll.includes('data-panel="interface"') && clientSrcAll.includes('data-panel="advanced"') && clientSrcAll.includes('function revealPanel') && clientSrcAll.includes('scrollIntoView'))
+  check('client 界面面板紧跟概览带（不埋在账号卡之后）', /interfaceOpen \? <InterfacePanel[\s\S]{0,900}?accounts\.length === 0/u.test(settingsSrc))
 // ---- dgp-v20：8 语言（zh / en 内置，ja/es/fr/de/ru/pt 由插件 addLanguage 注册） ----
 {
   const langFiles = ['ja', 'es', 'fr', 'de', 'ru', 'pt']
@@ -383,6 +387,7 @@ if (clientOut) {
   check('client chip 有干净/脏二态（data-dirty）', clientSrcAll.includes('data-dirty') && clientSrcAll.includes('.dgp-chip[data-dirty="1"]'))
   check('client 有版本检查（GitHub releases/latest + 5 秒超时）', clientSrcAll.includes('/releases/latest') && clientSrcAll.includes('5000') && clientSrcAll.includes('export function isNewer') && clientSrcAll.includes('export function parseVersion'))
   check('client 版本提示不打扰（预发布不提示 + 只在打开菜单时查）', clientSrcAll.includes('prerelease') && clientSrcAll.includes('useLatestVersion(open)') && clientSrcAll.includes('menuNewVersion'))
+  check('e2e v20 走查脚本存在且已接入 npm script', (await exists(resolve(root, 'scripts/e2e-v20.mjs'))) && JSON.stringify(pkg.scripts ?? {}).includes('e2e-v20'))
   check('client BUILD 版本已推进（dgp-v20）', clientOut.includes('dgp-v20'))
 }
 // ---- node 半边：git-ops 命令层与工作台端点 ----

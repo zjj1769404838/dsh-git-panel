@@ -2,6 +2,9 @@
 /**
  * 截图脚本：chip 后置三页（Git 工作台模态框 / 当前分支详情时间线 / chip 分组菜单）。
  * 用法：node scripts/shot-pages.mjs [http://127.0.0.1:63801]
+ *
+ * GUI 默认会话的 cwd 不是 Git 仓库，chip 会降级成「初始化 Git 项目」，
+ * 因此先按 e2e-workbench 的做法切到本项目下的会话，等 chip 显示出真实分支名再截图。
  */
 import { readFileSync, existsSync, mkdirSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -67,6 +70,9 @@ async function clearOverlays(page) {
   await page.waitForTimeout(400)
 }
 
+const PROJECT_NAME = 'dsh-git-panel'
+const NEWLINE_RE = /\r?\n/u
+
 mkdirSync('.work', { recursive: true })
 const browser = await chromium.launch({ executablePath: findBrowser(), headless: true, args: ['--disable-gpu'] })
 const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, deviceScaleFactor: 2 })
@@ -76,6 +82,87 @@ try {
   await page.goto(BASE + '/', { waitUntil: 'domcontentloaded' })
   await page.waitForTimeout(6000)
   await clearOverlays(page)
+
+  // ⓪ 切到本项目下的会话（否则 chip 停在「初始化 Git 项目」，后两页无从打开）
+  const projectShown = await page
+    .waitForSelector('[role="treeitem"]', { timeout: 15_000 })
+    .then(() => true)
+    .catch(() => false)
+
+  async function clickProject() {
+    return page.evaluate((name) => {
+      const row = [...document.querySelectorAll('[role="treeitem"]')].find(
+        (item) => String(item.className).includes('projectRow') && item.textContent.trim() === name,
+      )
+      if (!row) return false
+      row.click()
+      return true
+    }, PROJECT_NAME)
+  }
+
+  async function listSessions() {
+    return page.evaluate((name) => {
+      const rows = [...document.querySelectorAll('[role="treeitem"]')]
+      const index = rows.findIndex(
+        (item) => String(item.className).includes('projectRow') && item.textContent.trim() === name,
+      )
+      if (index < 0) return []
+      return rows
+        .slice(index + 1)
+        .filter((item) => String(item.className).includes('sessionRow'))
+        .map((item) => item.textContent.trim().slice(0, 40))
+    }, PROJECT_NAME)
+  }
+
+  async function clickSession(target) {
+    return page.evaluate((args) => {
+      const rows = [...document.querySelectorAll('[role="treeitem"]')]
+      const index = rows.findIndex(
+        (item) => String(item.className).includes('projectRow') && item.textContent.trim() === args.name,
+      )
+      if (index < 0) return false
+      const session = rows
+        .slice(index + 1)
+        .filter((item) => String(item.className).includes('sessionRow'))
+        .find((item) => item.textContent.trim().slice(0, 40) === args.target)
+      if (!session) return false
+      session.click()
+      return true
+    }, { name: PROJECT_NAME, target })
+  }
+
+  async function chipIsGit() {
+    if ((await page.locator('.dgp-chip').count()) === 0) return false
+    const text = (await page.locator('.dgp-chip').first().innerText()).trim()
+    const first = text.split(NEWLINE_RE).map((line) => line.trim()).filter(Boolean)[0] ?? ''
+    return first !== '' && first !== 'Git'
+  }
+
+  let switched = 'no-tree'
+  if (projectShown) {
+    const found = await clickProject()
+    if (!found) switched = 'no-project-row'
+    else {
+      await page.waitForTimeout(600)
+      let sessions = await listSessions()
+      if (sessions.length === 0) {
+        await clickProject()
+        await page.waitForTimeout(600)
+        sessions = await listSessions()
+      }
+      for (const session of sessions) {
+        await clickSession(session)
+        await page.waitForTimeout(2000)
+        if (await chipIsGit()) {
+          switched = session
+          break
+        }
+      }
+      if (switched === 'no-project-row') switched = 'no-git-session'
+    }
+  }
+  console.log('session:', switched)
+  await page.waitForTimeout(1200)
 
   // ① chip 分组菜单
   await page.evaluate(() => document.querySelector('.dgp-chip')?.click())

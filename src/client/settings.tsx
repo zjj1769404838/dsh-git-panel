@@ -568,7 +568,7 @@ function AdvancedPanel({
   onUseRoot: (root: string) => void
 }) {
   return (
-    <div className="dgp-adv">
+    <div className="dgp-adv" data-panel="advanced">
       <div className="dgp-group">
         <div className="dgp-group-title">{t('groupScopeRoots')}</div>
         <div className="dgp-field">
@@ -729,7 +729,7 @@ function InterfacePanel({ t }: { t: (key: string) => string }) {
   }, [t])
 
   return (
-    <div className="dgp-adv">
+    <div className="dgp-adv" data-panel="interface">
       <div className="dgp-group">
         <div className="dgp-group-title">{t('groupInterface')}</div>
         <div className="dgp-hint" style={{ marginTop: 0 }}>
@@ -813,7 +813,6 @@ function InterfacePanel({ t }: { t: (key: string) => string }) {
       <div className="dgp-group">
         <div className="dgp-group-title">{t('prefGraphLimit')}</div>
         <div className="dgp-field">
-          <label className="dgp-label">{t('prefGraphLimit')}</label>
           <div className="dgp-row">
             <input
               className="dgp-input dgp-num"
@@ -865,6 +864,14 @@ export function GitSection({ t }: SectionProps) {
   const [advanced, setAdvanced] = useState(false)
   /** 界面偏好分节（只影响本机显示，与服务端权限设置无关）。 */
   const [interfaceOpen, setInterfaceOpen] = useState(false)
+
+  // 概览带在页面顶部、面板在下方：展开后把面板滚进视口，避免「点了没反应」的错觉。
+  function revealPanel(name: string) {
+    window.setTimeout(() => {
+      const node = document.querySelector(`[data-panel="${name}"]`)
+      if (node instanceof HTMLElement) node.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    }, 60)
+  }
   const [connectOpen, setConnectOpen] = useState(false)
   /** 正在编辑的账号（非空时弹窗以「编辑账号」模式打开，回填平台与主机）。 */
   const [editTarget, setEditTarget] = useState<{ provider: string; host: string; apiBase: string; method: 'oauth' | 'pat'; login: string } | null>(null)
@@ -1256,7 +1263,11 @@ export function GitSection({ t }: SectionProps) {
           type="button"
           className="dgp-btn ghost"
           aria-expanded={interfaceOpen}
-          onClick={() => setInterfaceOpen((value) => !value)}
+          onClick={() => {
+            const next = !interfaceOpen
+            setInterfaceOpen(next)
+            if (next) revealPanel('interface')
+          }}
         >
           {interfaceOpen ? t('interfaceHide') : t('interfaceShow')}
         </button>
@@ -1264,11 +1275,18 @@ export function GitSection({ t }: SectionProps) {
           type="button"
           className="dgp-btn ghost"
           aria-expanded={advanced}
-          onClick={() => setAdvanced((value) => !value)}
+          onClick={() => {
+            const next = !advanced
+            setAdvanced(next)
+            if (next) revealPanel('advanced')
+          }}
         >
           {advanced ? t('advancedHide') : t('advancedShow')}
         </button>
       </div>
+
+      {/* 界面偏好与账号无关：紧跟概览带，点开即时可见。 */}
+      {interfaceOpen ? <InterfacePanel t={t} /> : null}
 
       {accounts.length === 0 ? (
         <EmptyState title={t('noAccount')} hint={t('noAccountHint')} />
@@ -1326,8 +1344,6 @@ export function GitSection({ t }: SectionProps) {
           onUseRoot={addRoot}
         />
       ) : null}
-
-      {interfaceOpen ? <InterfacePanel t={t} /> : null}
 
       <div className="dgp-adv">
         <div className="dgp-card">

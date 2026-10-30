@@ -213,11 +213,12 @@ dsh plugin --profile desktop remove @zjj/dsh-git-panel
 ```bash
 npm run bundle        # 构建 lib/index.js + lib/client.js
 npm run typecheck     # tsc --noEmit
-npm run gates         # 279 项插件契约门禁
+npm run gates         # 283 项插件契约门禁
 npm run test:hardening# 197 项加固回归（含真实 git 仓库端到端 + 仓库权限档位 + 单条权限写入 + 新建远程仓库）
 npm run test:e2e      # 23 项设置页 GUI 端到端验证（需要本机 Edge + DSH Web 在跑）
 npm run test:e2e:wb   # 29 项 Git 工作台 GUI 端到端验证（含居中模态框形态、点弹窗不消失回归）
 npm run test:e2e:newui # 19 项新入口体系 GUI 端到端验证（单一 chip 入口 + 分组菜单）
+npm run test:e2e:v20  # 18 项 v20 新能力 GUI 端到端验证（界面分节 / 汇总条 / Markdown 表格 / 回退撤销）
 npm run preview       # 用真实 CSS + 宿主 token 渲染 docs/preview/*.png（需要本机 Edge）
 npm test              # gates + hardening
 ```
@@ -227,6 +228,8 @@ npm test              # gates + hardening
 `test:e2e:wb` 是工作台的点击回归：切到本项目的会话 → chip 显示真实分支 → 打开工作台（断言挂在 `body` 直属层，脱离 composer 的 `container-type:inline-size` 包含块）→ 点分支管理开二级弹窗 → **把弹窗内的标题/正文/输入框/复选框逐个点一遍，每次点完断言「弹窗 + 工作台 + chip」三件套都还在** → Pull / 远程仓库 / 提交详情同样处理 → 切换左侧导航（改动/历史/文件/标签/贮藏）、刷新、勾选改动行都不许关掉工作台。这条链路正是「点一下弹窗就整片消失」的复现路径。
 
 `test:e2e:newui` 验证重构后的入口体系：切到本项目会话 → **Git 只有 chip 一个入口**（chip 旁不再有独立的分支详情按钮）→ 菜单里五个入口齐全（刷新状态 / Git 工作台 / 打开项目目录 / 打开 Git 设置 / 当前分支详情）→ 菜单里的「当前分支详情」副标题带当前分支名，点它后在**页面中央**弹出 Modal（标题带分支名、挂在 `body` 直属层、视口内不溢出）→ 正文逐条展示提交四要素（提交信息 / 短哈希 / 作者 / 时间）→ 关闭后 chip 仍在且无页面 JS 错误。**node 半边不热重载**，桌面端未重启时端点不可用，提交行断言按 `SKIP` 处理（端点级行为由 `test:hardening` 兜底）。
+
+`test:e2e:v20` 验证 v20 的新能力：切到本项目会话 → 设置页 Git 分节 → 展开「界面」面板（差异布局四档 / 行为开关三项 / AI 模型下拉有选项 / 泳道行数输入框）→ 打开工作台看改动汇总条 → 进文件视图打开 `README.md` 断言 Markdown **渲染视图**出现且**渲染出标题元素与表格** → 进历史点首行开提交详情，断言回退/撤销按钮、差异四档、行号列。截图落在 `.work/v20-*.png`（不进仓库）。
 
 `test:hardening` 用 mock ctx 驱动**构建产物 `lib/index.js`**，在临时 `DSH_HOME` 下跑，覆盖：路由注册、工具注册、跨站/超大请求拦截、设置归一化、密文不外泄、OAuth 缺 clientId 提示、未授权仓库/目录拒绝、写操作默认拒绝、`/repo/status` 的六种形态（缺 cwd / 非仓库且 `reason=no-repo` / 目录不存在与相对路径 `reason=invalid` / 已授权真实仓库 `reason=repo` / 未授权不泄露 ahead-behind）、`/repo/init` 的十种形态（未授权拒绝且不落 `.git` / 已授权创建 / 回报分支 / 幂等 / 缺 cwd / 目录不存在 / **初始化后原有文件与子目录内容原样保留**）、`/repo/changes` 的七种形态（缺 cwd 400 / 非仓库 `isRepo:false` / **未授权目录只回空壳不泄露路径与分支** / 已授权仓库回报 root+branch+dirty / 工作区修改为 `M` / 已暂存文件标记 `staged` / 未跟踪文件为 `??` / 文件按路径升序）、真实仓库的 status/branches/diff/log 与「确认前不执行、取消不执行、确认后执行、令牌不可复用」。
 

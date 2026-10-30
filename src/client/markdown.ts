@@ -5,7 +5,7 @@
  * 而这里只需要「仓库里的 README 看得懂」这一档能力。所以先整体转义 HTML，
  * 再在转义后的文本上做替换——任何 `<script>` 都会被转成实体，不存在注入面。
  *
- * 支持：标题、段落、粗斜体、行内代码、围栏代码块、无序/有序列表、引用、分隔线、链接、任务列表。
+ * 支持：标题、段落、粗斜体、行内代码、围栏代码块、无序/有序列表、引用、分隔线、链接、任务列表、表格（含列对齐）。
  * 不支持（有意为之）：内嵌 HTML、mermaid 图、脚注、数学公式。
  */
 
@@ -78,6 +78,33 @@ export function renderMarkdown(source: string): string {
       out.push(`<blockquote>${inline(body.join(' '))}</blockquote>`)
       continue
     }
+    // 表格：`| a | b |` 后紧跟 `| --- | :-: |` 才认作表头，否则按普通文本处理。
+    if (/^\s*\|.*\|\s*$/u.test(line) && index + 1 < lines.length && /^\s*\|[\s:|-]+\|\s*$/u.test(lines[index + 1])) {
+      const splitRow = (row: string): string[] =>
+        row.trim().replace(/^\|/u, '').replace(/\|$/u, '').split('|').map((cell) => cell.trim())
+      const head = splitRow(line)
+      const aligns = splitRow(lines[index + 1]).map((cell): string => {
+        const left = cell.startsWith(':')
+        const right = cell.endsWith(':')
+        if (left && right) return 'center'
+        if (right) return 'right'
+        if (left) return 'left'
+        return ''
+      })
+      const styleOf = (column: number): string => (aligns[column] ? ` style="text-align:${aligns[column]}"` : '')
+      index += 2
+      const rows: string[][] = []
+      while (index < lines.length && /^\s*\|.*\|\s*$/u.test(lines[index])) {
+        rows.push(splitRow(lines[index]))
+        index += 1
+      }
+      const headHtml = head.map((cell, column) => `<th${styleOf(column)}>${inline(cell)}</th>`).join('')
+      const bodyHtml = rows
+        .map((row) => `<tr>${row.map((cell, column) => `<td${styleOf(column)}>${inline(cell ?? '')}</td>`).join('')}</tr>`)
+        .join('')
+      out.push(`<table class="dgp-md-table"><thead><tr>${headHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`)
+      continue
+    }
     // 列表：连续同类行合成一个 ul/ol
     const bullet = /^\s*[-*+]\s+(.*)$/u.exec(line)
     const ordered = /^\s*\d+[.)]\s+(.*)$/u.exec(line)
@@ -108,7 +135,7 @@ export function renderMarkdown(source: string): string {
     }
     // 段落：连续非空行合成一段
     const para: string[] = []
-    while (index < lines.length && !/^\s*$/u.test(lines[index]) && !/^(#{1,6}\s|```|\s*[-*+]\s|\s*\d+[.)]\s|\s*>)/u.test(lines[index])) {
+    while (index < lines.length && !/^\s*$/u.test(lines[index]) && !/^(#{1,6}\s|```|\s*[-*+]\s|\s*\d+[.)]\s|\s*>|\s*\|)/u.test(lines[index])) {
       para.push(lines[index])
       index += 1
     }

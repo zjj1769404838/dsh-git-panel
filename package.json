@@ -32,7 +32,8 @@
     "test:e2e": "node scripts/e2e-settings.mjs",
     "test": "node scripts/gates/run.mjs && node scripts/test-hardening.mjs",
     "test:e2e:wb": "node scripts/e2e-workbench.mjs",
-    "test:e2e:newui": "node scripts/e2e-newui.mjs"
+    "test:e2e:newui": "node scripts/e2e-newui.mjs",
+    "test:e2e:v20": "node scripts/e2e-v20.mjs"
   },
   "files": [
     "lib",
