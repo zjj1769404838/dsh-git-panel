@@ -78,11 +78,12 @@ if (nodeOut) {
 
 const clientOut = await readText(resolve(root, 'lib/client.js'))
 const clientSrc = await readText(resolve(root, 'src/client/index.tsx'))
-// 三个 client 源文件的合并文本：重构后的新能力可能落在 shared.tsx / workbench.tsx。
+// client 源文件的合并文本：重构后的新能力落在 shared.tsx / workbench.tsx / settings.tsx。
 const clientSrcAll = [
   clientSrc,
   await readText(resolve(root, 'src/client/shared.tsx')),
   await readText(resolve(root, 'src/client/workbench.tsx')),
+  await readText(resolve(root, 'src/client/settings.tsx')),
 ].join('\n')
 check('client 产物非空', (clientOut?.length ?? 0) > 1000, `${clientOut?.length ?? 0} 字节`)
 if (clientOut) {
@@ -137,9 +138,9 @@ if (clientOut) {
   check('client 账号菜单里找「设置」菜单项', clientOut.includes('role="menu"') && clientOut.includes('menuitem'))
   check('client 快捷键兜底同时试 Ctrl+, 与 Ctrl+Alt+,', clientOut.includes('altKey'))
   // ---- 2026-10-29 UI 增强：统计条 / toast / 骨架屏 / 空状态 / 改动明细 / 默认账号 / 重新授权 / 当前目录授权 ----
-  check('client 渲染统计条（dgp-stats）', clientOut.includes('dgp-stats'))
-  check('client 统计条带语义色档（data-tone=ok|warn|danger）', clientOut.includes('dgp-stat') && clientOut.includes('data-tone'))
-  check('client 统计条用等宽数字（tabular-nums）', clientOut.includes('tabular-nums'))
+  check('client 渲染概览带（dgp-overview）', clientOut.includes('dgp-overview'))
+  check('client 概览带带语义色档（data-tone=ok|warn|neutral）', clientOut.includes('dgp-overview-item') && clientOut.includes('data-tone'))
+  check('client 概览带用等宽数字（tabular-nums）', clientOut.includes('tabular-nums'))
   check('client 提供 toast 组件（dgp-toast）', clientOut.includes('dgp-toast'))
   check('client toast 用 aria-live 播报', clientOut.includes('aria-live'))
   check('client toast 用 portal 挂在 body', clientOut.includes('createPortal') && clientOut.includes('dgp-toast-wrap'))
@@ -150,8 +151,8 @@ if (clientOut) {
   check('client 拉取改动明细接口（/repo/changes）', clientOut.includes('/repo/changes'))
   check('client 改动明细区分增删（data-sign=add|del）', clientOut.includes('data-sign'))
   check('client 支持设定默认账号（defaultAccountId）', clientOut.includes('defaultAccountId'))
-  check('client 支持重新授权（reauthTarget）', clientOut.includes('reauthTarget'))
-  check('client 重新授权有提示条（dgp-callout）', clientOut.includes('dgp-callout'))
+  check('client 编辑账号走弹窗（ConnectModal 复用 Modal）', clientSrcAll.includes('ConnectModal') && clientSrcAll.includes('initial={editTarget}'))
+  check('client 账号状态异常有提示条（dgp-callout）', clientOut.includes('dgp-callout'))
   check('client 已移除「当前会话仓库」快捷授权（无 dgp:cwd 通道）', !clientOut.includes('dgp:cwd') && !clientOut.includes('scopeCurrent'))
   check('client 旧 note 动态反馈机制已移除（改用 toast）', !clientOut.includes('setNote'))
   check('client 菜单静态提示行仍保留（dgp-menu-note）', clientOut.includes('dgp-menu-note'))
@@ -185,7 +186,7 @@ if (clientOut) {
   check('client 一级菜单不再内嵌分支拓扑（index.tsx 不再引用 GraphView）', !clientSrc.includes('GraphView'))
   check('client 一级菜单不再内嵌改动明细（index.tsx 不再有 ChangesList）', !clientSrc.includes('ChangesList'))
   check('client 工作台 portal 到 body（createPortal + document.body）', clientOut.includes('document.body') && portalImported >= 2)
-  check('client BUILD 版本已推进（dgp-v15）', clientOut.includes('dgp-v15'))
+  check('client BUILD 版本已推进（dgp-v16）', clientOut.includes('dgp-v16'))
   // ---- i18n 键完整性：任何 t('x') 用到的键都必须在 ZH/EN 字典里存在（防 wbCancel 类漏键） ----
   const clientNorm = clientSrc.replace(/\r\n/g, '\n')
   const dictStart = clientNorm.indexOf('const ZH: Dict = {')
@@ -193,7 +194,7 @@ if (clientOut) {
   const zhBlock = dictStart >= 0 && dictEnd > dictStart ? clientNorm.slice(dictStart, dictEnd) : ''
   const definedKeys = new Set([...zhBlock.matchAll(/^\s{2}([A-Za-z][A-Za-z0-9_]*):/gmu)].map((m) => m[1]))
   const usedKeys = new Set()
-  for (const file of ['index.tsx', 'workbench.tsx', 'graphview.tsx']) {
+  for (const file of ['index.tsx', 'workbench.tsx', 'graphview.tsx', 'settings.tsx']) {
     const src = await readText(resolve(root, 'src/client', file))
     if (!src) continue
     for (const m of src.replace(/\r\n/g, '\n').matchAll(/t\(\s*'([A-Za-z0-9_]+)'\s*\)/gu)) usedKeys.add(m[1])
@@ -215,6 +216,15 @@ if (clientOut) {
     enKeys.size === definedKeys.size && zhOnly.length === 0 && enOnly.length === 0,
     `zh=${definedKeys.size} en=${enKeys.size} zhOnly=${zhOnly.join(',') || '-'} enOnly=${enOnly.join(',') || '-'}`,
   )
+  // permKey()/permFilterKey() 是运行时拼出来的键名，静态 t('x') 扫描覆盖不到，单独兜底。
+  const dynKeys = ['permFull', 'permRead', 'permNone', 'filterAll']
+  const dynMissingZh = dynKeys.filter((key) => !definedKeys.has(key))
+  const dynMissingEn = dynKeys.filter((key) => !enKeys.has(key))
+  check(
+    'client 动态拼接的权限键都在中英字典里（permFull/permRead/permNone/filterAll）',
+    dynMissingZh.length === 0 && dynMissingEn.length === 0,
+    `zh 缺 ${dynMissingZh.join(',') || '-'} / en 缺 ${dynMissingEn.join(',') || '-'}`,
+  )
   check('client 无未定义的工具类（sr-only 未在 CSS 中定义）', !clientSrc.includes('sr-only') && !(await readText(resolve(root, 'src/client/workbench.tsx')) ?? '').includes('sr-only'))
   // ---- 2026-10-29 重构：多账号/多仓库权限 + 分步初始化 + 当前分支详情 ----
   // 注意：这些标识是源码里的变量/字面量名，产物经过 esbuild 压缩会被改名，
@@ -233,12 +243,21 @@ if (clientOut) {
   check('client 权限保存有在途锁（permSaving）', clientSrcAll.includes('permSaving'))
   check('client 不再整表提交 repoPermissions 到 /settings', !/api<[^>]*>\('\/settings',\s*\{\s*repoPermissions/u.test(clientSrcAll))
   check('client 仓库列表展示截断提示（reposTruncated）', clientSrcAll.includes('reposTruncated'))
-  check('client 统计条并入账号级权限（perAccountEntries）', clientSrcAll.includes('perAccountEntries'))
-  check('client scope tab 说明全局兜底语义（scopeReposNote）', clientSrcAll.includes('scopeReposNote'))
+  check('client 概览带并入账号级权限（repoGrantCount）', clientSrcAll.includes('repoGrantCount'))
+  check('client 高级设置说明全局兜底语义（scopeReposNote）', clientSrcAll.includes('scopeReposNote'))
+  // ---- 2026-10-30 完全重构：设置页 Git 分节（新文件 settings.tsx，新信息架构） ----
+  check('client 设置页拆到独立模块（settings.tsx 导出 GitSection）', clientSrcAll.includes('export function GitSection'))
+  check('client 设置页不再分 tab（无 tabAccounts/tabScope 切换）', !clientSrcAll.includes("setTab('accounts')") && !clientSrcAll.includes('tabAccounts'))
+  check('client 账号以卡片承载（dgp-acct）', clientSrcAll.includes('dgp-acct') && clientSrcAll.includes('dgp-acct-head'))
+  check('client 仓库权限改分段控件（dgp-perm-seg，取代 select）', clientSrcAll.includes('dgp-perm-seg') && !clientSrcAll.includes('dgp-perm-select'))
+  check('client 仓库列表有搜索与筛选工具行（dgp-repos-toolbar）', clientSrcAll.includes('dgp-repos-toolbar') && clientSrcAll.includes('repoSearch') && clientSrcAll.includes('repoFilter'))
+  check('client 仓库权限内联展示（不再有「查看仓库」折叠开关）', !clientSrcAll.includes('reposToggle') && !clientSrcAll.includes('dgp-repo-toggle'))
+  check('client 高级设置默认收起（advancedShow/advancedHide）', clientSrcAll.includes('advancedShow') && clientSrcAll.includes('advancedHide'))
+  check('client 连接账号走弹窗（不再常驻表单）', clientSrcAll.includes('connectOpen') && clientSrcAll.includes('connectAccount'))
 
   check('client 分支详情按 ref 取提交（ref=）', clientSrcAll.includes('ref=') && clientSrcAll.includes('/repo/commits'))
   check('client 分支详情不单独做按钮（Git 只有一个 chip 入口）', !clientSrcAll.includes('dgp-branchbtn'))
-  check('client BUILD 版本已推进（dgp-v15）', clientOut.includes('dgp-v15'))
+  check('client BUILD 版本已推进（dgp-v16）', clientOut.includes('dgp-v16'))
 }
 // ---- node 半边：git-ops 命令层与工作台端点 ----
 {

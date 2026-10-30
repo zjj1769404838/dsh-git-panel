@@ -155,6 +155,40 @@ try {
   })
   check('Git 分节内容已渲染', /Git/.test(gitSectionText) && /账号|仓库|授权/.test(gitSectionText))
 
+  // ---- 2026-10-30 完全重构后的结构断言：新结构在，旧结构必须消失 ----
+  const structure = await page.evaluate(() => {
+    const panel = document.querySelector('[data-shortcut-modal="settings"]')
+    const root = panel ?? document
+    const count = (selector) => root.querySelectorAll(selector).length
+    const text = (root.textContent ?? '')
+    return {
+      overview: count('.dgp-overview'),
+      stats: count('.dgp-stats'),
+      accountCards: count('.dgp-acct'),
+      permSeg: count('.dgp-perm-seg'),
+      permSelect: count('select.dgp-perm-select'),
+      repoToggle: count('.dgp-repo-toggle'),
+      reposToolbar: count('.dgp-repos-toolbar'),
+      tabs: count('.dgp-tabs'),
+      hasConnect: /连接账号|Connect account/.test(text),
+      hasAdvanced: /高级设置|Advanced settings/.test(text),
+    }
+  })
+  check('概览带已渲染（.dgp-overview）', structure.overview > 0, `.dgp-overview=${structure.overview}`)
+  check('四格统计卡已移除（.dgp-stats 不存在）', structure.stats === 0, `.dgp-stats=${structure.stats}`)
+  check('三 tab 结构已移除（.dgp-tabs 不存在）', structure.tabs === 0, `.dgp-tabs=${structure.tabs}`)
+  check('「查看仓库」折叠开关已移除（.dgp-repo-toggle 不存在）', structure.repoToggle === 0, `.dgp-repo-toggle=${structure.repoToggle}`)
+  check('权限下拉框已移除（select.dgp-perm-select 不存在）', structure.permSelect === 0, `select.dgp-perm-select=${structure.permSelect}`)
+  check('有「连接账号」入口', structure.hasConnect)
+  check('有「高级设置」入口', structure.hasAdvanced)
+  if (structure.accountCards > 0) {
+    check('账号以卡片承载（.dgp-acct）', structure.accountCards > 0, `.dgp-acct=${structure.accountCards}`)
+    check('仓库权限用分段控件（.dgp-perm-seg）', structure.permSeg > 0, `.dgp-perm-seg=${structure.permSeg}`)
+    check('仓库工具行已渲染（.dgp-repos-toolbar）', structure.reposToolbar > 0, `.dgp-repos-toolbar=${structure.reposToolbar}`)
+  } else {
+    console.log('SKIP 没有已连接账号，账号卡与仓库权限结构无法验证')
+  }
+
   // 「智能体团队」入口自身仍要能用。该入口注册在 conversation.session.header.actions，
   // 只在**已有会话**页渲染，所以要先从侧边栏进一个会话。
   const entered = await page.evaluate((keyword) => {

@@ -16,7 +16,7 @@ DSH（DeepSeek Harness）桌面端插件：**Git 账号接入 + 受控仓库操�
 | 分支拓扑 | 在 **Git 工作台「分支图」tab** 渲染车道式提交图（`/repo/graph`）：每条活跃分支固定车道、8 色循环按车道取色、节点/同车道竖线/跨车道 S 形贝塞尔三种图元，分叉与汇合位置准确；默认最近 30 条（5–100 可调），超出时标注「仅显示最近 N 条」 |
 | 状态跟随项目 | chip 的 cwd 通过 `useSyncExternalStore` 订阅会话列表快照；**切换/加载项目会先清空上一次结果再重新检测**，菜单每次打开也会重新检测一次 |
 | 账号接入 | OAuth 设备码 / 个人访问令牌（PAT）两种方式，支持 GitHub、GitLab、Gitea |
-| 账号 → 远程仓库 | 设置页点某个账号即展开该账号在平台侧的**全部远程仓库**（`GET /account/repos`），逐个设置 `full` / `read` / `none` 三档权限；新账号默认完整权限 |
+| 账号 → 远程仓库 | **每个账号一张卡片，卡片里直接内联该账号在平台侧的**全部远程仓库**（`GET /account/repos`，打开设置即自动拉取，不用先点展开）；每行右侧是三档分段控件（完整 / 只读 / 无权限），点一下即提交，无需保存按钮；新账号默认完整权限 |
 | 远端归属闸门 | 远端写端点（fetch/pull/push/remotes-add）按目标 remote 的 `owner/repo` 校验账号权限，非 `full` 直接 403 |
 | 授权状态 | 已连接账号列表、平台、接入方式、scopes、`connected` / `expired` / `error` 状态徽章、最近一次校验时间与错误 |
 | 断开 / 重新授权 | 每个账号可单独「校验」与「断开」；同平台同登录名再次连接视为重新授权并覆盖旧记录 |
@@ -25,9 +25,11 @@ DSH（DeepSeek Harness）桌面端插件：**Git 账号接入 + 受控仓库操�
 | 写操作闸门 | `allowWrite` 默认关闭；开启后仍默认 `requireConfirm`，需二次确认才真正执行 |
 | Agent 工具 | 8 个 `git_*` 工具，见第五节 |
 | 凭据安全 | AES-256-GCM 落盘，界面与接口一律不回显明文令牌，日志走脱敏规则 |
-| 授权概览 | 设置页顶部四格统计条：账号数（已连接/异常）、授权目录数（`*` 显示 `∞`）、授权仓库数（**全局白名单 + 各账号权限表里显式列出的仓库数**，不再只看全局）、写操作开关 —— 状态色只落在左侧 2px 色条与副标题上，主数字保持中性 |
+| 授权概览 | 设置页顶部一条**概览带**（不再是四格统计卡）：账号数（已连接/异常）、授权目录数（`*` 显示 `∞`）、授权仓库数（**全局白名单 + 各账号权限表里显式列出的仓库数**）、写操作开关（开启时用 warn 色强调），右侧是「高级设置」折叠开关 |
 | 默认账号 | 多账号时可指定默认账号（Agent 侧优先使用），账号行显示「默认账号」徽章或「设为默认」按钮 |
-| 编辑账号 | 账号行只保留一个「编辑账号」（重新授权是同一个动作——都只是回填连接表单，按单入口原则合并）：自动切到该账号的平台与接入方式、回填 host/apiBase、清空令牌输入，并在连接区顶部显示行内提示条；「查看仓库」在左侧，「校验」「断开」在右侧，危险操作前有一道竖线分隔 |
+| 编辑账号 | 账号卡头部只保留一个「编辑账号」（重新授权是同一个动作——都只是回填连接表单，按单入口原则合并）：点开**连接弹窗**并预填该账号的平台/接入方式/host/apiBase，令牌输入留空；同排还有「校验」，危险操作「断开」前有一道竖线分隔 |
+| 连接账号 | 「连接账号」是一个 **Modal 弹窗**（不再常驻在页面里）：平台 / 备注名 / 接入方式（PAT 或 OAuth 设备码）/ 令牌或 clientId / 主机与 API 地址，成功即关闭并刷新账号卡 |
+| 仓库筛选 | 账号卡里的仓库列表带工具行：**搜索框**（按 `owner/repo` 过滤）+ **权限筛选分段**（全部 / 完整 / 只读 / 无权限）+ 计数「共 n / m 个仓库」+ 刷新按钮；列表被分页截断时底部提示 |
 | 当前分支详情 | **不单独占一个按钮** —— Git 只保留输入框下方那一个 chip 入口；点 chip 打开菜单，选「当前分支详情」即在**页面中央**弹出 Modal，逐条展示该分支的提交记录（提交信息 / 短哈希 / 作者 / 时间），可滚动、不溢出视口；菜单项副标题与弹窗标题都带当前分支名；×、遮罩点击、Esc、底部按钮四种方式均可关闭 |
 | 分步初始化向导 | 未初始化目录点「初始化 Git 项目」进入 5 步向导：①选账号 → ②选已有远程仓库（平台列举）或新建/手工填 → ③选分支名（用远程默认分支或新建） → ④确认清单 → ⑤执行结果；每步可返回上一步，失败保留服务端中文原因并允许回退修改 |
 | 工作区改动明细 | 在 **Git 工作台左栏**列出未提交文件：状态字母 + 路径 + 增删行数 + 已暂存标记；加载中用骨架屏，空状态用图形化插画 |
@@ -91,7 +93,7 @@ node scripts/build.mjs
 
 范围为空 = 全部拒绝（fail-closed）。路径比较按路径段进行，`D:\repo-evil` 不会命中 `D:\repo` 的授权。
 
-**账号级仓库权限（`repoPermissions`）**：设置页「账号」分节里点某个账号，会展开该账号在平台侧可见的**全部远程仓库**，每个仓库可单独设置档位：
+**账号级仓库权限（`repoPermissions`）**：设置页每个账号卡里直接列出该账号在平台侧可见的**全部远程仓库**（打开设置即自动拉取），每行右侧三档分段控件，点一下即提交单条（`POST /repo/permission`）：
 
 | 档位 | 含义 |
 | --- | --- |
@@ -176,16 +178,16 @@ node scripts/build.mjs
 ```bash
 npm run bundle        # 构建 lib/index.js + lib/client.js
 npm run typecheck     # tsc --noEmit
-npm run gates         # 165 项插件契约门禁
+npm run gates         # 174 项插件契约门禁
 npm run test:hardening# 194 项加固回归（含真实 git 仓库端到端 + 仓库权限档位 + 单条权限写入）
-npm run test:e2e      # 13 项设置页 GUI 端到端验证（需要本机 Edge + DSH Web 在跑）
+npm run test:e2e      # 23 项设置页 GUI 端到端验证（需要本机 Edge + DSH Web 在跑）
 npm run test:e2e:wb   # 27 项 Git 工作台 GUI 端到端验证（含「点弹窗不消失」回归）
 npm run test:e2e:newui # 19 项新入口体系 GUI 端到端验证（单一 chip 入口 + 五入口菜单）
 npm run preview       # 用真实 CSS + 宿主 token 渲染 docs/preview/*.png（需要本机 Edge）
 npm test              # gates + hardening
 ```
 
-`test:e2e` 用 `playwright-core` 驱动**本机 Edge**（headless）打开真实 DSH Web GUI，验证「打开 Git 设置」这条链路：认证通过 → chip 存在 → 菜单里有「打开 Git 设置」→ 点击后**设置面板打开**且**智能体团队面板没被误开** → 导航落在 Git 分节 → Git 分节内容渲染 → 进已有会话后「智能体团队」入口自身仍能打开。脚本自己按宿主 `dsh-client-connection` 的规则从 `~/.dsh/.credentials.yaml` 铸造 `dsh-auth-*` cookie（**不打印任何凭据**），URL 可用 `--url` 或 `DSH_WEB_URL` 覆盖。
+`test:e2e` 用 `playwright-core` 驱动**本机 Edge**（headless）打开真实 DSH Web GUI，验证「打开 Git 设置」这条链路：认证通过 → chip 存在 → 菜单里有「打开 Git 设置」→ 点击后**设置面板打开**且**智能体团队面板没被误开** → 导航落在 Git 分节 → Git 分节内容渲染 → **新结构逐项在位、旧结构逐项消失**（`.dgp-overview` 在、`.dgp-stats` 与 `.dgp-tabs` 为 0、`.dgp-repo-toggle` 为 0、`select.dgp-perm-select` 为 0、账号卡 `.dgp-acct` 在、权限分段 `.dgp-perm-seg` 在、仓库工具行 `.dgp-repos-toolbar` 在、「连接账号」「高级设置」入口在）→ 进已有会话后「智能体团队」入口自身仍能打开。脚本自己按宿主 `dsh-client-connection` 的规则从 `~/.dsh/.credentials.yaml` 铸造 `dsh-auth-*` cookie（**不打印任何凭据**），URL 可用 `--url` 或 `DSH_WEB_URL` 覆盖。
 
 `test:e2e:wb` 是工作台的点击回归：切到本项目的会话 → chip 显示真实分支 → 打开工作台（断言挂在 `body` 直属层，脱离 composer 的 `container-type:inline-size` 包含块）→ 点分支管理开二级弹窗 → **把弹窗内的标题/正文/输入框/复选框逐个点一遍，每次点完断言「弹窗 + 工作台 + chip」三件套都还在** → Pull / 远程仓库 / 提交详情同样处理 → 切 tab、刷新、勾选改动行都不许关掉工作台。这条链路正是「点一下弹窗就整片消失」的复现路径。
 
@@ -210,7 +212,8 @@ src/
     tools.ts          8 个 Agent 工具
     handler.ts        HTTP 路由
   client/
-    index.tsx         React 组件：GitSection（设置页 settings.section）+ BranchChip（输入区 conversation.input.left）
+    index.tsx         注册与输入区：BranchChip（conversation.input.left）+ 分步初始化向导 + 当前分支详情弹窗 + 字典/类型入口
+    settings.tsx      设置页 Git 分节（settings.section）：概览带 + 账号卡 + 内联仓库权限 + 连接弹窗 + 高级设置
     shared.tsx        api/routeUrl/类型 + 全套 .dgp-* 样式 + Toast/EmptyState/Skeleton/图标
     graphview.tsx     分支拓扑车道图（工作台「分支图」tab 使用）
     workbench.tsx     IDEA 式 Git 工作台主面板 + 分支/新建分支/提交详情/远程/Pull 五个二级弹窗
@@ -221,6 +224,7 @@ scripts/
   e2e-settings.mjs    设置页 GUI 端到端验证（playwright-core + 本机 Edge）
   e2e-workbench.mjs   工作台 GUI 端到端验证（弹窗点击回归）
   e2e-newui.mjs       新入口体系 GUI 端到端验证（分支详情 + 五入口菜单）
+  shot-settings.mjs   设置页截图（自动清掉宿主引导浮层后出干净图）
   preview.mjs         设置页预览图渲染
 ```
 

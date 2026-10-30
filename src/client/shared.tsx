@@ -98,6 +98,69 @@ export interface GraphRowView {
   through: number[]
 }
 
+// ---- 设置页 Git 分节视图类型（settings.tsx / index.tsx 共用） ----
+
+/** 已连接的 Git 账号（node 侧 /state 返回形状）。 */
+export interface AccountView {
+  id: string
+  provider: string
+  kind: 'oauth' | 'pat'
+  login: string
+  displayName: string
+  avatarUrl: string
+  host: string
+  apiBase: string
+  scopes: string[]
+  status: 'connected' | 'expired' | 'error'
+  lastError: string
+  lastCheckedAt: number
+}
+
+/** 仓库访问权限档位：完整 / 只读 / 无权限。 */
+export type RepoPermission = 'full' | 'read' | 'none'
+
+/** 权限档位字面量表（node 侧只接受这三个值）。 */
+export const REPO_PERMISSIONS: RepoPermission[] = ['full', 'read', 'none']
+
+/** 账号下的远程仓库（node 侧 /account/repos 返回的形状）。 */
+export interface AccountRepoView {
+  fullName: string
+  name: string
+  owner: string
+  url: string
+  private: boolean
+  defaultBranch: string
+  /** node 侧判定好的当前权限档位（唯一事实源），client 不再自己推导。 */
+  permission?: RepoPermission
+}
+
+/** 授权范围设置。 */
+export interface SettingsView {
+  allowedRepos: string[]
+  allowedRoots: string[]
+  allowWrite: boolean
+  requireConfirm: boolean
+  defaultAccountId: string
+  /** 账号 → 仓库（owner/repo）→ 权限档位。 */
+  repoPermissions?: Record<string, Record<string, RepoPermission>>
+}
+
+/** /state 返回的面板状态。 */
+export interface PanelState {
+  accounts: AccountView[]
+  settings: SettingsView
+}
+
+/** 平台信息（/state 返回的 providers）。 */
+export interface ProviderView {
+  id: string
+  label: string
+  host: string
+  oauthHint: string
+  patHint: string
+  patUrl: string
+}
+
 export interface RepoGraphView {
   isRepo: boolean
   root: string
@@ -267,18 +330,17 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 .dgp-graph-detail-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--dgp-code)}
 .dgp-graph-copy{flex:0 0 auto;display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;padding:0;border:0;border-radius:var(--dgp-r-xs);background:transparent;color:var(--dgp-faint);cursor:pointer}
 .dgp-graph-copy:hover{background:var(--dgp-hover);color:var(--dgp-fg2)}
-.dgp-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:1px;margin:14px 0 2px;border-radius:var(--dgp-r-sm);overflow:hidden;background:var(--dgp-line)}
-.dgp-stat{position:relative;display:flex;flex-direction:column;gap:2px;padding:11px 13px 12px;background:var(--dsw-alias-bg-layer-1,#fff);min-width:0}
-.dgp-stat-label{font-size:11px;line-height:15px;font-weight:500;letter-spacing:.04em;text-transform:uppercase;color:var(--dgp-faint);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dgp-stat-value{font-family:var(--dgp-code);font-size:22px;line-height:28px;font-weight:600;letter-spacing:-.01em;color:var(--dgp-fg);font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dgp-stat-hint{font-size:11px;line-height:15px;color:var(--dgp-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.dgp-stat::before{content:"";position:absolute;left:0;top:11px;bottom:12px;width:2px;border-radius:0 2px 2px 0;background:var(--dgp-faint);opacity:.55}
-.dgp-stat[data-tone="ok"]::before{background:var(--dgp-ok);opacity:.9}
-.dgp-stat[data-tone="warn"]::before{background:var(--dgp-warn,#b45309);opacity:.9}
-.dgp-stat[data-tone="danger"]::before{background:var(--dgp-danger);opacity:.9}
-.dgp-stat[data-tone="ok"] .dgp-stat-hint{color:var(--dgp-ok)}
-.dgp-stat[data-tone="warn"] .dgp-stat-hint{color:var(--dgp-warn,#b45309)}
-.dgp-stat[data-tone="danger"] .dgp-stat-hint{color:var(--dgp-danger)}
+/* 概览带：一行摘要，取代四格统计卡（信息密度高、不抢视觉重心）。 */
+.dgp-overview{display:flex;align-items:center;flex-wrap:wrap;gap:0;margin:12px 0 14px;padding:7px 2px;border-top:.5px solid var(--dgp-line);border-bottom:.5px solid var(--dgp-line)}
+.dgp-overview-item{display:inline-flex;align-items:baseline;gap:5px;padding:0 11px;min-width:0;white-space:nowrap}
+.dgp-overview-item:first-child{padding-left:0}
+.dgp-overview-label{font-size:11px;line-height:16px;color:var(--dgp-faint);letter-spacing:.02em}
+.dgp-overview-num{font-family:var(--dgp-code);font-size:13px;line-height:18px;font-weight:600;color:var(--dgp-fg2);font-variant-numeric:tabular-nums}
+.dgp-overview-hint{font-size:11px;line-height:16px;color:var(--dgp-warn,#b45309)}
+.dgp-overview-item[data-tone="ok"] .dgp-overview-num{color:var(--dgp-ok)}
+.dgp-overview-item[data-tone="warn"] .dgp-overview-num{color:var(--dgp-warn,#b45309)}
+.dgp-overview-sep{width:1px;height:12px;background:var(--dgp-line);flex:0 0 auto}
+.dgp-overview-gap,.dgp-acct-gap{flex:1 1 auto;min-width:8px}
 .dgp-callout{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px;padding:8px 10px 8px 12px;border:.5px solid var(--dgp-line2);border-left:2px solid var(--dgp-accent);border-radius:var(--dgp-r-xs);background:var(--dgp-inset);color:var(--dgp-fg2);font-size:12px;line-height:18px}
 .dgp-callout-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .dgp-empty{display:flex;flex-direction:column;align-items:center;gap:7px;padding:26px 16px 24px;text-align:center;color:var(--dgp-muted)}
@@ -417,12 +479,31 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 .dgp-repo-name{font-family:var(--dgp-code);font-size:12px;line-height:18px;color:var(--dgp-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dgp-repo-meta{font-size:11px;line-height:16px;color:var(--dgp-muted);display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 .dgp-perm{flex:0 0 auto;display:flex;align-items:center;gap:6px}
-.dgp-perm-select{width:auto;max-width:132px;height:26px;font-size:12px;padding:0 26px 0 8px;background-position:calc(100% - 13px) 11px,calc(100% - 8px) 11px}
-.dgp-perm-label{font-size:11px;color:var(--dgp-faint);white-space:nowrap}
-.dgp-repo-toggle{appearance:none;border:0;background:transparent;color:var(--dgp-muted);font:inherit;font-size:11.5px;cursor:pointer;padding:2px 4px;border-radius:var(--dgp-r-xs);display:inline-flex;align-items:center;gap:5px}
-.dgp-repo-toggle:hover{background:var(--dgp-hover);color:var(--dgp-fg)}
-.dgp-repo-toggle svg{flex:0 0 auto;transform:rotate(-90deg);transition:transform var(--dgp-fast) var(--dgp-ease)}
-.dgp-repo-toggle[data-open="1"] svg{transform:rotate(0deg)}
+/* 三档权限：分段控件（一眼看全三档，点一下就改，取代原来的下拉框）。 */
+.dgp-perm-seg{flex:0 0 auto;display:inline-flex;align-items:center;gap:1px;padding:1px;border-radius:var(--dgp-r-xs);background:var(--dgp-inset)}
+.dgp-perm-seg button{appearance:none;border:0;background:transparent;color:var(--dgp-muted);font:inherit;font-size:11px;line-height:16px;padding:2px 8px;border-radius:calc(var(--dgp-r-xs) - 1px);cursor:pointer;white-space:nowrap;transition:background var(--dgp-fast) var(--dgp-ease),color var(--dgp-fast) var(--dgp-ease)}
+.dgp-perm-seg button:hover{background:var(--dgp-hover);color:var(--dgp-fg2)}
+.dgp-perm-seg button[data-on="1"]{background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dgp-fg);font-weight:500;box-shadow:0 0 0 .5px var(--dgp-line2)}
+.dgp-perm-seg button[data-perm="full"][data-on="1"]{color:var(--dgp-ok)}
+.dgp-perm-seg button[data-perm="none"][data-on="1"]{color:var(--dgp-danger)}
+.dgp-perm-seg button:disabled{cursor:default;opacity:.55}
+.dgp-perm-seg[data-saving="1"] button{cursor:progress}
+.dgp-perm-saving{font-size:10.5px;line-height:16px;color:var(--dgp-faint);white-space:nowrap}
+/* 仓库工具行：搜索 + 权限筛选 + 计数 + 刷新。 */
+.dgp-repos-toolbar{display:flex;align-items:center;gap:8px;padding:8px 0 6px;flex-wrap:wrap}
+.dgp-search{flex:1 1 150px;min-width:110px;height:26px;font-size:12px;padding:0 8px}
+.dgp-filter{flex:0 0 auto}
+.dgp-filter button{font-size:11px;padding:2px 7px}
+.dgp-repos-count{font-size:11px;line-height:16px;color:var(--dgp-faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+/* 账号卡：一个账号一张，仓库权限直接内联，操作收在头部右侧。 */
+.dgp-acct{display:flex;flex-direction:column;gap:0;margin:0 0 12px;padding:10px 12px 12px;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-sm);background:var(--dsw-alias-bg-layer-1,#fff)}
+.dgp-acct[data-status="error"],.dgp-acct[data-status="expired"]{border-color:color-mix(in srgb,var(--dgp-warn,#b45309) 45%,var(--dgp-line2))}
+.dgp-acct-head{display:flex;align-items:center;gap:7px;min-width:0;flex-wrap:wrap}
+.dgp-acct-name{font-size:13px;line-height:19px;font-weight:600;color:var(--dgp-fg);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:min(260px,45vw)}
+.dgp-acct-meta{display:flex;align-items:center;gap:7px;flex-wrap:wrap;padding:3px 0 0;font-size:11px;line-height:16px;color:var(--dgp-muted);min-width:0}
+.dgp-acct .dgp-repos{margin-top:8px;padding-left:0;border-left:0}
+/* 高级设置折叠区：本地目录白名单 + 全局兜底仓库 + 写开关。 */
+.dgp-adv{margin:2px 0 12px;padding:11px 12px 12px;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-sm);background:var(--dgp-inset)}
 /* ------------------------------------------------------------------ */
 /* 分步初始化向导                                                      */
 /* ------------------------------------------------------------------ */

@@ -15,15 +15,21 @@ import {
   Skeleton,
   Toast,
   fmt,
+  type AccountRepoView,
+  type AccountView,
   type Dict,
+  type PanelState,
+  type ProviderView,
+  type RepoPermission,
   type RepoStatusView,
 } from './shared.js'
 import { Workbench, Modal } from './workbench.js'
+import { GitSection } from './settings.js'
 
 /** 服务短名（不是 package.json 里的全名）。 */
 export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
-const BUILD = 'dgp-v15'
+const BUILD = 'dgp-v16'
 
 const ZH: Dict = {
   entry: 'Git',
@@ -31,11 +37,6 @@ const ZH: Dict = {
   navLabel: 'Git',
   panelTitle: 'Git 账号与仓库授权',
   panelSubtitle: '连接账号，并限定 Agent 可以触达的仓库与目录',
-  tabAccounts: '账号',
-  tabScope: '仓库范围',
-  tabHelp: '授权说明',
-  groupAccounts: '已连接',
-  groupConnect: '连接新账号',
   accountLabel: '账号备注名（可选）',
   accountLabelHint: '同一平台多个账号时用于区分，如「工作」「个人」',
   groupScopeRepos: '远端仓库',
@@ -47,7 +48,6 @@ const ZH: Dict = {
   expired: '授权已失效',
   errored: '凭据异常',
   disconnect: '断开',
-  reauth: '重新授权',
   recheck: '校验',
   provider: '平台',
   method: '接入方式',
@@ -153,7 +153,6 @@ const ZH: Dict = {
   /* ---- 账号卡片增强 ---- */
   setDefault: '设为默认',
   isDefault: '默认账号',
-  reauthHint: '用新的令牌覆盖当前账号',
   /* ---- 工作区改动 ---- */
   changesTitle: '工作区改动',
   changesCount: '{n} 个文件',
@@ -251,9 +250,6 @@ const ZH: Dict = {
   diffEmptyHint: '该文件当前没有未提交改动，或已全部暂存。',
   diffTruncated: 'diff 过长已截断，完整内容请用命令行查看',
   /* ---- 账号 → 远程仓库权限（多账号管理） ---- */
-  reposToggle: '查看仓库',
-  reposTitle: '远程仓库',
-  reposLoading: '正在读取远程仓库…',
   reposEmpty: '该账号没有可访问的远程仓库',
   reposEmptyHint: '可以先在平台侧创建仓库，再回来展开刷新。',
   reposFailed: '读取远程仓库失败',
@@ -269,8 +265,18 @@ const ZH: Dict = {
   permSaving: '保存中…',
   reposReload: '刷新仓库列表',
   reposTruncated: '仓库较多，仅显示前 500 个；未列出的仓库按该账号默认档位处理。',
-  statsReposHintPerAccount: '另有 {n} 个账号级仓库权限设置',
   accountEdit: '编辑账号',
+  editHint: '修改后需要重新校验，凭据只在保存时写一次',
+  connectAccount: '连接账号',
+  connectFailed: '连接失败',
+  tokenRequired: '请填写访问令牌',
+  repoSearch: '搜索仓库',
+  repoFilter: '按权限筛选',
+  filterAll: '全部',
+  reposCount: '共 {n} / {m} 个仓库',
+  reposNoMatch: '没有匹配的仓库',
+  advancedShow: '高级设置',
+  advancedHide: '收起高级设置',
   /* ---- 当前分支详情 ---- */
   branchDetail: '当前分支详情',
   branchDetailTitle: '当前分支详情',
@@ -334,11 +340,6 @@ const EN: Dict = {
   navLabel: 'Git',
   panelTitle: 'Git account access',
   panelSubtitle: 'Connect accounts and limit which repositories the agent may touch',
-  tabAccounts: 'Accounts',
-  tabScope: 'Scope',
-  tabHelp: 'Authorization',
-  groupAccounts: 'Connected',
-  groupConnect: 'Connect an account',
   accountLabel: 'Account label (optional)',
   accountLabelHint: 'Distinguish multiple accounts on the same host, e.g. work / personal',
   groupScopeRepos: 'Remote repositories',
@@ -350,7 +351,6 @@ const EN: Dict = {
   expired: 'Authorization expired',
   errored: 'Credential error',
   disconnect: 'Disconnect',
-  reauth: 'Re-authorize',
   recheck: 'Verify',
   provider: 'Provider',
   method: 'Method',
@@ -456,7 +456,6 @@ const EN: Dict = {
   /* ---- Account cards ---- */
   setDefault: 'Set as default',
   isDefault: 'Default account',
-  reauthHint: 'Replace this account with a new token',
   /* ---- Workspace changes ---- */
   changesTitle: 'Workspace changes',
   changesCount: '{n} files',
@@ -553,9 +552,6 @@ const EN: Dict = {
   diffEmptyHint: 'This file has no uncommitted changes, or everything is staged.',
   diffTruncated: 'Diff is truncated; view the full output in a terminal',
   /* ---- Account → remote repository permissions ---- */
-  reposToggle: 'View repositories',
-  reposTitle: 'Remote repositories',
-  reposLoading: 'Loading remote repositories…',
   reposEmpty: 'No accessible remote repository for this account',
   reposEmptyHint: 'Create a repository on the platform, then reopen and refresh.',
   reposFailed: 'Failed to load remote repositories',
@@ -571,8 +567,18 @@ const EN: Dict = {
   permSaving: 'Saving…',
   reposReload: 'Reload repositories',
   reposTruncated: 'Too many repositories; showing the first 500. Unlisted repositories use the account default.',
-  statsReposHintPerAccount: '{n} per-account repository overrides',
   accountEdit: 'Edit account',
+  editHint: 'Changes need a recheck; the credential is written only once on save',
+  connectAccount: 'Connect account',
+  connectFailed: 'Connection failed',
+  tokenRequired: 'Enter an access token',
+  repoSearch: 'Search repositories',
+  repoFilter: 'Filter by access',
+  filterAll: 'All',
+  reposCount: '{n} of {m} repositories',
+  reposNoMatch: 'No matching repositories',
+  advancedShow: 'Advanced settings',
+  advancedHide: 'Hide advanced settings',
   /* ---- Current branch details ---- */
   branchDetail: 'Current branch details',
   branchDetailTitle: 'Current branch details',
@@ -627,63 +633,6 @@ const EN: Dict = {
   initBranchRequired: 'Enter a branch name',
   initRemoteRequired: 'Enter the remote repository URL',
   loadingLabel: 'Loading…',
-}
-
-interface AccountView {
-  id: string
-  provider: string
-  kind: 'oauth' | 'pat'
-  login: string
-  displayName: string
-  avatarUrl: string
-  host: string
-  apiBase: string
-  scopes: string[]
-  status: 'connected' | 'expired' | 'error'
-  lastError: string
-  lastCheckedAt: number
-}
-
-/** 仓库访问权限档位：完整 / 只读 / 无权限。 */
-type RepoPermission = 'full' | 'read' | 'none'
-
-/** 权限档位字面量表（node 侧只接受这三个值）。 */
-const REPO_PERMISSIONS: RepoPermission[] = ['full', 'read', 'none']
-
-/** 账号下的远程仓库（node 侧 /account/repos 返回的形状）。 */
-interface AccountRepoView {
-  fullName: string
-  name: string
-  owner: string
-  url: string
-  private: boolean
-  defaultBranch: string
-  /** node 侧判定好的当前权限档位（唯一事实源），client 不再自己推导。 */
-  permission?: RepoPermission
-}
-
-interface SettingsView {
-  allowedRepos: string[]
-  allowedRoots: string[]
-  allowWrite: boolean
-  requireConfirm: boolean
-  defaultAccountId: string
-  /** 账号 → 仓库（owner/repo）→ 权限档位。 */
-  repoPermissions?: Record<string, Record<string, RepoPermission>>
-}
-
-interface PanelState {
-  accounts: AccountView[]
-  settings: SettingsView
-}
-
-interface ProviderView {
-  id: string
-  label: string
-  host: string
-  oauthHint: string
-  patHint: string
-  patUrl: string
 }
 
 /** 设置面板在 DOM 里的稳定锚点（宿主 SettingsPanel 上写死）。 */
@@ -1453,937 +1402,6 @@ function BranchDetailModal({
 }
 
 /* ------------------------------------------------------------------ */
-/* 设置页分节                                                          */
-/* ------------------------------------------------------------------ */
-
-interface SectionProps {
-  t: (key: string) => string
-  close?: () => void
-}
-
-/** 账号下的远程仓库列表：逐行显示仓库信息 + 三档权限选择。 */
-function AccountRepoList({
-  t,
-  accountId,
-  state,
-  permissionOf,
-  savingOf,
-  onPermission,
-  onReload,
-}: {
-  t: (key: string) => string
-  accountId: string
-  state?: { loading: boolean; error: string; repos: AccountRepoView[]; truncated?: boolean }
-  permissionOf: (repoFullName: string) => RepoPermission
-  savingOf: (repoFullName: string) => boolean
-  onPermission: (repoFullName: string, perm: RepoPermission) => void
-  onReload: () => void
-}) {
-  const permText = (perm: RepoPermission): string =>
-    perm === 'full' ? t('permFull') : perm === 'read' ? t('permRead') : t('permNone')
-
-  return (
-    <div className="dgp-repos">
-      <div className="dgp-repo" style={{ borderBottom: 'none' }}>
-        <div className="dgp-repo-main">
-          <div className="dgp-repo-meta">{t('reposTitle')}</div>
-        </div>
-        <div className="dgp-perm">
-          <button type="button" className="dgp-btn ghost" onClick={onReload} aria-label={t('reposReload')} title={t('reposReload')}>
-            <RefreshIcon />
-          </button>
-        </div>
-      </div>
-
-      {state?.loading ? <Skeleton rows={3} /> : null}
-
-      {!state?.loading && state?.error ? (
-        <div className="dgp-err">
-          {t('reposFailed')}：{state.error}
-        </div>
-      ) : null}
-
-      {!state?.loading && !state?.error && (state?.repos.length ?? 0) === 0 ? (
-        <EmptyState title={t('reposEmpty')} hint={t('reposEmptyHint')} />
-      ) : null}
-
-      {(state?.repos ?? []).map((repo) => {
-        const perm = permissionOf(repo.fullName)
-        const saving = savingOf(repo.fullName)
-        return (
-          <div className="dgp-repo" key={`${accountId}:${repo.fullName}`} data-saving={saving ? '1' : '0'}>
-            <div className="dgp-repo-main">
-              <div className="dgp-repo-name">{repo.fullName}</div>
-              <div className="dgp-repo-meta">
-                <span>{repo.private ? t('repoPrivate') : t('repoPublic')}</span>
-                {repo.defaultBranch ? <span>{fmt(t('repoDefaultBranch'), { branch: repo.defaultBranch })}</span> : null}
-                <span>{permText(perm)}</span>
-              </div>
-            </div>
-            <div className="dgp-perm">
-              {saving ? <span className="dgp-perm-label">{t('permSaving')}</span> : null}
-              <span className="dgp-perm-label">{t('permLabel')}</span>
-              <select
-                className="dgp-select dgp-perm-select"
-                value={perm}
-                disabled={saving}
-                aria-label={`${t('permLabel')} ${repo.fullName}`}
-                onChange={(event) => onPermission(repo.fullName, event.target.value as RepoPermission)}
-              >
-                {REPO_PERMISSIONS.map((item) => (
-                  <option key={item} value={item}>
-                    {permText(item)}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-        )
-      })}
-
-      {!state?.loading && !state?.error && state?.truncated ? (
-        <div className="dgp-hint">{t('reposTruncated')}</div>
-      ) : null}
-    </div>
-  )
-}
-
-function GitSection({ t }: SectionProps) {
-  useStyles()
-  const [tab, setTab] = useState<'accounts' | 'scope' | 'help'>('accounts')
-  const [state, setState] = useState<PanelState | null>(null)
-  const [providers, setProviders] = useState<ProviderView[]>([])
-  const [error, setError] = useState('')
-  const [busy, setBusy] = useState(false)
-
-  const [provider, setProvider] = useState('github')
-  const [accountLabel, setAccountLabel] = useState('')
-  const [method, setMethod] = useState<'oauth' | 'pat'>('pat')
-  const [token, setToken] = useState('')
-  const [clientId, setClientId] = useState('')
-  const [host, setHost] = useState('')
-  const [apiBase, setApiBase] = useState('')
-  const [flow, setFlow] = useState<{ pollKey: string; userCode: string; verificationUri: string; interval: number } | null>(null)
-  const [flowMsg, setFlowMsg] = useState('')
-  const [copied, setCopied] = useState(false)
-
-  const [reposText, setReposText] = useState('')
-  const [rootsText, setRootsText] = useState('')
-  const [allowWrite, setAllowWrite] = useState(false)
-  const [requireConfirm, setRequireConfirm] = useState(true)
-  const [savedTick, setSavedTick] = useState(0)
-  const [toast, setToast] = useState<{ tone: 'ok' | 'error' | 'info'; text: string } | null>(null)
-  /** 正在重新授权的账号（provider+login）；非空时连接表单上方显示提示。 */
-  const [reauthTarget, setReauthTarget] = useState<{ provider: string; login: string } | null>(null)
-  /** 「检测到的仓库」：授权根下扫描出的本地仓库（含 remotes）。进入 scope tab 时拉取。 */
-  const [discovered, setDiscovered] = useState<Array<{ root: string; name: string; branch: string; remotes: string[] }>>([])
-  const [discovering, setDiscovering] = useState(false)
-  /** 展开中的账号 id（展开后拉该账号的远程仓库列表）。 */
-  const [expandedAccount, setExpandedAccount] = useState<string>('')
-  /** 账号 → 远程仓库列表（加载中 / 失败 / 成功三种状态分开存）。 */
-  const [accountRepos, setAccountRepos] = useState<
-    Record<string, { loading: boolean; error: string; repos: AccountRepoView[]; truncated?: boolean }>
-  >({})
-  /** 正在保存的「账号:仓库」组合：保存期间禁用该行下拉，避免连点互相覆盖。 */
-  const [permSaving, setPermSaving] = useState<Record<string, boolean>>({})
-  /** 乐观更新的权限值（key = `账号:仓库`），请求失败时回滚。 */
-  const [permOverride, setPermOverride] = useState<Record<string, RepoPermission>>({})
-  /** 账号 → 上次拉到仓库列表的时间戳（30 秒内重复展开不重拉）。 */
-  const [reposFetchedAt, setReposFetchedAt] = useState<Record<string, number>>({})
-
-  const timerRef = useRef<number | null>(null)
-  const toastTimerRef = useRef<number | null>(null)
-
-  const showToast = useCallback((tone: 'ok' | 'error' | 'info', text: string) => {
-    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
-    setToast({ tone, text })
-    toastTimerRef.current = window.setTimeout(() => setToast(null), 2600)
-  }, [])
-
-  /** 拉取「检测到的仓库」：/repo/discover 扫描授权根（远程 remotes 一并返回）。 */
-  const loadDiscovered = useCallback(async () => {
-    setDiscovering(true)
-    try {
-      const data = await api<{ ok: boolean; repos?: Array<{ root: string; name: string; branch: string; remotes: string[] }> }>('/repo/discover')
-      setDiscovered(data.ok && Array.isArray(data.repos) ? data.repos : [])
-    } catch {
-      setDiscovered([])
-    } finally {
-      setDiscovering(false)
-    }
-  }, [])
-
-  /** 拉某账号下的远程仓库列表：GET /account/repos?accountId=<id>。 */
-  const loadAccountRepos = useCallback(async (accountId: string) => {
-    setAccountRepos((prev) => ({ ...prev, [accountId]: { loading: true, error: '', repos: prev[accountId]?.repos ?? [] } }))
-    try {
-      const data = await api<{ ok: boolean; repos?: AccountRepoView[]; error?: string; truncated?: boolean }>(
-        `/account/repos?accountId=${encodeURIComponent(accountId)}`,
-      )
-      if (!data.ok) {
-        setAccountRepos((prev) => ({
-          ...prev,
-          [accountId]: { loading: false, error: data.error || t('reposFailed'), repos: [] },
-        }))
-        return
-      }
-      setAccountRepos((prev) => ({
-        ...prev,
-        [accountId]: {
-          loading: false,
-          error: '',
-          repos: Array.isArray(data.repos) ? data.repos : [],
-          truncated: data.truncated === true,
-        },
-      }))
-      setReposFetchedAt((prev) => ({ ...prev, [accountId]: Date.now() }))
-    } catch (err) {
-      setAccountRepos((prev) => ({
-        ...prev,
-        [accountId]: { loading: false, error: err instanceof Error ? err.message : t('reposFailed'), repos: [] },
-      }))
-    }
-  }, [t])
-
-  /**
-   * 展开/收起账号仓库列表。
-   * - 收起：保留已拉到的列表（再展开立刻可见），但清掉该账号的乐观值（以服务端为准）。
-   * - 展开：30 秒内重复展开不重拉（仓库列表变动很慢，避免每次点都打平台 API）。
-   */
-  const toggleAccountRepos = useCallback(
-    (accountId: string) => {
-      if (expandedAccount === accountId) {
-        setExpandedAccount('')
-        setPermOverride((prev) => {
-          const next: Record<string, RepoPermission> = {}
-          for (const [key, value] of Object.entries(prev)) {
-            if (!key.startsWith(`${accountId}:`)) next[key] = value
-          }
-          return next
-        })
-        return
-      }
-      setExpandedAccount(accountId)
-      const cached = accountRepos[accountId]
-      const fresh = cached && !cached.loading && !cached.error && Date.now() - (reposFetchedAt[accountId] ?? 0) < 30_000
-      if (!fresh) void loadAccountRepos(accountId)
-    },
-    [expandedAccount, accountRepos, reposFetchedAt, loadAccountRepos],
-  )
-
-  /**
-   * 取某账号对某仓库的当前权限。
-   * 优先用本地乐观值（刚点完、请求还在路上），其次用 node 在 /account/repos 里算好的档位——
-   * 判定逻辑只在 node 侧一份（store.repoPermission），client 不再自己推导一遍。
-   */
-  const currentPermission = useCallback(
-    (accountId: string, repoFullName: string): RepoPermission => {
-      const override = permOverride[`${accountId}:${repoFullName}`]
-      if (override) return override
-      const hit = (accountRepos[accountId]?.repos ?? []).find((item) => item.fullName === repoFullName)
-      return hit?.permission ?? 'full'
-    },
-    [permOverride, accountRepos],
-  )
-
-  /** 该行是否正在保存（保存期间禁用下拉，避免连点互相覆盖）。 */
-  const permissionSaving = useCallback(
-    (accountId: string, repoFullName: string): boolean => permSaving[`${accountId}:${repoFullName}`] === true,
-    [permSaving],
-  )
-
-  /**
-   * 改某账号对某仓库的权限：只提交这一格（POST /repo/permission）。
-   * 乐观更新 → 失败回滚到旧档位并提示，不再整表覆盖 settings（并发/连点会丢更新）。
-   */
-  const saveRepoPermission = useCallback(
-    async (accountId: string, repoFullName: string, perm: RepoPermission) => {
-      const key = `${accountId}:${repoFullName}`
-      const previous = currentPermission(accountId, repoFullName)
-      if (previous === perm) return
-      setPermOverride((prev) => ({ ...prev, [key]: perm }))
-      setPermSaving((prev) => ({ ...prev, [key]: true }))
-      try {
-        const data = await api<{ ok: boolean; state?: PanelState; error?: string; permission?: RepoPermission }>(
-          '/repo/permission',
-          { accountId, repo: repoFullName, permission: perm },
-        )
-        if (data.state) setState(data.state)
-        if (data.ok) {
-          showToast('ok', t('permSaved'))
-        } else {
-          setPermOverride((prev) => ({ ...prev, [key]: previous }))
-          showToast('error', data.error || t('permSaveFailed'))
-        }
-      } catch (err) {
-        setPermOverride((prev) => ({ ...prev, [key]: previous }))
-        showToast('error', `${t('permSaveFailed')}：${err instanceof Error ? err.message : String(err)}`)
-      } finally {
-        setPermSaving((prev) => {
-          const next = { ...prev }
-          delete next[key]
-          return next
-        })
-      }
-    },
-    [currentPermission, showToast, t],
-  )
-
-  // 进入 scope tab 时扫描一次。
-  useEffect(() => {
-    if (tab !== 'scope') return
-    void loadDiscovered()
-  }, [tab, loadDiscovered])
-
-  /** 把检测到的仓库根加入授权目录文本框（去重，追加一行）。 */
-  const addRoot = useCallback((root: string) => {
-    setRootsText((prev) => {
-      const crlf = String.fromCharCode(13) + String.fromCharCode(10)
-      const lines = prev.split(new RegExp(crlf + '|' + String.fromCharCode(10))).map((line) => line.trim()).filter(Boolean)
-      if (lines.includes(root)) return prev
-      lines.push(root)
-      return lines.join(String.fromCharCode(10))
-    })
-  }, [])
-
-  useEffect(() => {
-    return () => {
-      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
-    }
-  }, [])
-
-  const applyState = useCallback((next: PanelState) => {
-    setState(next)
-    setReposText(next.settings.allowedRepos.join('\n'))
-    setRootsText(next.settings.allowedRoots.join('\n'))
-    setAllowWrite(next.settings.allowWrite)
-    setRequireConfirm(next.settings.requireConfirm)
-  }, [])
-
-  const load = useCallback(async () => {
-    try {
-      const data = await api<{ ok: boolean; state: PanelState; providers: ProviderView[]; error?: string }>('/state')
-      if (!data.ok) {
-        setError(data.error ?? t('errLoad'))
-        return
-      }
-      setError('')
-      setProviders(data.providers ?? [])
-      applyState(data.state)
-    } catch (err) {
-      setError(t('errLoad') + '：' + (err instanceof Error ? err.message : String(err)))
-    }
-  }, [applyState, t])
-
-  useEffect(() => {
-    void load()
-  }, [load])
-
-  useEffect(() => {
-    return () => {
-      if (timerRef.current !== null) window.clearTimeout(timerRef.current)
-    }
-  }, [])
-
-  const stopPolling = () => {
-    if (timerRef.current !== null) {
-      window.clearTimeout(timerRef.current)
-      timerRef.current = null
-    }
-  }
-
-  const pollOnce = useCallback(
-    async (pollKey: string, interval: number) => {
-      try {
-        const data = await api<any>('/oauth/poll', { pollKey })
-        if (data.status === 'authorized') {
-          stopPolling()
-          setFlow(null)
-          setFlowMsg(t('authDone'))
-          setToken('')
-          if (data.state) applyState(data.state)
-          return
-        }
-        if (data.status === 'denied' || data.status === 'expired' || data.status === 'error') {
-          stopPolling()
-          setFlow(null)
-          setFlowMsg((data.error as string) || t('authFailed'))
-          return
-        }
-        const wait = (data.retryAfter as number) > 0 ? (data.retryAfter as number) : interval
-        timerRef.current = window.setTimeout(() => void pollOnce(pollKey, interval), Math.max(wait, 3) * 1000)
-      } catch (err) {
-        stopPolling()
-        setFlowMsg(err instanceof Error ? err.message : String(err))
-      }
-    },
-    [applyState, t],
-  )
-
-  const startOAuth = async () => {
-    setBusy(true)
-    setError('')
-    setFlowMsg('')
-    try {
-      const data = await api<any>('/oauth/start', { provider, clientId, host, apiBase })
-      if (!data.ok) {
-        setError(data.error ?? t('authFailed'))
-        return
-      }
-      const pollKey = String(data.pollKey ?? '')
-      setFlow({ pollKey, userCode: data.flow.userCode, verificationUri: data.flow.verificationUri, interval: data.flow.interval })
-      setFlowMsg(t('waiting'))
-      if (pollKey) {
-        timerRef.current = window.setTimeout(() => void pollOnce(pollKey, data.flow.interval), Math.max(data.flow.interval, 3) * 1000)
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const connectPat = async () => {
-    if (token.trim().length === 0) {
-      setError('请填写访问令牌')
-      return
-    }
-    setBusy(true)
-    setError('')
-    setFlowMsg('')
-    try {
-      const data = await api<any>('/pat/connect', { provider, token, host, apiBase, label: accountLabel.trim() })
-      if (!data.ok) {
-        setError(data.error ?? '连接失败')
-        return
-      }
-      setToken('')
-      setFlowMsg('')
-      if (data.state) applyState(data.state)
-      showToast('ok', t('toastSaved'))
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      showToast('error', err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const disconnect = async (id: string) => {
-    if (!window.confirm(t('removeConfirm'))) return
-    setBusy(true)
-    try {
-      const data = await api<any>('/accounts/remove', { id })
-      if (data.state) applyState(data.state)
-      if (!data.ok && data.error) {
-        setError(data.error)
-        showToast('error', data.error)
-      } else {
-        showToast('ok', t('toastSaved'))
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      showToast('error', err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const recheck = async (id: string) => {
-    setBusy(true)
-    try {
-      const data = await api<any>('/accounts/recheck', { id })
-      if (data.state) applyState(data.state)
-      if (!data.ok && data.error) {
-        setError(data.error)
-        showToast('error', data.error)
-      } else {
-        setError('')
-        showToast('ok', t('toastRecheck'))
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      showToast('error', err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  /** 设为默认账号：Agent 侧多账号时优先使用它。 */
-  const setDefaultAccount = async (id: string) => {
-    setBusy(true)
-    try {
-      const data = await api<any>('/settings', { defaultAccountId: id })
-      if (data.state) applyState(data.state)
-      if (data.ok) {
-        showToast('ok', t('toastDefault'))
-      } else {
-        setError(data.error ?? '')
-        showToast('error', data.error ?? t('errLoad'))
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      showToast('error', err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const saveScope = async () => {
-    setBusy(true)
-    try {
-      const data = await api<any>('/settings', {
-        allowedRepos: reposText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
-        allowedRoots: rootsText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
-        allowWrite,
-        requireConfirm,
-      })
-      if (data.state) applyState(data.state)
-      if (data.ok) {
-        setSavedTick((value) => value + 1)
-        showToast('ok', t('toastSaved'))
-      } else {
-        setError(data.error ?? '')
-        showToast('error', data.error ?? t('errLoad'))
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err))
-      showToast('error', err instanceof Error ? err.message : String(err))
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const currentProvider = useMemo(() => providers.find((item) => item.id === provider), [providers, provider])
-  const accounts = state?.accounts ?? []
-  const primaryState = accounts.find((item) => item.status === 'connected')?.status ?? accounts[0]?.status
-
-  // 统计条：把「授权到什么程度」压缩成一眼可读的四格，避免用户逐行读表单。
-  const settings = state?.settings
-  const connectedCount = accounts.filter((item) => item.status === 'connected').length
-  const unhealthyCount = accounts.filter((item) => item.status !== 'connected').length
-  const roots = settings?.allowedRoots ?? []
-  const repos = settings?.allowedRepos ?? []
-  const allowAllRoots = roots.includes('*')
-  const allowAllRepos = repos.includes('*')
-  const defaultAccountId = settings?.defaultAccountId ?? ''
-  // 账号级权限表的显式条目数：统计条要把这部分算进来，否则用户设了 N 个仓库权限，
-  // 「授权仓库」还显示全局 allowedRepos 的 0，读数与事实不符。
-  const perAccountEntries = Object.values(settings?.repoPermissions ?? {}).reduce(
-    (sum, table) => sum + Object.keys(table ?? {}).length,
-    0,
-  )
-  const repoCount = allowAllRepos ? Infinity : repos.length + perAccountEntries
-
-  const statusText = (value: string) =>
-    value === 'connected' ? t('connected') : value === 'expired' ? t('expired') : t('errored')
-
-  return (
-    <div className="dgp-root dgp-section">
-      <div className="dgp-head">
-        <div>
-          <div className="dgp-title">
-            <Dot state={primaryState} />
-            {t('panelTitle')}
-          </div>
-          <div className="dgp-sub">{t('panelSubtitle')}</div>
-        </div>
-        <div className="dgp-tabs" role="tablist">
-          <button type="button" role="tab" className="dgp-tab" aria-selected={tab === 'accounts'} data-on={tab === 'accounts' ? '1' : '0'} onClick={() => setTab('accounts')}>
-            {t('tabAccounts')}
-          </button>
-          <button type="button" role="tab" className="dgp-tab" aria-selected={tab === 'scope'} data-on={tab === 'scope' ? '1' : '0'} onClick={() => setTab('scope')}>
-            {t('tabScope')}
-          </button>
-          <button type="button" role="tab" className="dgp-tab" aria-selected={tab === 'help'} data-on={tab === 'help' ? '1' : '0'} onClick={() => setTab('help')}>
-            {t('tabHelp')}
-          </button>
-        </div>
-      </div>
-
-      {error ? <div className="dgp-err">{error}</div> : null}
-
-      {/* 授权概览：四个数字把「授权到什么程度」一次说清，避免用户逐行读表单。 */}
-      <div className="dgp-stats" role="group" aria-label={t('statsTitle')}>
-        <div className="dgp-stat" data-tone={unhealthyCount > 0 ? 'warn' : connectedCount > 0 ? 'ok' : 'neutral'}>
-          <span className="dgp-stat-label">{t('statsAccounts')}</span>
-          <span className="dgp-stat-value">{accounts.length}</span>
-          <span className="dgp-stat-hint">
-            {accounts.length === 0
-              ? t('statsAccountsHintNone')
-              : unhealthyCount > 0
-                ? fmt(t('statsAccountsHintMixed'), { n: connectedCount, m: unhealthyCount })
-                : fmt(t('statsAccountsHint'), { n: connectedCount })}
-          </span>
-        </div>
-        <div className="dgp-stat" data-tone={allowAllRoots ? 'warn' : roots.length > 0 ? 'ok' : 'neutral'}>
-          <span className="dgp-stat-label">{t('statsRoots')}</span>
-          <span className="dgp-stat-value">{allowAllRoots ? '∞' : roots.length}</span>
-          <span className="dgp-stat-hint">
-            {allowAllRoots ? t('statsRootsHintAll') : roots.length > 0 ? fmt(t('statsRootsHint'), { n: roots.length }) : t('statsRootsHintNone')}
-          </span>
-        </div>
-        <div className="dgp-stat" data-tone={allowAllRepos ? 'warn' : repoCount > 0 ? 'ok' : 'neutral'}>
-          <span className="dgp-stat-label">{t('statsRepos')}</span>
-          <span className="dgp-stat-value">{allowAllRepos ? '∞' : repoCount}</span>
-          <span className="dgp-stat-hint">
-            {allowAllRepos
-              ? t('statsReposHintAll')
-              : repoCount > 0
-                ? fmt(t('statsReposHint'), { n: repoCount })
-                : t('statsReposHintNone')}
-          </span>
-        </div>
-        <div className="dgp-stat" data-tone={settings?.allowWrite ? 'warn' : 'ok'}>
-          <span className="dgp-stat-label">{t('statsWrite')}</span>
-          <span className="dgp-stat-value">{settings?.allowWrite ? t('statsWriteOn') : t('statsWriteOff')}</span>
-          <span className="dgp-stat-hint">{settings?.allowWrite ? t('statsWriteHintOn') : t('statsWriteHintOff')}</span>
-        </div>
-      </div>
-
-      {tab === 'accounts' ? (
-        <>
-          <div className="dgp-group">
-            <div className="dgp-group-title">{t('groupAccounts')}</div>
-            {accounts.length === 0 ? (
-              <div className="dgp-line">
-                <div className="dgp-line-main">
-                  <div className="dgp-name" style={{ fontWeight: 400, color: 'var(--dgp-fg2)' }}>
-                    {t('noAccount')}
-                  </div>
-                  <div className="dgp-hint" style={{ marginTop: 2 }}>
-                    {t('noAccountHint')}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              accounts.map((account) => (
-                <div key={account.id}>
-                  <div className="dgp-line">
-                    <div className="dgp-line-main">
-                      <div className="dgp-row">
-                        <Dot state={account.status} />
-                        <span className="dgp-name">{account.login || '(unknown)'}</span>
-                        <span className="dgp-badge">{account.provider}</span>
-                        <span className="dgp-badge" data-tone="mono">
-                          {account.kind === 'oauth' ? 'OAuth' : 'PAT'}
-                        </span>
-                        <span className="dgp-badge" data-state={account.status}>
-                          {statusText(account.status)}
-                        </span>
-                      </div>
-                      <div className="dgp-meta">
-                        {account.host ? <span>{account.host}</span> : null}
-                        {account.scopes.length > 0 ? <code>{account.scopes.join(' ')}</code> : null}
-                      </div>
-                      {account.lastError ? <div className="dgp-err">{account.lastError}</div> : null}
-                    </div>
-                    <div className="dgp-line-side">
-                      <button
-                        type="button"
-                        className="dgp-repo-toggle"
-                        data-open={expandedAccount === account.id ? '1' : '0'}
-                        aria-expanded={expandedAccount === account.id}
-                        onClick={() => toggleAccountRepos(account.id)}
-                      >
-                        <BranchIcon />
-                        {t('reposToggle')}
-                      </button>
-                      {defaultAccountId === account.id ? (
-                        <span className="dgp-badge" data-tone="mono">
-                          {t('isDefault')}
-                        </span>
-                      ) : (
-                        <button
-                          type="button"
-                          className="dgp-btn ghost"
-                          disabled={busy}
-                          onClick={() => void setDefaultAccount(account.id)}
-                        >
-                          {t('setDefault')}
-                        </button>
-                      )}
-                      {/* 「编辑账号」与「重新授权」是同一个动作（都只是回填连接表单），
-                          按单入口原则合并为一个按钮：回填平台/主机/API 地址/接入方式 + 提示语。 */}
-                      <button
-                        type="button"
-                        className="dgp-btn ghost"
-                        disabled={busy}
-                        title={t('reauthHint')}
-                        onClick={() => {
-                          setProvider(account.provider)
-                          setMethod(account.kind === 'oauth' ? 'oauth' : 'pat')
-                          if (account.host) setHost(account.host)
-                          if (account.apiBase) setApiBase(account.apiBase)
-                          setReauthTarget({ provider: account.provider, login: account.login || '' })
-                          setToken('')
-                          setTab('accounts')
-                        }}
-                      >
-                        {t('accountEdit')}
-                      </button>
-                      <button type="button" className="dgp-btn ghost" disabled={busy} onClick={() => void recheck(account.id)}>
-                        {t('recheck')}
-                      </button>
-                      {/* 危险操作与常规操作之间加一道竖线，避免误点。 */}
-                      <span className="dgp-line-sep" aria-hidden="true" />
-                      <button type="button" className="dgp-btn danger" disabled={busy} onClick={() => void disconnect(account.id)}>
-                        {t('disconnect')}
-                      </button>
-                    </div>
-                  </div>
-                  {expandedAccount === account.id ? (
-                    <AccountRepoList
-                      t={t}
-                      accountId={account.id}
-                      state={accountRepos[account.id]}
-                      permissionOf={(repoFullName) => currentPermission(account.id, repoFullName)}
-                      savingOf={(repoFullName) => permissionSaving(account.id, repoFullName)}
-                      onPermission={(repoFullName, perm) => void saveRepoPermission(account.id, repoFullName, perm)}
-                      onReload={() => void loadAccountRepos(account.id)}
-                    />
-                  ) : null}
-                </div>
-              ))
-            )}
-          </div>
-
-          <div className="dgp-group">
-            <div className="dgp-group-title">{t('groupConnect')}</div>
-
-            {reauthTarget ? (
-              <div className="dgp-callout">
-                <span className="dgp-callout-text">
-                  {t('reauthHint')} · {reauthTarget.provider}
-                  {reauthTarget.login ? ` / ${reauthTarget.login}` : ''}
-                </span>
-                <button type="button" className="dgp-btn ghost" onClick={() => setReauthTarget(null)}>
-                  {t('cancel')}
-                </button>
-              </div>
-            ) : null}
-
-            <div className="dgp-field">
-              <label className="dgp-label">{t('provider')}</label>
-              <select className="dgp-select" value={provider} onChange={(event) => setProvider(event.target.value)}>
-                {(providers.length > 0 ? providers : [{ id: 'github', label: 'GitHub' } as ProviderView]).map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="dgp-field">
-              <label className="dgp-label">{t('accountLabel')}</label>
-              <input className="dgp-input" value={accountLabel} onChange={(event) => setAccountLabel(event.target.value)} placeholder={t('accountLabelHint')} />
-            </div>
-
-            <div className="dgp-field">
-              <label className="dgp-label">{t('method')}</label>
-              <div className="dgp-seg" role="group">
-                <button type="button" data-on={method === 'pat' ? '1' : '0'} onClick={() => setMethod('pat')}>
-                  {t('pat')}
-                </button>
-                <button type="button" data-on={method === 'oauth' ? '1' : '0'} onClick={() => setMethod('oauth')}>
-                  {t('oauth')}
-                </button>
-              </div>
-              <div className="dgp-hint">{method === 'pat' ? currentProvider?.patHint ?? t('patPro') : currentProvider?.oauthHint ?? t('oauthPro')}</div>
-            </div>
-
-            {provider === 'gitea' ? (
-              <>
-                <div className="dgp-field">
-                  <label className="dgp-label">{t('hostLabel')}</label>
-                  <input className="dgp-input" value={host} placeholder={t('hostPlaceholder')} onChange={(event) => setHost(event.target.value)} />
-                </div>
-                <div className="dgp-field">
-                  <label className="dgp-label">{t('apiBaseLabel')}</label>
-                  <input className="dgp-input" value={apiBase} placeholder={t('apiBasePlaceholder')} onChange={(event) => setApiBase(event.target.value)} />
-                </div>
-              </>
-            ) : null}
-
-            {method === 'pat' ? (
-              <>
-                <div className="dgp-field">
-                  <label className="dgp-label">{t('tokenLabel')}</label>
-                  <input
-                    className="dgp-input"
-                    type="password"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={token}
-                    placeholder={t('tokenPlaceholder')}
-                    onChange={(event) => setToken(event.target.value)}
-                  />
-                  {currentProvider?.patUrl ? (
-                    <div className="dgp-hint">
-                      <a className="dgp-link" href={currentProvider.patUrl} target="_blank" rel="noreferrer noopener">
-                        {currentProvider.patUrl}
-                      </a>
-                    </div>
-                  ) : null}
-                </div>
-                <div className="dgp-field" style={{ borderBottom: 'none', paddingBottom: 0 }}>
-                  <div className="dgp-row">
-                    <button type="button" className="dgp-btn primary" disabled={busy} onClick={() => void connectPat()}>
-                      {busy ? t('connecting') : t('connect')}
-                    </button>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="dgp-field">
-                  <label className="dgp-label">{t('clientIdLabel')}</label>
-                  <input className="dgp-input" value={clientId} placeholder="Iv1.xxxxxxxxxxxx" onChange={(event) => setClientId(event.target.value)} />
-                  <div className="dgp-hint">{t('clientIdHint')}</div>
-                </div>
-                {flow ? (
-                  <div className="dgp-field" style={{ borderBottom: 'none' }}>
-                    <div className="dgp-card">
-                      <div className="dgp-hint" style={{ marginTop: 0 }}>
-                        {t('userCode')}
-                      </div>
-                      <div className="dgp-code">{flow.userCode}</div>
-                      <div className="dgp-row">
-                        <a className="dgp-btn" href={flow.verificationUri} target="_blank" rel="noreferrer noopener">
-                          {flow.verificationUri || 'open'}
-                        </a>
-                        <button
-                          type="button"
-                          className="dgp-btn"
-                          onClick={() => {
-                            void navigator.clipboard?.writeText(flow.userCode)
-                            setCopied(true)
-                            window.setTimeout(() => setCopied(false), 1500)
-                          }}
-                        >
-                          {copied ? t('copied') : t('copy')}
-                        </button>
-                        <button
-                          type="button"
-                          className="dgp-btn ghost"
-                          onClick={() => {
-                            stopPolling()
-                            setFlow(null)
-                            setFlowMsg('')
-                          }}
-                        >
-                          {t('cancel')}
-                        </button>
-                      </div>
-                      {flowMsg ? <div className="dgp-hint">{flowMsg}</div> : null}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="dgp-field" style={{ borderBottom: 'none' }}>
-                    <div className="dgp-row">
-                      <button type="button" className="dgp-btn primary" disabled={busy} onClick={() => void startOAuth()}>
-                        {busy ? t('connecting') : t('connect')}
-                      </button>
-                    </div>
-                    {flowMsg ? <div className="dgp-ok">{flowMsg}</div> : null}
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        </>
-      ) : null}
-
-      {tab === 'scope' ? (
-        <>
-          <ScopeDiscover
-            t={t}
-            repos={discovered}
-            loading={discovering}
-            onReload={() => void loadDiscovered()}
-            onUse={(root) => addRoot(root)}
-          />
-          <div className="dgp-line" style={{ padding: '9px 0' }}>
-            <div className="dgp-line-main">
-              <span className="dgp-name">{t('scopeGrantAll')}</span>
-              <span className="dgp-hint" style={{ marginTop: 2 }}>{t('scopeGrantAllHint')}</span>
-            </div>
-            <div className="dgp-line-side">
-              <button type="button" className="dgp-btn" onClick={() => { setRootsText('*'); setReposText('*') }}>{t('scopeGrantAll')}</button>
-            </div>
-          </div>
-          <div className="dgp-group">
-            <div className="dgp-group-title">{t('groupScopeRepos')}</div>
-            <div className="dgp-field">
-              <label className="dgp-label">{t('scopeRepos')}</label>
-              <textarea className="dgp-area" value={reposText} onChange={(event) => setReposText(event.target.value)} placeholder={'owner/repo\nanother-owner/another-repo'} />
-              <div className="dgp-hint">{t('scopeReposHint')}</div>
-              <div className="dgp-hint">{t('scopeReposNote')}</div>
-            </div>
-          </div>
-
-          <div className="dgp-group">
-            <div className="dgp-group-title">{t('groupScopeRoots')}</div>
-            <div className="dgp-field">
-              <label className="dgp-label">{t('scopeRoots')}</label>
-              <textarea className="dgp-area" value={rootsText} onChange={(event) => setRootsText(event.target.value)} placeholder={'D:\\work\\my-repo'} />
-              <div className="dgp-hint">{t('scopeRootsHint')}</div>
-            </div>
-          </div>
-
-          <div className="dgp-group">
-            <div className="dgp-group-title">{t('groupPolicy')}</div>
-            <label className="dgp-check">
-              <input type="checkbox" checked={allowWrite} onChange={(event) => setAllowWrite(event.target.checked)} />
-              <span className="dgp-check-body">
-                <span className="dgp-check-title">{t('allowWrite')}</span>
-                <span className="dgp-hint" style={{ marginTop: 0 }}>
-                  {t('allowWriteHint')}
-                </span>
-              </span>
-            </label>
-            <label className="dgp-check">
-              <input type="checkbox" checked={requireConfirm} onChange={(event) => setRequireConfirm(event.target.checked)} />
-              <span className="dgp-check-body">
-                <span className="dgp-check-title">{t('requireConfirm')}</span>
-                <span className="dgp-hint" style={{ marginTop: 0 }}>
-                  {t('requireConfirmHint')}
-                </span>
-              </span>
-            </label>
-            <div className="dgp-line" style={{ borderBottom: 'none', justifyContent: 'flex-start', gap: 10 }}>
-              <button type="button" className="dgp-btn primary" disabled={busy} onClick={() => void saveScope()}>
-                {t('save')}
-              </button>
-              {savedTick > 0 ? <span className="dgp-ok" style={{ marginTop: 0 }}>{t('saved')}</span> : null}
-            </div>
-          </div>
-        </>
-      ) : null}
-
-      {tab === 'help' ? (
-        <div className="dgp-group" style={{ paddingTop: 14 }}>
-          <div className="dgp-card">
-            <div className="dgp-hint" style={{ marginTop: 0, lineHeight: '20px' }}>
-              {t('helpText')}
-            </div>
-            <div className="dgp-sep" />
-            <dl className="dgp-kv">
-              <dt>{t('oauth')}</dt>
-              <dd>{t('oauthPro')}</dd>
-              <dt>{t('pat')}</dt>
-              <dd>{t('patPro')}</dd>
-            </dl>
-          </div>
-        </div>
-      ) : null}
-
-      {toast ? <Toast tone={toast.tone} text={toast.text} onDone={() => setToast(null)} /> : null}
-    </div>
-  )
-}
-
-/* ------------------------------------------------------------------ */
 /* 分支拓扑图：车道式 DAG 渲染                                          */
 /* 图元只有三种（节点 / 同车道竖线 / 跨车道 S 形转折线），一条分支跨 N   */
 /* 行靠 N 个竖线段拼出，不存在跨行长连线，因此连线永不穿过中间节点。      */
@@ -2930,53 +1948,6 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
 
 
 /** 仓库范围页「检测到的仓库」：列出授权根下扫描到的仓库，一键填入授权目录。 */
-function ScopeDiscover({
-  t,
-  repos,
-  loading,
-  onReload,
-  onUse,
-}: {
-  t: (key: string) => string
-  repos: Array<{ root: string; name: string; branch: string; remotes: string[] }>
-  loading: boolean
-  onReload: () => void
-  onUse: (root: string) => void
-}) {
-  return (
-    <div className="dgp-group">
-      <div className="dgp-group-title">{t('scopeDiscoverTitle')}</div>
-      {loading ? (
-        <Skeleton rows={2} />
-      ) : repos.length === 0 ? (
-        <div className="dgp-hint" style={{ padding: '2px 0 6px' }}>{t('scopeDiscoverEmpty')}</div>
-      ) : (
-        repos.map((repo) => (
-          <div key={repo.root} className="dgp-line" style={{ padding: '9px 0' }}>
-            <div className="dgp-line-main">
-              <span className="dgp-name">{repo.name}</span>
-              <span className="dgp-meta">
-                <code>{repo.root}</code>
-                {repo.branch ? <span>· {repo.branch}</span> : null}
-                {repo.remotes.length > 0 ? <span>· {repo.remotes.join(', ')}</span> : <span>· {t('scopeDiscoverNoRemote')}</span>}
-              </span>
-            </div>
-            <div className="dgp-line-side">
-              <button type="button" className="dgp-btn" onClick={() => onUse(repo.root)}>{t('scopeDiscoverUse')}</button>
-            </div>
-          </div>
-        ))
-      )}
-      <div className="dgp-line-side" style={{ paddingTop: 6 }}>
-        <button type="button" className="dgp-btn ghost" onClick={onReload}>
-          <RefreshIcon />
-          {t('scopeDiscoverReload')}
-        </button>
-      </div>
-    </div>
-  )
-}
-
 function FolderIcon() {
   return (
     <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
