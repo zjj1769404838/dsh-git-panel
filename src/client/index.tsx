@@ -30,7 +30,7 @@ import { InitWizard, BranchDetailModal } from './onboard.js'
 /** 服务短名（不是 package.json 里的全名）。 */
 export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
-const BUILD = 'dgp-v17'
+const BUILD = 'dgp-v18'
 
 const ZH: Dict = {
   entry: 'Git',

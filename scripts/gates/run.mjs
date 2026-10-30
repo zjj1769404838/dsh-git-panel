@@ -86,6 +86,7 @@ const clientSrcAll = [
   await readText(resolve(root, 'src/client/settings.tsx')),
   await readText(resolve(root, 'src/client/onboard.tsx')),
 ].join('\n')
+const sharedSrc = await readText(resolve(root, 'src/client/shared.tsx'))
 check('client 产物非空', (clientOut?.length ?? 0) > 1000, `${clientOut?.length ?? 0} 字节`)
 if (clientOut) {
   check('client 产物带 ModuleLoader banner', clientOut.includes('__ModuleLoader__.load'))
@@ -158,9 +159,10 @@ if (clientOut) {
   check('client 旧 note 动态反馈机制已移除（改用 toast）', !clientOut.includes('setNote'))
   check('client 菜单静态提示行仍保留（dgp-menu-note）', clientOut.includes('dgp-menu-note'))
   // ---- 2026-10-29 Git 工作台（IDEA 式主面板 + 二级弹窗）----
-  check('client 渲染 Git 工作台抽屉（dgp-gw）', clientOut.includes('dgp-gw') && clientOut.includes('wbTitle'))
-  check('client 工作台改贴右抽屉（dgp-gw-mask + dgp-gw-body）', clientOut.includes('dgp-gw-mask') && clientOut.includes('dgp-gw-body'))
+  check('client 渲染 Git 工作台模态框（dgp-gw）', clientOut.includes('dgp-gw') && clientOut.includes('wbTitle'))
+  check('client 工作台是居中模态框（dgp-gw-mask + dgp-gw-body）', clientOut.includes('dgp-gw-mask') && clientOut.includes('dgp-gw-body'))
   check('client 工作台用左侧竖排导航（dgp-gw-rail，取代三 tab 平铺）', clientOut.includes('dgp-gw-rail') && clientOut.includes('dgp-gw-railbtn'))
+  check('client 工作台不是贴右抽屉（transform 居中 + 圆角 + 四边框）', sharedSrc.includes('transform:translate(-50%,-50%)') && !sharedSrc.includes('border-left:.5px solid var(--dgp-line2);background:var(--dsw-alias-bg-layer-1'))
   check('client 工作台不再用旧类名（无 dgp-wb）', !clientOut.includes('dgp-wb'))
   check('client diff 改为预览层（wbDiffTitle + dgp-gw-diff）', clientOut.includes('wbDiffTitle') && clientOut.includes('dgp-gw-diff'))
   check('client 工作台顶栏有 Fetch/Pull/Push', clientOut.includes('/repo/fetch') && clientOut.includes('/repo/pull') && clientOut.includes('/repo/push'))
@@ -191,7 +193,7 @@ if (clientOut) {
   check('client 一级菜单不再内嵌分支拓扑（index.tsx 不再引用 GraphView）', !clientSrc.includes('GraphView'))
   check('client 一级菜单不再内嵌改动明细（index.tsx 不再有 ChangesList）', !clientSrc.includes('ChangesList'))
   check('client 工作台 portal 到 body（createPortal + document.body）', clientOut.includes('document.body') && portalImported >= 2)
-  check('client BUILD 版本已推进（dgp-v17）', clientOut.includes('dgp-v17'))
+  check('client BUILD 版本已推进（dgp-v18）', clientOut.includes('dgp-v18'))
   // ---- i18n 键完整性：任何 t('x') 用到的键都必须在 ZH/EN 字典里存在（防 wbCancel 类漏键） ----
   const clientNorm = clientSrc.replace(/\r\n/g, '\n')
   const dictStart = clientNorm.indexOf('const ZH: Dict = {')
@@ -266,7 +268,7 @@ if (clientOut) {
 
   check('client 分支详情按 ref 取提交（ref=）', clientSrcAll.includes('ref=') && clientSrcAll.includes('/repo/commits'))
   check('client 分支详情不单独做按钮（Git 只有一个 chip 入口）', !clientSrcAll.includes('dgp-branchbtn'))
-  check('client BUILD 版本已推进（dgp-v17）', clientOut.includes('dgp-v17'))
+  check('client BUILD 版本已推进（dgp-v18）', clientOut.includes('dgp-v18'))
 }
 // ---- node 半边：git-ops 命令层与工作台端点 ----
 {

@@ -179,10 +179,10 @@ node scripts/build.mjs
 ```bash
 npm run bundle        # 构建 lib/index.js + lib/client.js
 npm run typecheck     # tsc --noEmit
-npm run gates         # 182 项插件契约门禁
+npm run gates         # 183 项插件契约门禁
 npm run test:hardening# 194 项加固回归（含真实 git 仓库端到端 + 仓库权限档位 + 单条权限写入）
 npm run test:e2e      # 23 项设置页 GUI 端到端验证（需要本机 Edge + DSH Web 在跑）
-npm run test:e2e:wb   # 27 项 Git 工作台 GUI 端到端验证（含「点弹窗不消失」回归）
+npm run test:e2e:wb   # 29 项 Git 工作台 GUI 端到端验证（含居中模态框形态、点弹窗不消失回归）
 npm run test:e2e:newui # 19 项新入口体系 GUI 端到端验证（单一 chip 入口 + 五入口菜单）
 npm run preview       # 用真实 CSS + 宿主 token 渲染 docs/preview/*.png（需要本机 Edge）
 npm test              # gates + hardening
@@ -218,7 +218,7 @@ src/
     shared.tsx        api/routeUrl/类型 + 全套 .dgp-* 样式 + Toast/EmptyState/Skeleton/图标
     onboard.tsx       初始化页（单页表单 + 右侧实时计划）与当前分支详情（时间线弹窗）
     graphview.tsx     分支拓扑车道图（工作台「分支图」视图使用）
-    workbench.tsx     贴右全高抽屉式 Git 工作台（左侧竖排导航：改动/历史/分支图）+ 分支/新建分支/提交详情/远程/Pull/Diff 六个弹窗
+    workbench.tsx     居中模态框式 Git 工作台（左侧竖排导航：改动/历史/分支图）+ 分支/新建分支/提交详情/远程/Pull/Diff 六个弹窗
 scripts/
   build.mjs           esbuild 双产物
   gates/run.mjs       契约门禁

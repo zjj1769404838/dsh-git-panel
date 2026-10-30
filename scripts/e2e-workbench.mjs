@@ -213,6 +213,34 @@ try {
       return !!panel && panel.parentElement === document.body
     })))
 
+    // 形态断言：居中模态框（不是贴右抽屉）。判据同时看几何与样式：
+    // 左右留白近似对称、上下也居中，且没有右侧单边贴边。
+    const shape = await page.evaluate(() => {
+      const panel = document.querySelector('.dgp-gw')
+      if (!panel) return null
+      const rect = panel.getBoundingClientRect()
+      const style = getComputedStyle(panel)
+      return {
+        left: Math.round(rect.left),
+        right: Math.round(window.innerWidth - rect.right),
+        top: Math.round(rect.top),
+        bottom: Math.round(window.innerHeight - rect.bottom),
+        radius: parseFloat(style.borderTopLeftRadius) || 0,
+        borderTop: parseFloat(style.borderTopWidth) || 0,
+        borderLeft: parseFloat(style.borderLeftWidth) || 0,
+      }
+    })
+    check(
+      '工作台是居中模态框（左右留白对称，不是贴右抽屉）',
+      !!shape && Math.abs(shape.left - shape.right) <= 4 && shape.left > 24,
+      JSON.stringify(shape),
+    )
+    check(
+      '工作台四周都有圆角与边框（模态框形态）',
+      !!shape && shape.radius >= 8 && shape.borderTop > 0 && shape.borderLeft > 0,
+      JSON.stringify(shape),
+    )
+
     // 回归：二级弹窗此前用裸 createPortal（运行时 undefined）→ 一点就抛 ReferenceError，
     // 整棵 React 子树被卸载，弹窗与 chip 一起消失。这里点开分支管理，三件事必须同时成立。
     // 会话目录不是仓库时（未初始化首屏）没有分支按钮，该组断言按 skip 处理，

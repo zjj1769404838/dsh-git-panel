@@ -177,7 +177,7 @@
 
 ---
 
-## 五、第三阶段：chip 后置页面完全重做（BUILD `dgp-v17`，2026-10-30）
+## 五、第三阶段：chip 后置页面完全重做（BUILD `dgp-v17` → `dgp-v18`，2026-10-30）
 
 第二阶段只重做了「设置」里的 Git 分节；chip 点击后打开的**工作台、初始化页、当前分支详情**仍是旧设计。用户要求这三页同样「忘记旧设计、完全重做」，于是再做一轮，数据契约与端点调用一律不动。
 
@@ -185,7 +185,7 @@
 
 | 旧结构 | 问题 | 新结构 |
 | --- | --- | --- |
-| 工作台 `.dgp-wb`：760px 居中弹窗、`max-height:min(600px,80vh)` | 屏幕中部悬浮一块小窗，仓库内容多时纵向挤成一团，与宿主界面抢焦点 | **贴右全高抽屉 `.dgp-gw`**：`position:fixed;top:0;right:0;bottom:0;width:min(1080px,calc(100vw - 80px))`，进入有 0.2s 滑入（`prefers-reduced-motion` 关闭） |
+| 工作台 `.dgp-wb`：760px 居中弹窗、`max-height:min(600px,80vh)` | 屏幕中部悬浮一块小窗，仓库内容多时纵向挤成一团，与宿主界面抢焦点 | **居中模态框 `.dgp-gw`**：`position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:min(1040px,calc(100vw - 96px));height:min(660px,calc(100vh - 96px))`，圆角 + 四边边框 + 0.18s 微缩放淡入（`prefers-reduced-motion` 关闭） |
 | 左右 44% / 56% 双栏（左改动、右三 tab） | 两侧都在争宽度，改动列表被压到 44%，提交框又被挤到最底部 | **左窄竖排导航 `.dgp-gw-rail`（改动 / 历史 / 分支图）+ 右主区**，一次只渲染一个视图，主区拿到全部剩余宽度 |
 | 提交框固定在整块面板底部 `.dgp-wb-foot` | 改动多时要滚到最底才能提交，且与列表分离 | 提交框上移到**改动视图顶部** `.dgp-gw-commit`（暂存区 → 写信息 → 提交 → 已暂存计数），符合「先看暂存再提交」 |
 | Diff 占一个常驻 tab | 不选文件时该 tab 是空的，占了 1/3 导航位 | Diff 降级为**按需弹层**（`layer==='diff'`，标题「差异预览」），点某行才出现 |
@@ -197,7 +197,7 @@
 
 ### 5.2　新文件划分
 
-- `src/client/workbench.tsx`：抽屉式工作台 + 6 个二级弹窗（分支 / 新建分支 / 提交详情 / 远程 / Pull / Diff）+ `Modal`。
+- `src/client/workbench.tsx`：居中模态框式工作台 + 6 个二级弹窗（分支 / 新建分支 / 提交详情 / 远程 / Pull / Diff）+ `Modal`。
 - `src/client/onboard.tsx`（新）：`InitWizard`（单页表单 + 实时计划）与 `BranchDetailModal`（时间线）。
 - `src/client/index.tsx`：只留 chip 与注册（2044 → 1484 行）。
 - `src/client/shared.tsx`：`.dgp-wb-*` / `.dgp-steps` / `.dgp-commitrow*` 全部换成 `.dgp-gw-*` / `.dgp-iw*` / `.dgp-tl*` / `.dgp-menu-group`。
@@ -207,11 +207,11 @@
 | 项目 | 结果 |
 | --- | --- |
 | `npm run typecheck` | 0 错误 |
-| `npm run bundle` | `lib/client.js` 232.1kb |
-| `npm run gates` | **182 项通过**（+8：抽屉结构 / 竖排导航 / 旧 `dgp-wb` 为 0 / 单页向导 / 时间线 / 分组菜单） |
+| `npm run bundle` | `lib/client.js` 232.5kb |
+| `npm run gates` | **183 项通过**（+9：模态框结构 / 竖排导航 / 旧 `dgp-wb` 为 0 / 非贴右抽屉 / 单页向导 / 时间线 / 分组菜单） |
 | `npm run test:hardening` | **194 项通过** |
 | `npm run test:e2e` | **23 项通过** |
-| `npm run test:e2e:wb` | **27 项通过**（选择器全部迁到 `.dgp-gw*`，提交详情改为先切「历史」再点行） |
+| `npm run test:e2e:wb` | **29 项通过**（选择器全部迁到 `.dgp-gw*`，+2 几何/样式断言确认居中模态框形态，提交详情改为先切「历史」再点行） |
 | `npm run test:e2e:newui` | **19 项通过**（时间线 `.dgp-tl-item`） |
 
 ### 5.4　本轮踩到的坑

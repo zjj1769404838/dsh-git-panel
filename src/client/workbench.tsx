@@ -1,10 +1,11 @@
 /**
- * Git 工作台（BUILD dgp-v17，完全重写）。
+ * Git 工作台（BUILD dgp-v18，完全重写）。
  *
  * 与旧版的差别不是微调，是换形态：
  *   - 旧版是 760px 居中弹窗 + 左 44% 变更 / 右 56% 三 tab 平铺 + 底部提交框；
- *   - 新版是贴右全高抽屉（宽 min(1080px, 100vw-80px)），左侧竖排导航（改动 / 历史 / 分支图），
- *     主区一次只呈现一件事；提交区提到「改动」视图顶部，形成「先看改动 → 再提交」的单列流程。
+ *   - 新版是居中模态框（宽 min(1040px, 100vw-96px)、高 min(660px, 100vh-96px)），
+ *     左侧竖排导航（改动 / 历史 / 分支图），主区一次只呈现一件事；
+ *     提交区提到「改动」视图顶部，形成「先看改动 → 再提交」的单列流程。
  *   - Diff 不再占一个常驻 tab，改为点文件时弹出的预览层（看完即走，不抢主区）。
  *
  * 数据契约完全沿用既有 node 端点，不新增接口：
@@ -325,6 +326,21 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     if (view === 'graph' && isRepo && !graph) void loadGraph()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, isRepo])
+
+  // 模态框语义：Esc 关闭。仅在没开二级弹窗时接管，否则让 Modal 自己处理，
+  // 避免一次 Esc 连关两层。
+  useEffect(() => {
+    if (layer !== 'none') return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        event.stopPropagation()
+        closeAll()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layer])
 
   const unstaged = (changes?.files ?? []).filter((file) => !file.staged)
   const stagedFiles = (changes?.files ?? []).filter((file) => file.staged)

@@ -382,11 +382,11 @@ body[data-ds-dark-theme] .dgp-root,body[data-ds-dark-theme] .dgp-portal{
 @media (prefers-reduced-motion:reduce){.dgp-toast{animation:none}}
 
 /* ------------------------------------------------------------------ */
-/* Git 工作台（dgp-v17：贴右全高抽屉）                                  */
+/* Git 工作台（dgp-v18：居中模态框）                                    */
 /* ------------------------------------------------------------------ */
-.dgp-gw-mask{position:fixed;inset:0;z-index:1140;background:color-mix(in srgb,#000 26%,transparent)}
-.dgp-gw{position:fixed;z-index:1150;top:0;right:0;bottom:0;width:min(1080px,calc(100vw - 80px));display:flex;flex-direction:column;border-left:.5px solid var(--dgp-line2);background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:-18px 0 56px #00000030;overflow:hidden;font-size:12px;line-height:18px;animation:dgp-gw-in .2s var(--dgp-ease) both}
-@keyframes dgp-gw-in{from{transform:translateX(24px);opacity:0}to{transform:none;opacity:1}}
+.dgp-gw-mask{position:fixed;inset:0;z-index:1140;background:color-mix(in srgb,#000 34%,transparent)}
+.dgp-gw{position:fixed;z-index:1150;top:50%;left:50%;transform:translate(-50%,-50%);width:min(1040px,calc(100vw - 96px));height:min(660px,calc(100vh - 96px));display:flex;flex-direction:column;border:.5px solid var(--dgp-line2);border-radius:var(--dgp-r-lg,12px);background:var(--dsw-alias-bg-layer-1,#fff);box-shadow:0 24px 64px #00000040;overflow:hidden;font-size:12px;line-height:18px;animation:dgp-gw-in .18s var(--dgp-ease) both}
+@keyframes dgp-gw-in{from{transform:translate(-50%,-48%) scale(.985);opacity:0}to{transform:translate(-50%,-50%) scale(1);opacity:1}}
 @media (prefers-reduced-motion:reduce){.dgp-gw{animation:none}}
 .dgp-gw-top{display:flex;align-items:center;gap:6px;padding:9px 12px;border-bottom:.5px solid var(--dgp-line);flex:0 0 auto;flex-wrap:wrap}
 .dgp-gw-crumb{font-weight:500;color:var(--dgp-fg)}

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * 截图脚本：chip 后置三页（Git 工作台抽屉 / 当前分支详情时间线 / chip 分组菜单）。
+ * 截图脚本：chip 后置三页（Git 工作台模态框 / 当前分支详情时间线 / chip 分组菜单）。
  * 用法：node scripts/shot-pages.mjs [http://127.0.0.1:63801]
  */
 import { readFileSync, existsSync, mkdirSync } from 'node:fs'
@@ -82,7 +82,7 @@ try {
   await page.waitForTimeout(1200)
   await page.screenshot({ path: '.work/pages-menu.png' })
 
-  // ② Git 工作台抽屉
+  // ② Git 工作台模态框
   const openWb = await page.evaluate(() => {
     const items = Array.from(document.querySelectorAll('.dgp-menu button, .dgp-menu [role="menuitem"]'))
     const target = items.find((item) => /Git\s*工作台/.test(item.textContent ?? ''))
@@ -112,7 +112,7 @@ try {
     })
     await page.waitForTimeout(1800)
     await wb.screenshot({ path: '.work/pages-workbench-graph.png' })
-    // 关闭抽屉
+    // 关闭模态框
     await page.evaluate(() => document.querySelector('.dgp-gw-x')?.click())
     await page.waitForTimeout(900)
   }
