@@ -126,6 +126,7 @@ export const es: Dict = {
   wbChangesTab: "Cambios",
   wbStageAll: "Marcar todos",
   wbDiffTitle: "Vista previa de diferencias",
+  wbDiffExpand: "Ampliar",
   wbMsgPlaceholder: "Mensaje de confirmación (obligatorio)",
   wbAmend: "Corregir la última confirmación",
   wbCommit: "Confirmar",

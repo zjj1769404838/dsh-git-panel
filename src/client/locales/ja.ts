@@ -126,6 +126,7 @@ export const ja: Dict = {
   wbChangesTab: "変更",
   wbStageAll: "すべて一括ステージ",
   wbDiffTitle: "差分プレビュー",
+  wbDiffExpand: "拡大",
   wbMsgPlaceholder: "コミットメッセージ（必須）",
   wbAmend: "前回のコミットを修正",
   wbCommit: "コミット",

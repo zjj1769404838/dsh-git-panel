@@ -34,7 +34,7 @@ import { EXTRA_LANGUAGES, EXTRA_LOCALES } from './locales/index.js'
 /** 服务短名（不是 package.json 里的全名）。 */
 export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
-const BUILD = 'dgp-v20'
+const BUILD = 'dgp-v21'
 
 const ZH: Dict = {
   entry: 'Git',
@@ -167,6 +167,7 @@ const ZH: Dict = {
   wbChangesTab: '改动',
   wbStageAll: '全部暂存',
   wbDiffTitle: '差异预览',
+  wbDiffExpand: '放大',
   wbMsgPlaceholder: '提交信息（必填）',
   wbAmend: '修补上次提交',
   wbCommit: '提交',
@@ -551,6 +552,7 @@ const EN: Dict = {
   wbChangesTab: 'Changes',
   wbStageAll: 'Stage all',
   wbDiffTitle: 'Diff preview',
+  wbDiffExpand: 'Expand',
   wbMsgPlaceholder: 'Commit message (required)',
   wbAmend: 'Amend last commit',
   wbCommit: 'Commit',

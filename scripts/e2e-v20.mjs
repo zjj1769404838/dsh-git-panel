@@ -138,7 +138,7 @@ try {
   say('改动视图汇总条存在', (await page.locator('.dgp-gw-summary').count()) === 1)
 
   await page.evaluate(() => {
-    const btns = [...document.querySelectorAll('.dgp-gw-railbtn')]
+    const btns = [...document.querySelectorAll('.dgp-gw-tab')]
     btns.find((b) => /文件|Files/.test(b.textContent ?? ''))?.click()
   })
   await page.waitForTimeout(1800)
@@ -167,7 +167,7 @@ try {
 
   // ③ 提交详情弹窗里的四视图 + 回退按钮
   await page.evaluate(() => {
-    const btns = [...document.querySelectorAll('.dgp-gw-railbtn')]
+    const btns = [...document.querySelectorAll('.dgp-gw-tab')]
     btns.find((b) => /历史|History/.test(b.textContent ?? ''))?.click()
   })
   await page.waitForTimeout(1500)

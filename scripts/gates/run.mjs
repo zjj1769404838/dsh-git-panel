@@ -186,7 +186,11 @@ if (clientOut) {
   // ---- 2026-10-29 Git 工作台（IDEA 式主面板 + 二级弹窗）----
   check('client 渲染 Git 工作台模态框（dgp-gw）', clientOut.includes('dgp-gw') && clientOut.includes('wbTitle'))
   check('client 工作台是居中模态框（dgp-gw-mask + dgp-gw-body）', clientOut.includes('dgp-gw-mask') && clientOut.includes('dgp-gw-body'))
-  check('client 工作台用左侧竖排导航（dgp-gw-rail，取代三 tab 平铺）', clientOut.includes('dgp-gw-rail') && clientOut.includes('dgp-gw-railbtn'))
+  check('client 工作台用顶部页签条（dgp-gw-tabbar，不再是左侧竖排导航）', clientOut.includes('dgp-gw-tabbar') && clientOut.includes('dgp-gw-tab') && !clientOut.includes('dgp-gw-railbtn'))
+  check('client 工作台页签选中态是下划线（dgp-gw-tab[data-on="1"]::after）', sharedSrc.includes('.dgp-gw-tab[data-on="1"]::after'))
+  check('client 改动页是双栏（左提交右就地差异）', sharedSrc.includes('.dgp-gw-split') && sharedSrc.includes('.dgp-gw-col--left') && clientOut.includes('renderDiffPane'))
+  check('client 三类列表共用选中语言（--dgp-sel-bg + --dgp-sel-bar）', sharedSrc.includes('--dgp-sel-bg') && sharedSrc.includes('--dgp-sel-bar') && sharedSrc.includes('.dgp-gw-row[data-on="1"]'))
+  check('client 控件尺度对齐参考插件（工作台按钮 28px）', sharedSrc.includes('.dgp-gw .dgp-btn{height:28px'))
   check('client 工作台不是贴右抽屉（transform 居中 + 圆角 + 四边框）', sharedSrc.includes('transform:translate(-50%,-50%)') && !sharedSrc.includes('border-left:.5px solid var(--dgp-line2);background:var(--dsw-alias-bg-layer-1'))
   check('client 工作台不再用旧类名（无 dgp-wb）', !clientOut.includes('dgp-wb'))
   check('client diff 改为预览层（wbDiffTitle + dgp-gw-diff）', clientOut.includes('wbDiffTitle') && clientOut.includes('dgp-gw-diff'))
@@ -218,7 +222,7 @@ if (clientOut) {
   check('client 一级菜单不再内嵌分支拓扑（index.tsx 不再引用 GraphView）', !clientSrc.includes('GraphView'))
   check('client 一级菜单不再内嵌改动明细（index.tsx 不再有 ChangesList）', !clientSrc.includes('ChangesList'))
   check('client 工作台 portal 到 body（createPortal + document.body）', clientOut.includes('document.body') && portalImported >= 2)
-  check('client BUILD 版本已推进（dgp-v20）', clientOut.includes('dgp-v20'))
+  check('client BUILD 版本已推进（dgp-v21）', clientOut.includes('dgp-v21'))
   // ---- i18n 键完整性：任何 t('x') 用到的键都必须在 ZH/EN 字典里存在（防 wbCancel 类漏键） ----
   const clientNorm = clientSrc.replace(/\r\n/g, '\n')
   const dictStart = clientNorm.indexOf('const ZH: Dict = {')
@@ -393,7 +397,7 @@ if (clientOut) {
   check('client 有版本检查（GitHub releases/latest + 5 秒超时）', clientSrcAll.includes('/releases/latest') && clientSrcAll.includes('5000') && clientSrcAll.includes('export function isNewer') && clientSrcAll.includes('export function parseVersion'))
   check('client 版本提示不打扰（预发布不提示 + 只在打开菜单时查）', clientSrcAll.includes('prerelease') && clientSrcAll.includes('useLatestVersion(open)') && clientSrcAll.includes('menuNewVersion'))
   check('e2e v20 走查脚本存在且已接入 npm script', (await exists(resolve(root, 'scripts/e2e-v20.mjs'))) && JSON.stringify(pkg.scripts ?? {}).includes('e2e-v20'))
-  check('client BUILD 版本已推进（dgp-v20）', clientOut.includes('dgp-v20'))
+  check('client BUILD 版本已推进（dgp-v21）', clientOut.includes('dgp-v21'))
 }
 // ---- node 半边：git-ops 命令层与工作台端点 ----
 {

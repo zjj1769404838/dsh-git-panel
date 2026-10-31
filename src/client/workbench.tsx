@@ -683,7 +683,6 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
   const openDiff = (mode: 'worktree' | 'staged', path: string) => {
     setDiffMode(mode)
     setDiffPath(path)
-    setLayer('diff')
     void loadDiff(mode, path)
   }
 
@@ -856,8 +855,8 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     )
   }
 
-  // ---------- 主面板：左侧竖排导航 + 主区 ----------
-  const railItems: Array<{ key: ViewKind; label: string; count: number }> = [
+  // ---------- 主面板：顶部页签条 + 主区（对齐参考插件的 tabbar 形态） ----------
+  const tabItems: Array<{ key: ViewKind; label: string; count: number }> = [
     { key: 'changes', label: t('wbChangesTab'), count: changes?.files.length ?? 0 },
     { key: 'history', label: t('wbHistory'), count: commits.length },
 
@@ -874,6 +873,33 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
     }
     return list
   })()
+
+  /** 右栏就地差异：与左侧列表并排看，标题行可放大成模态框（layer==='diff'）。 */
+  const renderDiffPane = () => (
+    <div className="dgp-gw-col dgp-gw-col--right">
+      <div className="dgp-gw-diffpane">
+        <div className="dgp-gw-diffhead">
+          <span className="dgp-gw-diffpath" title={diffPath || undefined}>
+            {diffPath || (diffMode === 'staged' ? t('changesStaged') : t('wbUnstaged'))}
+          </span>
+          {diffPath ? (
+            <button type="button" className="dgp-gw-textbtn" onClick={() => setLayer('diff')}>{t('wbDiffExpand')}</button>
+          ) : null}
+        </div>
+        <div className="dgp-gw-diff dgp-gw-diffbody">
+          {diffLoading ? (
+            <Skeleton rows={8} />
+          ) : diffError ? (
+            <div className="dgp-err">{diffError}</div>
+          ) : diffPath && diffText ? (
+            <DiffView t={t} text={diffText} truncated={diffTruncated} lang={langOfPath(diffPath)} />
+          ) : (
+            <EmptyState title={t('diffEmpty')} hint={t('diffEmptyHint')} />
+          )}
+        </div>
+      </div>
+    </div>
+  )
 
   return (
     <>
@@ -951,27 +977,30 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
           <button type="button" className="dgp-gw-x" onClick={closeAll} aria-label="close">×</button>
         </div>
 
-        <div className="dgp-gw-body">
-          {/* 左侧竖排导航：一次只切一件事，数量徽标常驻 */}
-          <nav className="dgp-gw-rail" aria-label={t('wbTitle')}>
-            {railItems.map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                className="dgp-gw-railbtn"
-                data-on={view === item.key ? '1' : '0'}
-                onClick={() => setView(item.key)}
-              >
-                <span className="dgp-gw-railbtn-label">{item.label}</span>
-                {item.count > 0 ? <span className="dgp-gw-railbtn-count">{item.count}</span> : null}
-              </button>
-            ))}
-          </nav>
+        {/* 顶部页签条：一次只切一件事，数量徽标常驻；选中态是下划线而非竖排卡片 */}
+        <div className="dgp-gw-tabbar" role="tablist" aria-label={t('wbTitle')}>
+          {tabItems.map((item) => (
+            <button
+              key={item.key}
+              type="button"
+              role="tab"
+              aria-selected={view === item.key}
+              className="dgp-gw-tab"
+              data-on={view === item.key ? '1' : '0'}
+              onClick={() => setView(item.key)}
+            >
+              <span>{item.label}</span>
+              {item.count > 0 ? <span className="dgp-gw-tab-count">{item.count}</span> : null}
+            </button>
+          ))}
+        </div>
 
+        <div className="dgp-gw-body">
           <div className="dgp-gw-main">
-            {/* 改动视图：提交区在顶部，列表在下方，形成单列流程 */}
+            {/* 改动视图：左栏汇总+提交+列表，右栏就地差异（对齐参考插件的双栏） */}
             {view === 'changes' ? (
-              <>
+              <div className="dgp-gw-split">
+                <div className="dgp-gw-col dgp-gw-col--left">
                 <div className="dgp-gw-summary" role="group" aria-label={t('wbSummary')}>
                   <span className="dgp-gw-summary-item">
                     <span className="dgp-gw-summary-label">{t('wbSummaryFiles')}</span>
@@ -1140,7 +1169,9 @@ export function Workbench({ t, cwd, status, onStatusChange, onClose, onOpenSetti
                     <button type="button" className="dgp-gw-textbtn" onClick={() => setSelected(new Set())}>{t('wbCancel')}</button>
                   </div>
                 ) : null}
-              </>
+                </div>
+                {renderDiffPane()}
+              </div>
             ) : null}
 
             {/* 历史视图：关键词搜索（服务端 --grep）+ 加载更多 */}

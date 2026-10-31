@@ -126,6 +126,7 @@ export const pt: Dict = {
   wbChangesTab: "Mudanças",
   wbStageAll: "Estagiar Tudo",
   wbDiffTitle: "Visualização de Diferenças",
+  wbDiffExpand: "Ampliar",
   wbMsgPlaceholder: "Mensagem de commit (obrigatório)",
   wbAmend: "Corrigir o último commit",
   wbCommit: "Commit",

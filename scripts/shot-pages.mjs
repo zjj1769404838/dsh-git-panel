@@ -187,7 +187,7 @@ try {
     await wb.screenshot({ path: '.work/pages-workbench-panel.png' })
     // 切到「历史」
     await page.evaluate(() => {
-      const btns = Array.from(document.querySelectorAll('.dgp-gw-railbtn'))
+      const btns = Array.from(document.querySelectorAll('.dgp-gw-tab'))
       btns.find((b) => /历史|History/.test(b.textContent ?? ''))?.click()
     })
     await page.waitForTimeout(1400)

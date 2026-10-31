@@ -119,7 +119,9 @@ try {
       return true
     })
   }
-  // 列出该项目下的会话行（项目行之后的全部 sessionRow）
+  // 列出该项目下的会话行：从项目行往后走，遇到下一个 projectRow 就停
+  // （不能 filter 全部 sessionRow —— 那会把别的项目下的会话也捞进来，
+  //   而 GUI 默认选中的是 dsh-model-auto-select 那个非 Git 会话）
   async function listSessionsUnderProject() {
     return page.evaluate(() => {
       const rows = [...document.querySelectorAll('[role="treeitem"]')]
@@ -127,13 +129,16 @@ try {
         (item) => String(item.className).includes('projectRow') && item.textContent.trim() === 'dsh-git-panel',
       )
       if (index < 0) return []
-      return rows
-        .slice(index + 1)
-        .filter((item) => String(item.className).includes('sessionRow'))
-        .map((item) => item.textContent.trim().slice(0, 40))
+      const out = []
+      for (const item of rows.slice(index + 1)) {
+        const cls = String(item.className)
+        if (cls.includes('projectRow')) break
+        if (cls.includes('sessionRow')) out.push(item.textContent.trim().slice(0, 40))
+      }
+      return out
     })
   }
-  // 按文本点某个会话行（DOM 会重建，每次都重新查询）
+  // 按文本点某个会话行（DOM 会重建，每次都重新查询；同样以下一个 projectRow 为界）
   async function clickSessionByText(text) {
     return page.evaluate((target) => {
       const rows = [...document.querySelectorAll('[role="treeitem"]')]
@@ -141,13 +146,15 @@ try {
         (item) => String(item.className).includes('projectRow') && item.textContent.trim() === 'dsh-git-panel',
       )
       if (index < 0) return false
-      const session = rows
-        .slice(index + 1)
-        .filter((item) => String(item.className).includes('sessionRow'))
-        .find((item) => item.textContent.trim().slice(0, 40) === target)
-      if (!session) return false
-      session.click()
-      return true
+      for (const item of rows.slice(index + 1)) {
+        const cls = String(item.className)
+        if (cls.includes('projectRow')) break
+        if (cls.includes('sessionRow') && item.textContent.trim().slice(0, 40) === target) {
+          item.click()
+          return true
+        }
+      }
+      return false
     }, text)
   }
   // chip 当前显示的分支名（空串表示还没渲染出 chip）
@@ -164,18 +171,24 @@ try {
     const found = await clickProject()
     if (!found) switched = { ok: false, why: 'no project row' }
     else {
-      await page.waitForTimeout(600)
+      await page.waitForTimeout(800)
       let sessions = await listSessionsUnderProject()
-      if (sessions.length === 0) {
-        // 项目行原本是展开的，刚才那一下把它折叠了：再点一次展开。
+      for (let attempt = 0; attempt < 3 && sessions.length === 0; attempt += 1) {
+        // 项目行可能是折叠态（也可能刚被点成折叠）：再点一次换状态后重列。
         await clickProject()
-        await page.waitForTimeout(600)
+        await page.waitForTimeout(900)
         sessions = await listSessionsUnderProject()
       }
       for (const session of sessions) {
         await clickSessionByText(session)
         await page.waitForTimeout(2000)
-        const label = await readChipLabel()
+        // chip 首帧默认显示 'Git'，状态回来后才换成真实分支：轮询最多 6 秒再判负。
+        let label = ''
+        for (let attempt = 0; attempt < 6; attempt += 1) {
+          label = await readChipLabel()
+          if (label && label !== 'Git') break
+          await page.waitForTimeout(1000)
+        }
         if (label && label !== 'Git') {
           switched = { ok: true, session }
           break
@@ -358,7 +371,7 @@ try {
       // ③ 提交详情弹窗：点标题栏与内容区。
       // 提交详情只从历史视图的提交行进入：先切到「历史」，再点第一行。
       await page.evaluate(() => {
-        const rail = [...document.querySelectorAll('.dgp-gw-railbtn')].find((b) => (b.textContent ?? '').includes('历史'))
+        const rail = [...document.querySelectorAll('.dgp-gw-tab')].find((b) => (b.textContent ?? '').includes('历史'))
         if (rail instanceof HTMLElement) rail.click()
       })
       await page.waitForTimeout(700)
@@ -383,12 +396,12 @@ try {
         await page.waitForTimeout(400)
       }
 
-      // ④ 顶栏工具与左侧竖排导航切换：改动 / 历史 / 文件 / 标签 / 贮藏（Diff 已改为预览层；
+      // ④ 顶栏工具与顶部页签切换：改动 / 历史 / 文件 / 标签 / 贮藏（Diff 已改为预览层；
       //    dgp-v20 起「分支图」并入历史列表的泳道，不再是独立导航项）。
       const tabResults = []
       for (const keyword of ['改动', '历史', '文件', '标签', '贮藏']) {
         const ok = await page.evaluate((text) => {
-          const btn = [...document.querySelectorAll('.dgp-gw-railbtn')].find((b) => (b.textContent ?? '').includes(text))
+          const btn = [...document.querySelectorAll('.dgp-gw-tab')].find((b) => (b.textContent ?? '').includes(text))
           if (!btn) return false
           btn.click()
           return true
@@ -397,7 +410,7 @@ try {
         tabResults.push({ keyword, ok, state: await snapshot() })
       }
       check(
-        '切左侧导航不会关掉工作台',
+        '切顶部页签不会关掉工作台',
         tabResults.filter((r) => r.ok).every((r) => r.state.wb === 1 && r.state.chip === 1),
         JSON.stringify(tabResults),
       )
@@ -412,6 +425,12 @@ try {
       check('点刷新不会关掉工作台', !refreshed || (afterRefresh.wb === 1 && afterRefresh.chip === 1), JSON.stringify(afterRefresh))
 
       // ⑤ 勾选/预览改动行：点复选框与文件名。
+      //    ④ 已经把页签切到「贮藏」，先切回「改动」再验双栏与就地差异。
+      await page.evaluate(() => {
+        const btn = [...document.querySelectorAll('.dgp-gw-tab')].find((b) => (b.textContent ?? '').includes('改动'))
+        if (btn instanceof HTMLElement) btn.click()
+      })
+      await page.waitForTimeout(900)
       const fileClicked = await page.evaluate(() => {
         const box = document.querySelector('.dgp-gw-row input[type="checkbox"]')
         if (box instanceof HTMLElement) box.click()
@@ -419,9 +438,19 @@ try {
         if (path instanceof HTMLElement) path.click()
         return true
       })
-      await page.waitForTimeout(900)
+      await page.waitForTimeout(1400)
       const afterFile = await snapshot()
       check('点改动行不会关掉工作台', !fileClicked || (afterFile.wb === 1 && afterFile.chip === 1), JSON.stringify(afterFile))
+      // 改动页是双栏：点文件行应就地渲染右栏差异，而不是再弹一个模态框。
+      const pane = await page.evaluate(() => ({
+        split: document.querySelectorAll('.dgp-gw-split').length,
+        right: document.querySelectorAll('.dgp-gw-col--right').length,
+        path: (document.querySelector('.dgp-gw-diffpath')?.textContent ?? '').trim(),
+        body: document.querySelectorAll('.dgp-gw-diffbody .dgp-dv').length,
+        modal: document.querySelectorAll('.dgp-modal').length,
+      }))
+      check('改动页是双栏布局（dgp-gw-split + 右栏）', pane.split === 1 && pane.right === 1, JSON.stringify(pane))
+      check('点文件行在右栏就地渲染差异（不弹模态框）', pane.modal === 0 && pane.body >= 1, JSON.stringify(pane))
       check('弹窗全流程无页面 JS 错误', errors.length === 0, errors.slice(0, 3).join(' | '))
     }
   }

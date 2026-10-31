@@ -126,6 +126,7 @@ export const ru: Dict = {
   wbChangesTab: "Изменения",
   wbStageAll: "Все добавить",
   wbDiffTitle: "Предварительный просмотр различий",
+  wbDiffExpand: "Увеличить",
   wbMsgPlaceholder: "Сообщение коммита (обязательно)",
   wbAmend: "Исправить последний коммит",
   wbCommit: "Закоммитить",
