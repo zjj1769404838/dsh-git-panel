@@ -1,16 +1,18 @@
 /**
- * 设置 → Git 分节（完全重写版，BUILD dgp-v16）。
+ * 设置 → Git 分节（BUILD dgp-v22：密度版）。
  *
- * 信息架构只有三层，从上到下就是用户的三个问题：
- *   1. 概览带 —— 现在授到什么程度？（一行数字，不再是四格大卡）
- *   2. 账号卡 —— 每个账号能碰哪些仓库？（仓库权限直接内联在卡里，不再折叠）
- *   3. 高级设置 —— 本地目录 / 全局兜底 / 写策略（默认收起，日常不用看）
+ * 纵向预算优先：默认一屏看完「有哪些账号、各授到什么程度」，细节点开才展开。
+ *   1. 页头 —— 标题 + 说明同行，右侧只剩「连接账号」。
+ *   2. 概览带 —— 一行数字 + 三个折叠开关（界面 / 高级设置 / 授权说明）。
+ *   3. 账号卡 —— 默认压成一行摘要（状态 · 平台 · 可访问仓库数 · ⋯ 操作），
+ *      至多自动展开一张（默认账号），其余点开才见仓库清单与工具行。
+ *   4. 授权说明 —— 默认一行，点开才见长文与 OAuth/PAT 对照表。
  *
- * 与旧版的差别（不是微调，是换结构）：
- *   - 没有 tab。账号、仓库、说明同屏，靠层级而不是切页组织。
- *   - 没有「查看仓库」折叠按钮：账号卡里直接就是仓库清单 + 三档分段控件。
- *   - 没有常驻连接长表单：连接/编辑账号走弹窗，主界面不再被表单撑长。
- *   - 权限三档从 <select> 换成三段式按钮：三档同时可见，点一下即改。
+ * 密度手法（不是把字号调小，而是把常驻内容改成按需）：
+ *   - 仓库清单、搜索筛选工具行、scope 列表：全部收进展开态。
+ *   - 0 仓库账号不再吃一整屏：空态改成一行 dense 文案。
+ *   - 账号操作（编辑 / 校验 / 刷新 / 设默认 / 断开）收进 ⋯ 菜单，摘要行不堆按钮。
+ *   - 间距走 4/8 令牌（--dgp-gap-1/-2/-3），分段控件与筛选热区补到 24 CSS px。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import {
@@ -87,6 +89,7 @@ function RepoRow({
         <span className="dgp-repo-meta">
           <span>{repo.private ? t('repoPrivate') : t('repoPublic')}</span>
           {repo.defaultBranch ? <span>· {fmt(t('repoDefaultBranch'), { branch: repo.defaultBranch })}</span> : null}
+          {saving ? <span className="dgp-perm-saving">{t('permSaving')}</span> : null}
         </span>
       </div>
       <div className="dgp-perm-seg" role="group" aria-label={`${t('permLabel')} ${repo.fullName}`} data-saving={saving ? '1' : '0'}>
@@ -104,15 +107,15 @@ function RepoRow({
           </button>
         ))}
       </div>
-      {saving ? <span className="dgp-perm-saving">{t('permSaving')}</span> : null}
     </div>
   )
 }
 
 /**
- * 账号卡：身份 + 状态 + 操作条 + 内联仓库权限。
- * 仓库清单直接内联展开（旧版要额外点「查看仓库」），所以这里自带工具行：
- * 搜索框 / 权限筛选 / 计数 / 刷新。
+ * 账号卡（dgp-v22 密度版）：默认一行摘要，点开才见仓库权限。
+ * 摘要行给出「状态 · 平台 · 可访问仓库数」，操作全部收进 ⋯ 菜单；
+ * 展开态里才是搜索/筛选工具行、scope 明细、仓库清单与就地新建仓库。
+ * 自动展开至多一张（默认账号），保证多账号时首屏仍然数得过来。
  */
 function AccountCard({
   t,
@@ -132,6 +135,8 @@ function AccountCard({
   onRecheck,
   onDisconnect,
   onSetDefault,
+  onCreateRepo,
+  autoExpand,
 }: {
   t: (key: string) => string
   account: AccountView
@@ -150,7 +155,29 @@ function AccountCard({
   onRecheck: () => void
   onDisconnect: () => void
   onSetDefault: () => void
+  onCreateRepo: (name: string, isPrivate: boolean) => Promise<string | null>
+  autoExpand: boolean
 }) {
+  const [open, setOpen] = useState(autoExpand)
+  const [menu, setMenu] = useState(false)
+  const [scopesOpen, setScopesOpen] = useState(false)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createName, setCreateName] = useState('')
+  const [createPrivate, setCreatePrivate] = useState(true)
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState('')
+  const menuRef = useRef<HTMLSpanElement | null>(null)
+
+  // ⋯ 菜单：点击卡片外任意处收起（监听随菜单开关挂载/卸载，不残留）。
+  useEffect(() => {
+    if (!menu) return
+    const onDocDown = (event: PointerEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) setMenu(false)
+    }
+    document.addEventListener('pointerdown', onDocDown)
+    return () => document.removeEventListener('pointerdown', onDocDown)
+  }, [menu])
+
   const all = reposState?.repos ?? []
   const needle = search.trim().toLowerCase()
   const shown = all.filter((repo) => {
@@ -158,20 +185,48 @@ function AccountCard({
     if (filter === 'all') return true
     return permissionOf(repo.fullName) === filter
   })
+  const grantCount = all.filter((repo) => permissionOf(repo.fullName) !== 'none').length
 
   const statusText =
     account.status === 'connected' ? t('connected') : account.status === 'expired' ? t('expired') : t('errored')
 
+  const submitCreate = async () => {
+    const name = createName.trim()
+    if (name === '') {
+      setCreateError(t('repoCreateName'))
+      return
+    }
+    setCreating(true)
+    setCreateError('')
+    const failure = await onCreateRepo(name, createPrivate)
+    setCreating(false)
+    if (failure === null) {
+      setCreateName('')
+      setCreateOpen(false)
+    } else {
+      setCreateError(failure)
+    }
+  }
+
   return (
-    <div className="dgp-acct" data-status={account.status}>
-      <div className="dgp-acct-head">
+    <div className="dgp-acct" data-status={account.status} data-open={open ? '1' : '0'}>
+      <button
+        type="button"
+        className="dgp-acct-summary"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <span className="dgp-acct-caret" aria-hidden="true">
+          <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M4.5 2.5 8 6l-3.5 3.5" />
+          </svg>
+        </span>
         <Dot state={account.status} />
         <span className="dgp-acct-name" title={account.login}>
           {account.login || account.displayName || '(unknown)'}
         </span>
-        <span className="dgp-badge">{account.provider}</span>
-        <span className="dgp-badge" data-tone="mono">
-          {account.kind === 'oauth' ? 'OAuth' : 'PAT'}
+        <span className="dgp-badge">
+          {account.provider} · {account.kind === 'oauth' ? 'OAuth' : 'PAT'}
         </span>
         <span className="dgp-badge" data-state={account.status}>
           {statusText}
@@ -180,90 +235,167 @@ function AccountCard({
           <span className="dgp-badge" data-tone="accent">
             {t('isDefault')}
           </span>
-        ) : (
-          <button type="button" className="dgp-btn ghost" disabled={busy} onClick={onSetDefault}>
-            {t('setDefault')}
-          </button>
-        )}
-        <span className="dgp-acct-gap" />
-        <button type="button" className="dgp-btn ghost" disabled={busy} title={t('editHint')} onClick={onEdit}>
-          {t('accountEdit')}
-        </button>
-        <button type="button" className="dgp-btn ghost" disabled={busy} onClick={onRecheck}>
-          {t('recheck')}
-        </button>
-        <span className="dgp-line-sep" aria-hidden="true" />
-        <button type="button" className="dgp-btn danger" disabled={busy} onClick={onDisconnect}>
-          {t('disconnect')}
-        </button>
-      </div>
-
-      {account.host || account.scopes.length > 0 ? (
-        <div className="dgp-acct-meta">
-          {account.host ? <span>{account.host}</span> : null}
-          {account.scopes.length > 0 ? <code>{account.scopes.join(' ')}</code> : null}
-        </div>
-      ) : null}
-
-      {account.lastError ? <div className="dgp-err">{account.lastError}</div> : null}
-
-      <div className="dgp-repos-toolbar">
-        <input
-          className="dgp-input dgp-search"
-          value={search}
-          placeholder={t('repoSearch')}
-          aria-label={t('repoSearch')}
-          onChange={(event) => onSearch(event.target.value)}
-        />
-        <div className="dgp-seg dgp-filter" role="group" aria-label={t('repoFilter')}>
-          {PERM_FILTERS.map((item) => (
-            <button key={item} type="button" data-on={filter === item ? '1' : '0'} onClick={() => onFilter(item)}>
-              {t(permFilterKey(item))}
-            </button>
-          ))}
-        </div>
-        <span className="dgp-repos-count" aria-live="polite">
-          {fmt(t('reposCount'), { n: shown.length, m: all.length })}
+        ) : null}
+        <span className="dgp-acct-host" title={account.host || ''}>
+          {account.host || ''}
         </span>
+        <span className="dgp-acct-gap" />
+        <span className="dgp-acct-repos" aria-live="polite">
+          {reposState?.loading && all.length === 0
+            ? t('acctReposLoading')
+            : fmt(t('acctRepoSummary'), { n: grantCount, m: all.length })}
+        </span>
+      </button>
+
+      <span className="dgp-acct-tools">
         <button
           type="button"
-          className="dgp-btn ghost"
-          onClick={onReload}
-          aria-label={t('reposReload')}
-          title={t('reposReload')}
+          className="dgp-iconbtn"
+          aria-haspopup="menu"
+          aria-expanded={menu}
+          aria-label={t('acctMenu')}
+          title={t('acctMenu')}
+          onClick={() => setMenu((value) => !value)}
         >
-          <RefreshIcon />
+          ⋯
         </button>
-      </div>
+        {menu ? (
+          <span className="dgp-acct-menu" ref={menuRef} role="menu">
+            <button type="button" role="menuitem" onClick={() => { setMenu(false); onEdit() }}>
+              {t('accountEdit')}
+            </button>
+            <button type="button" role="menuitem" disabled={busy} onClick={() => { setMenu(false); onRecheck() }}>
+              {t('recheck')}
+            </button>
+            <button type="button" role="menuitem" onClick={() => { setMenu(false); setOpen(true); onReload() }}>
+              {t('reposReload')}
+            </button>
+            {isDefault ? null : (
+              <button type="button" role="menuitem" disabled={busy} onClick={() => { setMenu(false); onSetDefault() }}>
+                {t('setDefault')}
+              </button>
+            )}
+            <button type="button" role="menuitem" data-tone="danger" disabled={busy} onClick={() => { setMenu(false); onDisconnect() }}>
+              {t('disconnect')}
+            </button>
+          </span>
+        ) : null}
+      </span>
 
-      {reposState?.loading && all.length === 0 ? <Skeleton rows={3} /> : null}
+      {!open ? null : (
+        <div className="dgp-acct-body">
+          {account.host || account.scopes.length > 0 ? (
+            <div className="dgp-acct-meta">
+              {account.scopes.length > 0 ? (
+                <>
+                  <button
+                    type="button"
+                    className="dgp-scopes-toggle"
+                    aria-expanded={scopesOpen}
+                    onClick={() => setScopesOpen((value) => !value)}
+                  >
+                    {fmt(t('scopesToggle'), { n: account.scopes.length })}
+                  </button>
+                  {scopesOpen ? <code className="dgp-scopes">{account.scopes.join(' ')}</code> : null}
+                </>
+              ) : null}
+            </div>
+          ) : null}
 
-      {!reposState?.loading && reposState?.error ? (
-        <div className="dgp-err">
-          {t('reposFailed')}：{reposState.error}
+          {account.lastError ? <div className="dgp-err">{account.lastError}</div> : null}
+
+          <div className="dgp-repos-toolbar">
+            <input
+              className="dgp-input dgp-search"
+              value={search}
+              placeholder={t('repoSearch')}
+              aria-label={t('repoSearch')}
+              onChange={(event) => onSearch(event.target.value)}
+            />
+            <div className="dgp-seg dgp-filter" role="group" aria-label={t('repoFilter')}>
+              {PERM_FILTERS.map((item) => (
+                <button key={item} type="button" data-on={filter === item ? '1' : '0'} onClick={() => onFilter(item)}>
+                  {t(permFilterKey(item))}
+                </button>
+              ))}
+            </div>
+            <span className="dgp-repos-count" aria-live="polite">
+              {fmt(t('reposCount'), { n: shown.length, m: all.length })}
+            </span>
+            <button
+              type="button"
+              className="dgp-btn ghost"
+              onClick={onReload}
+              aria-label={t('reposReload')}
+              title={t('reposReload')}
+            >
+              <RefreshIcon />
+            </button>
+          </div>
+
+          {reposState?.loading && all.length === 0 ? <Skeleton rows={3} /> : null}
+
+          {!reposState?.loading && reposState?.error ? (
+            <div className="dgp-err">
+              {t('reposFailed')}：{reposState.error}
+            </div>
+          ) : null}
+
+          {!reposState?.loading && !reposState?.error && all.length === 0 ? (
+            <EmptyState dense title={t('reposEmpty')} hint={t('reposEmptyHint')} />
+          ) : null}
+
+          {all.length > 0 && shown.length === 0 ? <div className="dgp-hint">{t('reposNoMatch')}</div> : null}
+
+          {shown.map((repo) => (
+            <RepoRow
+              key={`${account.id}:${repo.fullName}`}
+              t={t}
+              repo={repo}
+              permission={permissionOf(repo.fullName)}
+              saving={savingOf(repo.fullName)}
+              onPermission={(perm) => onPermission(repo.fullName, perm)}
+            />
+          ))}
+
+          {!reposState?.loading && !reposState?.error && reposState?.truncated ? (
+            <div className="dgp-hint">{t('reposTruncated')}</div>
+          ) : null}
+
+          <div className="dgp-iw-actions">
+            <button
+              type="button"
+              className="dgp-btn ghost"
+              aria-expanded={createOpen}
+              onClick={() => { setCreateOpen((value) => !value); setCreateError('') }}
+            >
+              + {t('repoCreateOpen')}
+            </button>
+          </div>
+          {createOpen ? (
+            <div className="dgp-iw-create">
+              <input
+                className="dgp-input"
+                value={createName}
+                placeholder={t('repoCreateName')}
+                aria-label={t('repoCreateName')}
+                disabled={creating}
+                onChange={(event) => setCreateName(event.target.value)}
+              />
+              <label className="dgp-check">
+                <input type="checkbox" checked={createPrivate} onChange={(event) => setCreatePrivate(event.target.checked)} />
+                <span>{t('repoCreatePrivate')}</span>
+              </label>
+              <button type="button" className="dgp-btn primary" disabled={creating} onClick={() => void submitCreate()}>
+                {creating ? t('permSaving') : t('repoCreateSubmit')}
+              </button>
+            </div>
+          ) : null}
+          {createOpen ? (
+            <div className="dgp-hint">{createError !== '' ? createError : fmt(t('repoCreateHint'), { account: account.login || account.provider })}</div>
+          ) : null}
         </div>
-      ) : null}
-
-      {!reposState?.loading && !reposState?.error && all.length === 0 ? (
-        <EmptyState title={t('reposEmpty')} hint={t('reposEmptyHint')} />
-      ) : null}
-
-      {all.length > 0 && shown.length === 0 ? <div className="dgp-hint">{t('reposNoMatch')}</div> : null}
-
-      {shown.map((repo) => (
-        <RepoRow
-          key={`${account.id}:${repo.fullName}`}
-          t={t}
-          repo={repo}
-          permission={permissionOf(repo.fullName)}
-          saving={savingOf(repo.fullName)}
-          onPermission={(perm) => onPermission(repo.fullName, perm)}
-        />
-      ))}
-
-      {!reposState?.loading && !reposState?.error && reposState?.truncated ? (
-        <div className="dgp-hint">{t('reposTruncated')}</div>
-      ) : null}
+      )}
     </div>
   )
 }
@@ -864,6 +996,8 @@ export function GitSection({ t }: SectionProps) {
   const [advanced, setAdvanced] = useState(false)
   /** 界面偏好分节（只影响本机显示，与服务端权限设置无关）。 */
   const [interfaceOpen, setInterfaceOpen] = useState(false)
+  /** 授权说明：默认只占一行，点开见长文与 OAuth/PAT 对照。 */
+  const [helpOpen, setHelpOpen] = useState(false)
 
   // 概览带在页面顶部、面板在下方：展开后把面板滚进视口，避免「点了没反应」的错觉。
   function revealPanel(name: string) {
@@ -1072,6 +1206,36 @@ export function GitSection({ t }: SectionProps) {
     [currentPermission, showToast, t],
   )
 
+  /**
+   * 在某账号下就地新建远程仓库（设置页不必绕去初始化向导）。
+   * 成功后 node 已把新仓库授权为 full，这里只需回填 state 并重拉该账号仓库列表。
+   */
+  const createRepoForAccount = useCallback(
+    async (accountId: string, name: string, isPrivate: boolean): Promise<string | null> => {
+      try {
+        const data = await api<{ ok: boolean; error?: string; state?: PanelState }>('/repo/create', {
+          accountId,
+          name,
+          private: isPrivate,
+        })
+        if (data.state) applyState(data.state)
+        if (!data.ok) {
+          const message = data.error || t('repoCreateFailed')
+          showToast('error', message)
+          return message
+        }
+        showToast('ok', t('toastSaved'))
+        void loadAccountRepos(accountId)
+        return null
+      } catch (err) {
+        const message = `${t('repoCreateFailed')}：${err instanceof Error ? err.message : String(err)}`
+        showToast('error', message)
+        return message
+      }
+    },
+    [applyState, loadAccountRepos, showToast, t],
+  )
+
   /** 拉取「检测到的仓库」：/repo/discover 扫描授权根（远程 remotes 一并返回）。 */
   const loadDiscovered = useCallback(async () => {
     setDiscovering(true)
@@ -1208,11 +1372,16 @@ export function GitSection({ t }: SectionProps) {
   const repoGrantCount = allowAllRepos ? Infinity : (settings?.allowedRepos ?? []).length + perAccountGrants
 
   const primaryState = accounts.find((item) => item.status === 'connected')?.status ?? accounts[0]?.status
+  /** 至多自动展开一张账号卡：默认账号优先，其次第一个已连接账号。 */
+  const autoExpandId =
+    (defaultAccountId !== '' && accounts.some((item) => item.id === defaultAccountId && item.status === 'connected')
+      ? defaultAccountId
+      : accounts.find((item) => item.status === 'connected')?.id) ?? ''
 
   return (
     <div className="dgp-root dgp-section">
       <div className="dgp-head">
-        <div>
+        <div className="dgp-head-main">
           <div className="dgp-title">
             <Dot state={primaryState} />
             {t('panelTitle')}
@@ -1283,6 +1452,18 @@ export function GitSection({ t }: SectionProps) {
         >
           {advanced ? t('advancedHide') : t('advancedShow')}
         </button>
+        <button
+          type="button"
+          className="dgp-btn ghost"
+          aria-expanded={helpOpen}
+          onClick={() => {
+            const next = !helpOpen
+            setHelpOpen(next)
+            if (next) revealPanel('help')
+          }}
+        >
+          {helpOpen ? t('helpHide') : t('helpShow')}
+        </button>
       </div>
 
       {/* 界面偏好与账号无关：紧跟概览带，点开即时可见。 */}
@@ -1320,6 +1501,8 @@ export function GitSection({ t }: SectionProps) {
             onRecheck={() => void recheck(account.id)}
             onDisconnect={() => void disconnect(account.id)}
             onSetDefault={() => void setDefaultAccount(account.id)}
+            onCreateRepo={(name, isPrivate) => createRepoForAccount(account.id, name, isPrivate)}
+            autoExpand={account.id === autoExpandId}
           />
         ))
       )}
@@ -1345,19 +1528,34 @@ export function GitSection({ t }: SectionProps) {
         />
       ) : null}
 
-      <div className="dgp-adv">
-        <div className="dgp-card">
-          <div className="dgp-hint" style={{ marginTop: 0, lineHeight: '20px' }}>
-            {t('helpText')}
+      <div className="dgp-note" data-panel="help">
+        <span className="dgp-note-line">{t('helpText')}</span>
+        <button
+          type="button"
+          className="dgp-btn ghost"
+          aria-expanded={helpOpen}
+          onClick={() => {
+            const next = !helpOpen
+            setHelpOpen(next)
+            if (next) revealPanel('help')
+          }}
+        >
+          {helpOpen ? t('helpHide') : t('helpShow')}
+        </button>
+        {helpOpen ? (
+          <div className="dgp-note-body">
+            <div className="dgp-hint" style={{ marginTop: 0, lineHeight: '20px' }}>
+              {t('helpText')}
+            </div>
+            <div className="dgp-sep" />
+            <dl className="dgp-kv">
+              <dt>{t('oauth')}</dt>
+              <dd>{t('oauthPro')}</dd>
+              <dt>{t('pat')}</dt>
+              <dd>{t('patPro')}</dd>
+            </dl>
           </div>
-          <div className="dgp-sep" />
-          <dl className="dgp-kv">
-            <dt>{t('oauth')}</dt>
-            <dd>{t('oauthPro')}</dd>
-            <dt>{t('pat')}</dt>
-            <dd>{t('patPro')}</dd>
-          </dl>
-        </div>
+        ) : null}
       </div>
 
       {connectOpen ? (

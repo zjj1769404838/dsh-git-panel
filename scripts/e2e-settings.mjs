@@ -22,6 +22,7 @@ import { join } from 'node:path'
 import { createHash, createHmac } from 'node:crypto'
 import { chromium } from 'playwright-core'
 
+const NEWLINE_RE = /\r?\n/u
 const DEFAULT_URL = 'http://127.0.0.1:60442'
 const BROWSER_CANDIDATES = [
   'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
@@ -102,8 +103,98 @@ try {
   const title = await page.title()
   check('页面已加载（认证通过）', title.includes('DeepSeek Harness'), `title=${title}`)
 
+  // GUI 可能停在别的 cwd（非 Git 仓库），那时 chip 只降级成灰化「Git」甚至不渲染。
+  // 先按 projectRow 边界切到本项目下的会话，再读 chip —— 与 e2e-workbench 同一套选法。
+  const treeReady = await page
+    .waitForSelector('[role="treeitem"]', { timeout: 15_000 })
+    .then(() => true)
+    .catch(() => false)
+  async function clickProject() {
+    return page.evaluate(() => {
+      const row = [...document.querySelectorAll('[role="treeitem"]')].find(
+        (item) => String(item.className).includes('projectRow') && item.textContent.trim() === 'dsh-git-panel',
+      )
+      if (!row) return false
+      row.click()
+      return true
+    })
+  }
+  // 从项目行往后走，遇到下一个 projectRow 就停：不能 filter 全部 sessionRow，
+  // 那会把别的项目下的会话也捞进来（GUI 默认选中的常是非 Git 目录的会话）。
+  async function listSessionsUnderProject() {
+    return page.evaluate(() => {
+      const rows = [...document.querySelectorAll('[role="treeitem"]')]
+      const index = rows.findIndex(
+        (item) => String(item.className).includes('projectRow') && item.textContent.trim() === 'dsh-git-panel',
+      )
+      if (index < 0) return []
+      const out = []
+      for (const item of rows.slice(index + 1)) {
+        const cls = String(item.className)
+        if (cls.includes('projectRow')) break
+        if (cls.includes('sessionRow')) out.push(item.textContent.trim().slice(0, 40))
+      }
+      return out
+    })
+  }
+  async function clickSessionByText(text) {
+    return page.evaluate((target) => {
+      const rows = [...document.querySelectorAll('[role="treeitem"]')]
+      const index = rows.findIndex(
+        (item) => String(item.className).includes('projectRow') && item.textContent.trim() === 'dsh-git-panel',
+      )
+      if (index < 0) return false
+      for (const item of rows.slice(index + 1)) {
+        const cls = String(item.className)
+        if (cls.includes('projectRow')) break
+        if (cls.includes('sessionRow') && item.textContent.trim().slice(0, 40) === target) {
+          item.click()
+          return true
+        }
+      }
+      return false
+    }, text)
+  }
+  async function readChipLabel() {
+    if ((await page.locator('.dgp-chip').count()) === 0) return ''
+    const text = (await page.locator('.dgp-chip').first().innerText()).trim()
+    return text.split(NEWLINE_RE).map((line) => line.trim()).filter(Boolean)[0] ?? ''
+  }
+
+  let switched = { ok: false, why: 'no tree' }
+  if (treeReady) {
+    const found = await clickProject()
+    if (!found) switched = { ok: false, why: 'no project row' }
+    else {
+      await page.waitForTimeout(800)
+      let sessions = await listSessionsUnderProject()
+      for (let attempt = 0; attempt < 3 && sessions.length === 0; attempt += 1) {
+        await clickProject()
+        await page.waitForTimeout(900)
+        sessions = await listSessionsUnderProject()
+      }
+      for (const session of sessions) {
+        await clickSessionByText(session)
+        await page.waitForTimeout(2000)
+        // chip 首帧显示 'Git' 占位，状态接口回来后才换成真实分支：轮询最多 6 秒。
+        let label = ''
+        for (let attempt = 0; attempt < 6; attempt += 1) {
+          label = await readChipLabel()
+          if (label && label !== 'Git') break
+          await page.waitForTimeout(1000)
+        }
+        if (label && label !== 'Git') {
+          switched = { ok: true, session }
+          break
+        }
+      }
+      if (!switched.ok) switched = { ok: false, why: 'no git session', sessions }
+    }
+  }
+  await page.waitForTimeout(1200)
+
   const chipCount = await page.locator('.dgp-chip').count()
-  check('输入框下方存在 Git chip 入口', chipCount > 0, `.dgp-chip=${chipCount}`)
+  check('输入框下方存在 Git chip 入口', chipCount > 0, `.dgp-chip=${chipCount} switched=${JSON.stringify(switched)}`)
 
   // 用 evaluate 触发 click，绕开新手引导浮层（dsh-auto-memory tour）的指针拦截。
   const opened = await page.evaluate(() => {
@@ -155,23 +246,35 @@ try {
   })
   check('Git 分节内容已渲染', /Git/.test(gitSectionText) && /账号|仓库|授权/.test(gitSectionText))
 
-  // ---- 2026-10-30 完全重构后的结构断言：新结构在，旧结构必须消失 ----
+  // ---- 结构断言（dgp-v16 重做 + dgp-v22 密度版：默认一行摘要，展开才见明细） ----
   const structure = await page.evaluate(() => {
     const panel = document.querySelector('[data-shortcut-modal="settings"]')
     const root = panel ?? document
     const count = (selector) => root.querySelectorAll(selector).length
-    const text = (root.textContent ?? '')
+    const text = root.textContent ?? ''
+    const cards = Array.from(root.querySelectorAll('.dgp-acct'))
     return {
       overview: count('.dgp-overview'),
       stats: count('.dgp-stats'),
-      accountCards: count('.dgp-acct'),
+      accountCards: cards.length,
+      summaries: count('.dgp-acct-summary'),
+      openCards: count('.dgp-acct[data-open="1"]'),
+      legacyHead: count('.dgp-acct-head'),
       permSeg: count('.dgp-perm-seg'),
       permSelect: count('select.dgp-perm-select'),
       repoToggle: count('.dgp-repo-toggle'),
       reposToolbar: count('.dgp-repos-toolbar'),
+      scopes: count('.dgp-acct-body .dgp-scopes'),
+      scopesToggles: count('.dgp-scopes-toggle'),
+      bigEmpty: count('.dgp-empty:not(.dgp-empty--dense)'),
+      noteLines: count('.dgp-note-line'),
       tabs: count('.dgp-tabs'),
       hasConnect: /连接账号|Connect account/.test(text),
       hasAdvanced: /高级设置|Advanced settings/.test(text),
+      hasHelpToggle: /授权说明|Access notes/.test(text),
+      // 首屏纵向占位：整节高度 / 视口高度，越大说明越费滚动
+      sectionHeight: Math.round((panel?.querySelector('.dgp-section') ?? panel)?.getBoundingClientRect().height ?? 0),
+      viewport: window.innerHeight,
     }
   })
   check('概览带已渲染（.dgp-overview）', structure.overview > 0, `.dgp-overview=${structure.overview}`)
@@ -181,10 +284,54 @@ try {
   check('权限下拉框已移除（select.dgp-perm-select 不存在）', structure.permSelect === 0, `select.dgp-perm-select=${structure.permSelect}`)
   check('有「连接账号」入口', structure.hasConnect)
   check('有「高级设置」入口', structure.hasAdvanced)
+  check('有「授权说明」入口（默认折叠成一行）', structure.hasHelpToggle)
   if (structure.accountCards > 0) {
     check('账号以卡片承载（.dgp-acct）', structure.accountCards > 0, `.dgp-acct=${structure.accountCards}`)
-    check('仓库权限用分段控件（.dgp-perm-seg）', structure.permSeg > 0, `.dgp-perm-seg=${structure.permSeg}`)
-    check('仓库工具行已渲染（.dgp-repos-toolbar）', structure.reposToolbar > 0, `.dgp-repos-toolbar=${structure.reposToolbar}`)
+    check('账号卡默认压成一行摘要（.dgp-acct-summary，常驻 .dgp-acct-head 已删）',
+      structure.summaries === structure.accountCards && structure.legacyHead === 0,
+      `summary=${structure.summaries} head=${structure.legacyHead}`)
+    check('至多自动展开一张账号卡（省纵向空间）', structure.openCards <= 1, `data-open=1 的卡=${structure.openCards}`)
+    check('scope 明细默认不常驻（收起时 .dgp-scopes 为 0，只留一个折叠按钮）',
+      structure.scopes === 0 && structure.scopesToggles >= 0,
+      `scopes=${structure.scopes} toggle=${structure.scopesToggles}`)
+    check('首屏纵向占位不超两屏（整节高度 < 视口×2）',
+      structure.sectionHeight < structure.viewport * 2,
+      `section=${structure.sectionHeight}px viewport=${structure.viewport}px`)
+    // 点开第一张卡，验证明细结构在展开态里齐备
+    const expanded = await page.evaluate(() => {
+      const panel = document.querySelector('[data-shortcut-modal="settings"]')
+      const summary = panel?.querySelector('.dgp-acct[data-open="0"] .dgp-acct-summary')
+      if (!summary) return 'no-collapsed-card'
+      summary.click()
+      return 'clicked'
+    })
+    check('点击摘要行可展开账号卡', expanded === 'clicked' || expanded === 'no-collapsed-card', expanded)
+    await page.waitForTimeout(1800)
+    const detail = await page.evaluate(() => {
+      const root = document.querySelector('[data-shortcut-modal="settings"]') ?? document
+      const count = (selector) => root.querySelectorAll(selector).length
+      return {
+        open: count('.dgp-acct[data-open="1"]'),
+        permSeg: count('.dgp-perm-seg'),
+        toolbar: count('.dgp-repos-toolbar'),
+        search: count('.dgp-repos-toolbar .dgp-search'),
+        bigEmpty: count('.dgp-empty:not(.dgp-empty--dense)'),
+        menuBtn: count('.dgp-acct-tools .dgp-iconbtn'),
+        menu: count('.dgp-acct-menu'),
+        // 热区实测：分段控件每个档位的高度
+        segHeights: Array.from(root.querySelectorAll('.dgp-perm-seg button')).map((b) => Math.round(b.getBoundingClientRect().height)),
+        filterHeights: Array.from(root.querySelectorAll('.dgp-filter button')).map((b) => Math.round(b.getBoundingClientRect().height)),
+      }
+    })
+    check('展开后仓库工具行与搜索框齐备（.dgp-repos-toolbar + .dgp-search）',
+      detail.toolbar > 0 && detail.search > 0, `toolbar=${detail.toolbar} search=${detail.search}`)
+    check('展开后权限用分段控件（.dgp-perm-seg）', detail.permSeg > 0, `.dgp-perm-seg=${detail.permSeg}`)
+    check('0 仓库账号空态改单行 dense（无大插画）', detail.bigEmpty === 0, `.dgp-empty(非 dense)=${detail.bigEmpty}`)
+    check('账号操作收进 ⋯ 菜单（默认只有 1 个入口按钮）',
+      detail.menuBtn === detail.open && detail.menu === 0, `iconbtn=${detail.menuBtn} menu=${detail.menu}`)
+    const shortTargets = [...detail.segHeights, ...detail.filterHeights].filter((h) => h > 0 && h < 24)
+    check('小控件热区不低于 24 CSS px（WCAG 2.5.8）', shortTargets.length === 0,
+      `seg=[${detail.segHeights.join(',')}] filter=[${detail.filterHeights.join(',')}]`)
   } else {
     console.log('SKIP 没有已连接账号，账号卡与仓库权限结构无法验证')
   }

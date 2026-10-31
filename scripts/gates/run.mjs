@@ -191,7 +191,7 @@ if (clientOut) {
   check('client 改动页是双栏（左提交右就地差异）', sharedSrc.includes('.dgp-gw-split') && sharedSrc.includes('.dgp-gw-col--left') && clientOut.includes('renderDiffPane'))
   check('client 三类列表共用选中语言（--dgp-sel-bg + --dgp-sel-bar）', sharedSrc.includes('--dgp-sel-bg') && sharedSrc.includes('--dgp-sel-bar') && sharedSrc.includes('.dgp-gw-row[data-on="1"]'))
   check('client 控件尺度对齐参考插件（工作台按钮 28px）', sharedSrc.includes('.dgp-gw .dgp-btn{height:28px'))
-  check('client 工作台不是贴右抽屉（transform 居中 + 圆角 + 四边框）', sharedSrc.includes('transform:translate(-50%,-50%)') && !sharedSrc.includes('border-left:.5px solid var(--dgp-line2);background:var(--dsw-alias-bg-layer-1'))
+  check('client 工作台居中不依赖 transform（第三方动画覆盖也不会跑偏）', sharedSrc.includes('.dgp-gw{position:fixed;inset:0;margin:auto;') && !sharedSrc.includes('transform:translate(-50%,-50%)'))
   check('client 工作台不再用旧类名（无 dgp-wb）', !clientOut.includes('dgp-wb'))
   check('client diff 改为预览层（wbDiffTitle + dgp-gw-diff）', clientOut.includes('wbDiffTitle') && clientOut.includes('dgp-gw-diff'))
   check('client 工作台顶栏有 Fetch/Pull/Push', clientOut.includes('/repo/fetch') && clientOut.includes('/repo/pull') && clientOut.includes('/repo/push'))
@@ -222,7 +222,7 @@ if (clientOut) {
   check('client 一级菜单不再内嵌分支拓扑（index.tsx 不再引用 GraphView）', !clientSrc.includes('GraphView'))
   check('client 一级菜单不再内嵌改动明细（index.tsx 不再有 ChangesList）', !clientSrc.includes('ChangesList'))
   check('client 工作台 portal 到 body（createPortal + document.body）', clientOut.includes('document.body') && portalImported >= 2)
-  check('client BUILD 版本已推进（dgp-v21）', clientOut.includes('dgp-v21'))
+  check('client BUILD 版本已推进（dgp-v22）', clientOut.includes('dgp-v22'))
   // ---- i18n 键完整性：任何 t('x') 用到的键都必须在 ZH/EN 字典里存在（防 wbCancel 类漏键） ----
   const clientNorm = clientSrc.replace(/\r\n/g, '\n')
   const dictStart = clientNorm.indexOf('const ZH: Dict = {')
@@ -288,7 +288,7 @@ if (clientOut) {
   // ---- 2026-10-30 完全重构：设置页 Git 分节（新文件 settings.tsx，新信息架构） ----
   check('client 设置页拆到独立模块（settings.tsx 导出 GitSection）', clientSrcAll.includes('export function GitSection'))
   check('client 设置页不再分 tab（无 tabAccounts/tabScope 切换）', !clientSrcAll.includes("setTab('accounts')") && !clientSrcAll.includes('tabAccounts'))
-  check('client 账号以卡片承载（dgp-acct）', clientSrcAll.includes('dgp-acct') && clientSrcAll.includes('dgp-acct-head'))
+  check('client 账号以卡片承载且默认压成一行摘要（dgp-acct-summary，常驻 dgp-acct-head 已删）', clientSrcAll.includes('dgp-acct') && clientSrcAll.includes('dgp-acct-summary') && !clientSrcAll.includes('dgp-acct-head'))
   check('client 仓库权限改分段控件（dgp-perm-seg，取代 select）', clientSrcAll.includes('dgp-perm-seg') && !clientSrcAll.includes('dgp-perm-select'))
   check('client 仓库列表有搜索与筛选工具行（dgp-repos-toolbar）', clientSrcAll.includes('dgp-repos-toolbar') && clientSrcAll.includes('repoSearch') && clientSrcAll.includes('repoFilter'))
   check('client 仓库权限内联展示（不再有「查看仓库」折叠开关）', !clientSrcAll.includes('reposToggle') && !clientSrcAll.includes('dgp-repo-toggle'))
@@ -324,6 +324,31 @@ if (clientOut) {
   check('client 设置页有「界面」分节（InterfacePanel）', clientSrcAll.includes('function InterfacePanel') && clientSrcAll.includes('interfaceShow'))
   check('client 设置页折叠面板展开后自动滚到可见处（data-panel + revealPanel）', clientSrcAll.includes('data-panel="interface"') && clientSrcAll.includes('data-panel="advanced"') && clientSrcAll.includes('function revealPanel') && clientSrcAll.includes('scrollIntoView'))
   check('client 界面面板紧跟概览带（不埋在账号卡之后）', /interfaceOpen \? <InterfacePanel[\s\S]{0,900}?accounts\.length === 0/u.test(settingsSrc))
+  // ---- dgp-v22：设置页密度重做（ui-design-system 六维 + WCAG 2.5.8 热区） ----
+  {
+    const v22 = [
+      ['client 账号卡至多自动展开一张（默认账号优先）', settingsSrc.includes('autoExpandId') && settingsSrc.includes('autoExpand={account.id === autoExpandId}')],
+      ['client 账号操作收进 ⋯ 菜单（菜单用 span 承载，不嵌 button）', settingsSrc.includes('<span className="dgp-acct-tools">') && settingsSrc.includes('dgp-acct-menu') && settingsSrc.includes('aria-haspopup="menu"')],
+      ['client ⋯ 菜单外点关闭且监听带 cleanup', settingsSrc.includes("document.addEventListener('pointerdown'") && settingsSrc.includes("document.removeEventListener('pointerdown'")],
+      ['client 折叠控件全部带 aria-expanded（摘要行/scope/说明/界面/高级）', settingsSrc.includes('aria-expanded={open}') && settingsSrc.includes('aria-expanded={helpOpen}') && settingsSrc.includes('aria-expanded={interfaceOpen}') && settingsSrc.includes('aria-expanded={advanced}')],
+      ['client scope 明细默认折叠（scopesToggle，不再常驻等宽段）', settingsSrc.includes("t('scopesToggle')") && sharedSrc.includes('.dgp-scopes-toggle') && sharedSrc.includes('.dgp-scopes{')],
+      ['client 0 仓库账号空态改单行 dense（不再吃整屏插画）', sharedSrc.includes('.dgp-empty--dense') && settingsSrc.includes('<EmptyState dense')],
+      ['client 授权说明默认一行（dgp-note + helpShow/helpHide）', sharedSrc.includes('.dgp-note{') && settingsSrc.includes("t('helpShow')") && settingsSrc.includes("t('helpHide')")],
+      ['client 仓库权限行保存态不再单列（permSaving 进 meta 行）', settingsSrc.includes('dgp-perm-saving') && !/\n\s*\{saving \? <span className="dgp-perm-saving">\{t\(\x27permSaving\)\}<\/span> : null\}\n\s*<\/div>/.test(settingsSrc)],
+      ['client 间距走 4/8 令牌（--dgp-gap-1/-2/-3）', sharedSrc.includes('--dgp-gap-1:4px') && sharedSrc.includes('--dgp-gap-2:8px') && sharedSrc.includes('--dgp-gap-3:12px')],
+      ['client 页头压成一行（head-main 基线排布 + 说明单行省略）', sharedSrc.includes('.dgp-head-main{') && settingsSrc.includes('className="dgp-head-main"')],
+      ['client 展开态动画自带关键帧且尊重 reduced-motion', sharedSrc.includes('@keyframes dgp-acct-in') && /@media \(prefers-reduced-motion:reduce\)\{\.dgp-acct-caret/.test(sharedSrc)],
+    ]
+    for (const [label, condition] of v22) {
+      check(label, condition)
+    }
+    // 热区：分段控件与筛选按钮都要 24 CSS px（WCAG 2.5.8）
+    const hot = (sharedSrc.match(/min-height:24px/g) ?? []).length
+    check('client 小控件热区补到 24 CSS px（perm-seg / filter 各一处）', hot >= 2, `min-height:24px=${hot}`)
+    check('client scope 列表用 overflow-wrap:anywhere 防横向溢出', /\.dgp-scopes\{[^}]*overflow-wrap:anywhere/u.test(sharedSrc))
+    check('client 设置页可就地新建远程仓库（createRepoForAccount → /repo/create）', settingsSrc.includes('const createRepoForAccount') && settingsSrc.includes("'/repo/create'"))
+    check('client 摘要行给 ⋯ 留位且操作区绝对定位（button 不嵌套）', /\.dgp-acct-summary\{[^}]*padding:6px 42px/u.test(sharedSrc) && sharedSrc.includes('.dgp-acct-tools{position:absolute'))
+  }
 // ---- dgp-v20：8 语言（zh / en 内置，ja/es/fr/de/ru/pt 由插件 addLanguage 注册） ----
 {
   const langFiles = ['ja', 'es', 'fr', 'de', 'ru', 'pt']
@@ -397,7 +422,7 @@ if (clientOut) {
   check('client 有版本检查（GitHub releases/latest + 5 秒超时）', clientSrcAll.includes('/releases/latest') && clientSrcAll.includes('5000') && clientSrcAll.includes('export function isNewer') && clientSrcAll.includes('export function parseVersion'))
   check('client 版本提示不打扰（预发布不提示 + 只在打开菜单时查）', clientSrcAll.includes('prerelease') && clientSrcAll.includes('useLatestVersion(open)') && clientSrcAll.includes('menuNewVersion'))
   check('e2e v20 走查脚本存在且已接入 npm script', (await exists(resolve(root, 'scripts/e2e-v20.mjs'))) && JSON.stringify(pkg.scripts ?? {}).includes('e2e-v20'))
-  check('client BUILD 版本已推进（dgp-v21）', clientOut.includes('dgp-v21'))
+  check('client BUILD 版本已推进（dgp-v22）', clientOut.includes('dgp-v22'))
 }
 // ---- node 半边：git-ops 命令层与工作台端点 ----
 {

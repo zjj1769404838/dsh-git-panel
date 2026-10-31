@@ -34,7 +34,7 @@ import { EXTRA_LANGUAGES, EXTRA_LOCALES } from './locales/index.js'
 /** 服务短名（不是 package.json 里的全名）。 */
 export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
-const BUILD = 'dgp-v21'
+const BUILD = 'dgp-v22'
 
 const ZH: Dict = {
   entry: 'Git',
@@ -258,6 +258,12 @@ const ZH: Dict = {
   repoFilter: '按权限筛选',
   filterAll: '全部',
   reposCount: '共 {n} / {m} 个仓库',
+  acctRepoSummary: '可访问 {n} / {m} 仓库',
+  acctReposLoading: '仓库加载中…',
+  acctMenu: '账号操作',
+  scopesToggle: '权限范围 {n} 项',
+  helpShow: '授权说明',
+  helpHide: '收起授权说明',
   reposNoMatch: '没有匹配的仓库',
   advancedShow: '高级设置',
   advancedHide: '收起高级设置',
@@ -641,6 +647,12 @@ const EN: Dict = {
   repoFilter: 'Filter by access',
   filterAll: 'All',
   reposCount: '{n} of {m} repositories',
+  acctRepoSummary: '{n} of {m} repositories accessible',
+  acctReposLoading: 'Loading repositories…',
+  acctMenu: 'Account actions',
+  scopesToggle: '{n} permission scopes',
+  helpShow: 'Access notes',
+  helpHide: 'Collapse access notes',
   reposNoMatch: 'No matching repositories',
   advancedShow: 'Advanced settings',
   advancedHide: 'Hide advanced settings',
@@ -1748,7 +1760,7 @@ export function apply(ctx: ClientContext): void {
   try {
     ctx.slots?.inject?.('conversation.input.left', () => {
       try {
-        return ctx.slots?.register?.(
+        const result = ctx.slots?.register?.(
           {
             name: 'conversation.input.left',
             id: 'dsh-git-panel-branch',
@@ -1758,6 +1770,7 @@ export function apply(ctx: ClientContext): void {
           },
           BranchChip,
         )
+        return result
       } catch (error) {
         ctx.logger?.error?.(`[${NS}] 入口注册失败：${String(error)}`)
         return undefined
