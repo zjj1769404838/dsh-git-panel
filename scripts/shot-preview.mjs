@@ -382,6 +382,18 @@ try {
   console.log(`open workbench: ${wbClicked}`)
   await page.waitForTimeout(2500)
   if ((await page.locator('.dgp-gw').count()) === 0) throw new Error('工作台没打开')
+  // 点一个改动行，让右栏渲染就地差异——空态截图展示不出这个双栏形态的价值
+  const previewed = await page.evaluate(() => {
+    const rows = [...document.querySelectorAll('.dgp-gw-row .dgp-gw-path')]
+    // 优先挑一个文本文件（图片的 diff 没有可读内容）
+    const pick =
+      rows.find((item) => /\.(tsx?|jsx?|mjs|json|md|css|ya?ml)$/u.test(item.textContent ?? '')) ?? rows[0]
+    if (pick === undefined) return null
+    pick.click()
+    return pick.textContent
+  })
+  console.log(`preview row: ${previewed ?? '(无改动行)'}`)
+  await page.waitForTimeout(2500)
   await snap(page, '.dgp-gw', 'workbench-changes.png')
 
   async function openTab(label) {
