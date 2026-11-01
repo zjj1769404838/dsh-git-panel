@@ -223,7 +223,7 @@ npm run test:e2e      # 32 项设置页 GUI 端到端验证（需要本机 Edge 
 npm run test:e2e:wb   # 31 项 Git 工作台 GUI 端到端验证（含居中模态框形态、点弹窗不消失、改动页双栏就地差异）
 npm run test:e2e:newui # 19 项新入口体系 GUI 端到端验证（单一 chip 入口 + 分组菜单）
 npm run test:e2e:v20  # 18 项 v20 新能力 GUI 端到端验证（界面分节 / 汇总条 / Markdown 表格 / 回退撤销）
-npm run preview       # 用真实 CSS + 宿主 token 渲染 docs/preview/*.png（需要本机 Edge）
+npm run preview       # 真机实拍 docs/preview/*.png（需要本机 Edge + DSH Web 在跑）
 npm test              # gates + hardening
 ```
 
@@ -270,7 +270,7 @@ scripts/
   e2e-workbench.mjs   工作台 GUI 端到端验证（弹窗点击回归）
   e2e-newui.mjs       新入口体系 GUI 端到端验证（分支详情 + 五入口菜单）
   shot-settings.mjs   设置页截图（自动清掉宿主引导浮层后出干净图）
-  preview.mjs         设置页预览图渲染
+  shot-preview.mjs    真机实拍预览图（自动打码账号/路径后出图）
 ```
 
 ---
@@ -310,15 +310,15 @@ scripts/
 | 分支拓扑图 | 车道宽 13px、行高 34px、节点半径 4px（HEAD 放大到 5.4px + 半径 8px 描边外环）；SVG 与行文本同一 flex 行，图区 `max-height: min(320px, 46vh)` 且 `overflow:auto`（窄窗口横向滚动而不压缩车道）；带图时菜单宽 `min(440px, calc(100vw - 16px))`、高 `min(520px, 72vh)` |
 | chip 弹出菜单 | 236–320px 宽、`--dsw-alias-bg-layer-1` 底 + `.5px` 边框 + `--dsw-elevation-prominent` 阴影、行高 7px/9px 内边距，菜单项左图标 12px、标题 12px + 说明 11px；**用 `createPortal` 挂到 `document.body`**，`position: fixed` + `z-index: 1200`（宿主浮层最高 1100），上方空间不足时自动翻到 chip 下方，水平方向收敛在视口内 |
 
-预览截图（用构建产物里的真实 CSS + 宿主浅/深两套 token 渲染，`docs/preview/`）：
+预览截图（真机实拍：脚本驱动本机 Edge 打开运行中的 DSH Web，切到本项目的会话后逐屏截图，落在 `docs/preview/`）：
 
-| 浅色 | 深色 |
+| 设置页 | 工作台 · 改动（双栏就地差异） |
 | --- | --- |
-| ![浅色设置页](docs/preview/light.png) | ![深色设置页](docs/preview/dark.png) |
-| ![浅色说明与 chip](docs/preview/tail-light.png) | ![深色说明与 chip](docs/preview/tail-dark.png) |
-| ![浅色授权概览](docs/preview/stats-light.png) | ![深色授权概览](docs/preview/stats-dark.png) |
-| ![浅色工作区改动](docs/preview/changes-light.png) | ![深色工作区改动](docs/preview/changes-dark.png) |
-| ![浅色轻提示](docs/preview/toast-light.png) | ![深色轻提示](docs/preview/toast-dark.png) |
-| ![浅色空状态](docs/preview/empty-light.png) | ![深色空状态](docs/preview/empty-dark.png) |
+| ![设置页](docs/preview/settings.png) | ![工作台改动](docs/preview/workbench-changes.png) |
+| ![设置页展开](docs/preview/settings-expanded.png) | ![工作台历史](docs/preview/workbench-history.png) |
 
-重新生成预览：`node scripts/preview.mjs`（需要本机 Edge；从 `lib/client.js` 抽真实 CSS 渲染 HTML 再无头截图到 `docs/preview/`）。增强方案与设计取舍见 [`docs/enhancement-plan.md`](docs/enhancement-plan.md)。
+| chip 菜单 | 工作台 · 文件（Markdown 渲染） |
+| --- | --- |
+| ![chip 菜单](docs/preview/chip-menu.png) | ![工作台文件](docs/preview/workbench-files.png) |
+
+重新生成预览：`node scripts/shot-preview.mjs <GUI 地址>`（需要本机 Edge + DSH Web 在跑，例如 `node scripts/shot-preview.mjs http://127.0.0.1:53196`）。脚本自己按宿主 `dsh-client-connection` 的规则从 `~/.dsh/.credentials.yaml` 铸造 `dsh-auth-*` cookie（不打印任何凭据），切到本项目的会话后依次截图，并在截图前把账号名、本机绝对路径、PAT scope 等用斜纹条遮掉——只改像素不改布局，所以图里的排版与真机一致。
