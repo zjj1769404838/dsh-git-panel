@@ -30,7 +30,7 @@ import {
 
 export const inject = ['slots', 'sessions', 'locale']
 
-const BUILD = 'dgp-v3.2'
+const BUILD = 'dgp-v3.11'
 
 // ─── 指令模板（乙案：AI 统一走插件的 git_write / git_confirm 受控通道）───
 const TOOL_PREAMBLE =
@@ -125,6 +125,18 @@ const COMMANDS: CommandSpec[] = [
   },
 ]
 
+// 动作分组（v3.11 重设计）：把平铺动作按工作流分 4 组，降低认知负荷、建立层次。
+interface ActionGroup {
+  labelKey: string
+  ids: string[]
+}
+const ACTION_GROUPS: ActionGroup[] = [
+  { labelKey: 'groupSync', ids: ['push', 'pull', 'fetch'] },
+  { labelKey: 'groupChanges', ids: ['stage-all', 'commit', 'stash', 'discard'] },
+  { labelKey: 'groupBranch', ids: ['branch-create', 'branch-switch', 'tag'] },
+  { labelKey: 'groupPublish', ids: ['npm-publish'] },
+]
+
 const ZH: Dict = {
   entry: 'Git',
   navLabel: 'Git',
@@ -138,6 +150,10 @@ const ZH: Dict = {
   recentCommits: '最近提交',
   noCommits: '还没有提交',
   actions: '动作（生成指令给 AI 执行）',
+  groupSync: '同步',
+  groupChanges: '改动',
+  groupBranch: '分支与标签',
+  groupPublish: '发布',
   inputHint: '可改词后再回车；指令只是发起，写操作仍受确认约束。',
   autoSubmit: '直接提交（注入后代按发送）',
   // 折叠区：账号与授权
@@ -213,6 +229,10 @@ const EN: Dict = {
   recentCommits: 'Recent commits',
   noCommits: 'No commits yet',
   actions: 'Actions (inject a command for the AI)',
+  groupSync: 'Sync',
+  groupChanges: 'Changes',
+  groupBranch: 'Branch & tags',
+  groupPublish: 'Publish',
   inputHint: 'You can edit before pressing Enter; writes stay confirm-gated.',
   autoSubmit: 'Auto submit (press send after injecting)',
   gear: 'Accounts & Access',
@@ -822,7 +842,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
     ? status!.detached
       ? `HEAD @ ${status!.head.slice(0, 7)}`
       : status!.branch || '—'
-    : 'Git'
+    : '—'
 
   // 参数行出现时滚动到底部，防止被 GearSection 展开挤出视口（P1-6）。
   useEffect(() => {
@@ -834,7 +854,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
       <button
         type="button"
         className="dgp-chip"
-        title={isRepo ? branchLabel : detectError || t('entry')}
+        title={isRepo ? `Git · ${branchLabel}` : detectError || t('entry')}
         onClick={toggle}
         aria-expanded={open}
         aria-controls={open ? 'dgp-panel' : undefined}
@@ -845,14 +865,16 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
           <circle cx="11" cy="7" r="2" />
           <path d="M5 6v4M7 7h2M11 9v1a3 3 0 0 1-3 3H7" />
         </svg>
+        <span className="dgp-chip-label">Git</span>
+        <span className="dgp-chip-sep" aria-hidden="true">·</span>
         <span className="dgp-chip-branch">
           {checking && !status ? '…' : branchLabel}
         </span>
         {isRepo && (
           <span className="dgp-chip-badge">
-            {status!.ahead > 0 ? `↑${status!.ahead} ` : ''}
-            {status!.behind > 0 ? `↓${status!.behind} ` : ''}
-            {status!.changed > 0 ? `${status!.changed}*` : ''}
+            {status!.changed > 0 && <span className="dgp-badge dgp-badge-warn">{status!.changed}*</span>}
+            {status!.ahead > 0 && <span className="dgp-badge dgp-badge-ok">↑{status!.ahead}</span>}
+            {status!.behind > 0 && <span className="dgp-badge dgp-badge-info">↓{status!.behind}</span>}
           </span>
         )}
       </button>
@@ -875,21 +897,37 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
             }}
           >
             <div className="dgp-head">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+                <circle cx="5" cy="4" r="2" /><circle cx="5" cy="12" r="2" /><circle cx="11" cy="7" r="2" />
+                <path d="M5 6v4M7 7h2M11 9v1a3 3 0 0 1-3 3H7" />
+              </svg>
               <span className="dgp-title">{t('panelTitle')}</span>
+              <span className="dgp-spacer" />
               <button type="button" className="dgp-iconbtn" title={t('refresh')} aria-label={t('refresh')} onClick={() => void reload()}><RefreshGlyph /></button>
               <button type="button" className="dgp-iconbtn" title={t('close')} aria-label={t('close')} onClick={() => setOpen(false)}><CloseGlyph /></button>
             </div>
-            <label className="dgp-toggle" title={t('autoSubmit')} style={{ marginBottom: 8 }}>
-              <input
-                type="checkbox"
-                checked={autoSubmit}
-                onChange={(e) => {
-                  setAutoSubmit(e.target.checked)
-                  writePref(PREF_AUTO_SUBMIT, e.target.checked ? '1' : '0')
-                }}
-              />
-              {t('autoSubmit')}
-            </label>
+            {isRepo && (
+              <div className="dgp-statusbar">
+                <span className="dgp-status-dot" data-state={status!.changed > 0 ? 'dirty' : 'clean'} role="img" aria-label={status!.changed > 0 ? t('changedFiles') : t('noChanges')} />
+                <span className="dgp-status-branch" title={branchLabel}>{branchLabel}</span>
+                <span className="dgp-status-meta">
+                  {status!.ahead > 0 ? `↑${status!.ahead} ` : ''}{status!.behind > 0 ? `↓${status!.behind} ` : ''}{status!.changed > 0 ? `${status!.changed}*` : t('noChanges')}
+                </span>
+              </div>
+            )}
+            <div className="dgp-toolbar">
+              <label className="dgp-toggle" title={t('autoSubmit')}>
+                <input
+                  type="checkbox"
+                  checked={autoSubmit}
+                  onChange={(e) => {
+                    setAutoSubmit(e.target.checked)
+                    writePref(PREF_AUTO_SUBMIT, e.target.checked ? '1' : '0')
+                  }}
+                />
+                {t('autoSubmit')}
+              </label>
+            </div>
 
             {detectError && !isRepo && (
               <div className="dgp-sect">
@@ -935,14 +973,26 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
 
                 <div className="dgp-sect">
                   <div className="dgp-sect-title">{t('actions')}</div>
-                  <div className="dgp-btnrow">
-                    {COMMANDS.filter((c) => c.id !== 'init').map((command) => (
-                      <button key={command.id} type="button" className={'dgp-btn' + (command.id === 'discard' ? ' dgp-btn-danger' : '')} onClick={() => onActionClick(command)}>
-                        {t(command.labelKey)}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="dgp-muted" style={{ marginTop: 6 }}>{t('inputHint')}</div>
+                  {ACTION_GROUPS.map((group) => (
+                    <div key={group.labelKey} className="dgp-btn-group">
+                      <div className="dgp-group-label">{t(group.labelKey)}</div>
+                      <div className="dgp-btnrow">
+                        {group.ids.map((id) => {
+                          const command = COMMANDS.find((c) => c.id === id)!
+                          let cls = 'dgp-btn'
+                          if (id === 'push') cls += ' dgp-btn-primary'
+                          if (id === 'npm-publish') cls += ' dgp-btn-accent'
+                          if (id === 'discard') cls += ' dgp-btn-danger'
+                          return (
+                            <button key={id} type="button" className={cls} onClick={() => onActionClick(command)}>
+                              {t(command.labelKey)}
+                            </button>
+                          )
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                  <div className="dgp-muted" style={{ marginTop: 10 }}>{t('inputHint')}</div>
                 </div>
               </>
             )}
