@@ -107,6 +107,20 @@ const COMMANDS: CommandSpec[] = [
     build: (cwd) =>
       `${TOOL_PREAMBLE}该目录还不是仓库：请在 ${cwd} 执行 git_write(action=init, args=["-b","main"]) 初始化本地仓库，完成后汇报。远程关联等我另行指示。`,
   },
+  {
+    // npm 发布不走 git_write（该通道仅限 git 子命令），由 AI 经 shell 按内嵌 SOP 执行；无参数占位，点击即注入。
+    id: 'npm-publish',
+    labelKey: 'cmdNpmPublish',
+    build: (cwd) =>
+      `请把当前项目发布到 npm（这是不可逆外部写操作，严格按以下 SOP，任何一步不满足就停下来向我汇报，禁止凭 exit 0 判定发布成功）：` +
+      `0) 完整阅读本机 D:/my-projects/skills/npm-publish-调研报告.md 作为流程权威参考；` +
+      `1) 在 ${cwd} 核对版本三处锁步一致（package.json / package-lock.json / 源码常量），且 git 工作区干净、门禁全绿；` +
+      `2) 确认 name+version 组合未被占用：钉官方源直查 https://registry.npmjs.org/<包名>（带 ?nocache= 时间戳），404 或无此版本才放行；已占用则停并报告——name+version 永久占用不可复用；` +
+      `3) npm pack --dry-run 核对产物白名单与体积，逐项贴出；` +
+      `4) 发布命令必须显式钉官方源并公开：npm publish --registry=https://registry.npmjs.org --access=public（本机默认 registry 可能是只读镜像，PUT 会被拒；不改全局 .npmrc）；凭据只走 ~/.npmrc 既有 authToken，禁止把 token 写入任何文件或在输出中回显；` +
+      `5) PUT 返回 202 只是 staged：禁止重发，改为带 ?nocache= 轮询官方 packument 直至该版本出现（终验以 packument 为权威），把最终证据（版本号、dist-tags、时间戳）贴出来；` +
+      `6) 失败先分层归因（网络→身份→配置→实现），错误码会伪装（404 可能掩盖权限/邮箱问题），归因坐实前不重试；E401/ENEEDAUTH 优先核对是否漏钉官方源。完成后汇报终验证据。`,
+  },
 ]
 
 const ZH: Dict = {
@@ -165,6 +179,7 @@ const ZH: Dict = {
   cmdStash: '贮藏',
   cmdTag: '打标签…',
   cmdInit: '初始化仓库',
+  cmdNpmPublish: '发布 npm',
   askParam: '填入参数',
   commitIntent: '提交意图（可留空）',
   branchName: '分支名',
@@ -227,6 +242,7 @@ const EN: Dict = {
   cmdStash: 'Stash',
   cmdTag: 'Tag…',
   cmdInit: 'Init repo',
+  cmdNpmPublish: 'Publish to npm',
   askParam: 'Fill parameter',
   commitIntent: 'Commit intent (optional)',
   branchName: 'Branch name',
@@ -638,7 +654,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
   )
 
   const onActionClick = (spec: CommandSpec) => {
-    if (['stage-all', 'push', 'pull', 'fetch', 'stash', 'init'].includes(spec.id)) {
+    if (['stage-all', 'push', 'pull', 'fetch', 'stash', 'init', 'npm-publish'].includes(spec.id)) {
       void runCommand(spec)
     } else {
       setPrompt(spec)
