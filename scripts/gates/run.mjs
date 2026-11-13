@@ -72,6 +72,12 @@ if (libIndex && libClient) {
 const srcIndex = await readText(resolve(root, 'src/index.ts'))
 check('src/index.ts 导出 name/inject/apply', srcIndex !== null && srcIndex.includes('export const name') && srcIndex.includes("export const inject = ['webServer']") && srcIndex.includes('export function apply'))
 check('src/index.ts 不再软取 llm/defaultModel（suggest 已删）', srcIndex !== null && !srcIndex.includes("ctx.get?.('llm')"))
+// 版本锁步：package.json / src/index.ts PLUGIN_VERSION / package-lock.json 三者一致，防语义漂移
+const lockRaw = await readText(resolve(root, 'package-lock.json'))
+const lock = lockRaw ? JSON.parse(lockRaw) : {}
+const srcVersion = srcIndex !== null ? (srcIndex.match(/PLUGIN_VERSION = '([^']+)'/) ?? [])[1] : null
+check('PLUGIN_VERSION 与 package.json version 锁步', srcVersion === pkg.version, `src ${srcVersion} vs pkg ${pkg.version}`)
+check('package-lock 版本锁步', lock.version === pkg.version && lock.packages?.['']?.version === pkg.version, `${lock.version}/${lock.packages?.['']?.version} vs ${pkg.version}`)
 
 const handler = await readText(resolve(root, 'src/node/handler.ts'))
 check('handler 存在且 ROUTE_PREFIX 不变', handler !== null && handler.includes("export const ROUTE_PREFIX = '/dsh-git-panel'"))
