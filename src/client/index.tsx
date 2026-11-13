@@ -1,8 +1,9 @@
 /**
- * client 半边（v3 极简化）：输入框左侧分支 chip + 点击弹层。
- * 弹层只做两件事：展示只读状态（分支/领先落后/改动文件/最近提交/账号），
- * 以及「动作按钮」——每个按钮把一条给 Agent 的自然语言指令注入输入框
- * （指令要求 AI 走 git_write / git_confirm 受控工具执行），绝不本地直接写仓库。
+ * client 半边（v3.2）：输入框左侧分支 chip + 点击弹层。
+ * 弹层承载全部功能：只读状态（分支/领先落后/改动文件/最近提交）、动作按钮
+ * （每个按钮把一条给 Agent 的指令注入宿主输入框，AI 经 git_write/git_confirm
+ * 受控执行）、以及折叠区「账号与授权」（GitHub PAT/OAuth 连接、本地目录白名单、
+ * 写策略开关）。宿主设置页不再有 Git 分节（v3.2 拍板：设置全部并入面板）。
  * 「直接提交」开关打开时注入后尝试代按发送按钮。
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
@@ -27,9 +28,9 @@ import {
   type CommitRowView,
 } from './shared.js'
 
-export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
+export const inject = ['slots', 'sessions', 'locale']
 
-const BUILD = 'dgp-v3-slim'
+const BUILD = 'dgp-v3.2'
 
 // ─── 指令模板（乙案：AI 统一走插件的 git_write / git_confirm 受控通道）───
 const TOOL_PREAMBLE =
@@ -46,7 +47,7 @@ const COMMANDS: CommandSpec[] = [
     id: 'stage-all',
     labelKey: 'cmdStageAll',
     build: (cwd) =>
-      `${TOOL_PREAMBLE}在仓库 ${cwd} 用 git_write(action=add, args=["-A"]) 暂存全部改动，然后用 git_panel_status/git_repo_info 复核并简述结果。`,
+      `${TOOL_PREAMBLE}在仓库 ${cwd} 用 git_write(action=add, args=["-A"]) 暂存全部改动，然后用 git_repo_info 复核并简述结果。`,
   },
   {
     id: 'commit',
@@ -115,11 +116,8 @@ const ZH: Dict = {
   refresh: '刷新',
   close: '关闭',
   notRepo: '当前会话目录不是 Git 仓库',
-  notRepoHint: '可让 AI 初始化仓库，或在设置里把该目录加入授权范围。',
-  unauthorized: '该目录不在授权范围内（设置 → Git → 本地目录）',
-  branch: '分支',
-  ahead: '领先',
-  behind: '落后',
+  notRepoHint: '可让 AI 初始化仓库，或在「账号与授权」里把该目录加入授权范围。',
+  unauthorized: '该目录不在授权范围内（下方「账号与授权」里添加）',
   changedFiles: '改动文件',
   noChanges: '工作区干净',
   recentCommits: '最近提交',
@@ -127,6 +125,8 @@ const ZH: Dict = {
   actions: '动作（生成指令给 AI 执行）',
   inputHint: '可改词后再回车；指令只是发起，写操作仍受确认约束。',
   autoSubmit: '直接提交（注入后代按发送）',
+  // 折叠区：账号与授权
+  gear: '账号与授权',
   account: 'GitHub 账号',
   noAccount: '未连接账号（不影响本地 git 操作）',
   connectAccount: '连接账号',
@@ -143,13 +143,11 @@ const ZH: Dict = {
   cancel: '取消',
   disconnect: '断开',
   recheck: '校验',
-  copied: '已复制',
   injected: '指令已放入输入框',
   injectedSubmitted: '指令已提交给 AI',
   injectFailed: '注入失败',
   detectFailed: '无法检测仓库状态',
   retry: '重新检测',
-  settingsTitle: 'Git 设置（v3 精简）',
   rootsTitle: '允许操作的本地目录',
   rootsHint: '每行一个绝对路径；* 表示不限制。AI 只在这些目录（含子目录）内执行 git。',
   save: '保存',
@@ -183,11 +181,8 @@ const EN: Dict = {
   refresh: 'Refresh',
   close: 'Close',
   notRepo: 'This session directory is not a Git repository',
-  notRepoHint: 'Let the AI init a repo, or authorize this directory in settings.',
-  unauthorized: 'Directory outside the authorized scope (Settings → Git → Local directories)',
-  branch: 'Branch',
-  ahead: 'ahead',
-  behind: 'behind',
+  notRepoHint: 'Let the AI init a repo, or authorize this directory below.',
+  unauthorized: 'Directory outside the authorized scope (add it under Accounts & Access)',
   changedFiles: 'Changed files',
   noChanges: 'Working tree clean',
   recentCommits: 'Recent commits',
@@ -195,6 +190,7 @@ const EN: Dict = {
   actions: 'Actions (inject a command for the AI)',
   inputHint: 'You can edit before pressing Enter; writes stay confirm-gated.',
   autoSubmit: 'Auto submit (press send after injecting)',
+  gear: 'Accounts & Access',
   account: 'GitHub account',
   noAccount: 'No account connected (local git still works)',
   connectAccount: 'Connect account',
@@ -211,13 +207,11 @@ const EN: Dict = {
   cancel: 'Cancel',
   disconnect: 'Disconnect',
   recheck: 'Recheck',
-  copied: 'Copied',
   injected: 'Command placed in the input box',
   injectedSubmitted: 'Command sent to the AI',
   injectFailed: 'Inject failed',
   detectFailed: 'Cannot detect repository status',
   retry: 'Check again',
-  settingsTitle: 'Git Settings (v3 slim)',
   rootsTitle: 'Authorized local directories',
   rootsHint: 'One absolute path per line; * means no limit.',
   save: 'Save',
@@ -262,7 +256,6 @@ interface ClientContext {
   }
   sessions?: SessionsService
   get?: (name: string) => any
-  shortcuts?: { registry?: { invoke?: (id: string, context: any) => void } }
   logger?: { info?: (msg: string) => void; warn?: (msg: string) => void; error?: (msg: string) => void }
   effect?: (fn: () => void, label?: string) => void
 }
@@ -291,6 +284,224 @@ function useSessionCwd(sessions: SessionsService | undefined, sessionId: string)
   return useSyncExternalStore(subscribe, get, () => '')
 }
 
+// ─── 折叠区：账号与授权（原设置页分节全部内容并入面板）───
+
+function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; accounts: AccountView[]; onAccounts: (next: AccountView[]) => void }) {
+  const [rootsText, setRootsText] = useState<string | null>(null)
+  const [flags, setFlags] = useState<{ allowWrite: boolean; requireConfirm: boolean } | null>(null)
+  const [saved, setSaved] = useState(false)
+  const [connectOpen, setConnectOpen] = useState(false)
+  const [method, setMethod] = useState<'pat' | 'oauth'>('pat')
+  const [token, setToken] = useState('')
+  const [label, setLabel] = useState('')
+  const [clientId, setClientId] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [oauthFlow, setOauthFlow] = useState<{ verificationUri: string; userCode: string } | null>(null)
+  const [error, setError] = useState('')
+  const pollRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (pollRef.current !== null) window.clearInterval(pollRef.current)
+    }
+  }, [])
+
+  // 首次展开时拉一次 state；之后账号变更由父级同步进来。
+  const ensureLoaded = useCallback(async () => {
+    if (rootsText !== null && flags !== null) return
+    try {
+      const data = await api<{ ok: boolean; state?: PanelState }>('/state')
+      if (data.ok && data.state) {
+        setRootsText(data.state.settings.allowedRoots.join('\n'))
+        setFlags({ allowWrite: data.state.settings.allowWrite, requireConfirm: data.state.settings.requireConfirm })
+        onAccounts(data.state.accounts)
+      }
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }, [rootsText, flags, onAccounts])
+
+  const applySettings = async (patch: Record<string, unknown>) => {
+    try {
+      const data = await api<{ ok: boolean; state?: PanelState; error?: string }>('/settings', patch)
+      if (data.ok && data.state) {
+        onAccounts(data.state.accounts)
+        if (data.state.settings) setFlags({ allowWrite: data.state.settings.allowWrite, requireConfirm: data.state.settings.requireConfirm })
+        return data.state
+      }
+      setError(data.error ?? t('detectFailed'))
+    } catch (err) {
+      setError((err as Error).message)
+    }
+    return null
+  }
+
+  const saveRoots = async () => {
+    const allowedRoots = (rootsText ?? '').split('\n').map((line) => line.trim()).filter(Boolean)
+    const state = await applySettings({ allowedRoots })
+    if (state) {
+      setSaved(true)
+      window.setTimeout(() => setSaved(false), 1500)
+    }
+  }
+
+  const toggleFlag = async (key: 'allowWrite' | 'requireConfirm', value: boolean) => {
+    await applySettings({ [key]: value })
+  }
+
+  const connectPat = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      const data = await api<{ ok: boolean; error?: string; state?: PanelState }>('/pat/connect', { token, label })
+      if (data.ok && data.state) {
+        onAccounts(data.state.accounts)
+        setConnectOpen(false)
+        setToken('')
+      } else {
+        setError(data.error ?? t('injectFailed'))
+      }
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const startOauth = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      const data = await api<{
+        ok: boolean
+        error?: string
+        pollKey?: string
+        flow?: { userCode: string; verificationUri: string }
+      }>('/oauth/start', { clientId })
+      if (!data.ok || !data.pollKey || !data.flow) {
+        setError(data.error ?? t('detectFailed'))
+        return
+      }
+      setOauthFlow({ userCode: data.flow.userCode, verificationUri: data.flow.verificationUri })
+      const pollKey = data.pollKey
+      pollRef.current = window.setInterval(async () => {
+        try {
+          const res = await api<{ ok: boolean; status?: string; state?: PanelState; error?: string }>('/oauth/poll', { pollKey })
+          if (res.status === 'authorized' && res.state) {
+            if (pollRef.current !== null) window.clearInterval(pollRef.current)
+            onAccounts(res.state.accounts)
+            setConnectOpen(false)
+            setOauthFlow(null)
+          } else if (res.status === 'denied' || res.status === 'expired' || res.status === 'error') {
+            if (pollRef.current !== null) window.clearInterval(pollRef.current)
+            setError(res.error ?? t('injectFailed'))
+            setOauthFlow(null)
+          }
+        } catch {
+          /* 网络抖动：下一轮再试 */
+        }
+      }, 4000)
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const accountAction = async (action: 'remove' | 'recheck', id: string) => {
+    try {
+      const data = await api<{ ok: boolean; state?: PanelState }>(`/accounts/${action}`, { id })
+      if (data.state) onAccounts(data.state.accounts)
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  return (
+    <div className="dgp-sect" onPointerEnter={() => void ensureLoaded()}>
+      <details
+        onToggle={(e) => {
+          if ((e.target as HTMLDetailsElement).open) void ensureLoaded()
+        }}
+      >
+        <summary className="dgp-sect-title" style={{ cursor: 'pointer' }}>{t('gear')}</summary>
+        {error && <div className="dgp-empty" role="alert">{error} <button type="button" className="dgp-iconbtn" onClick={() => setError('')}>✕</button></div>}
+
+        <div className="dgp-sect-title" style={{ marginTop: 6 }}>{t('account')}</div>
+        {accounts.map((account) => (
+          <div key={account.id} className="dgp-account">
+            <Dot state={account.status} />
+            <span>{account.login}</span>
+            <span className="dgp-muted">{account.kind === 'oauth' ? 'OAuth' : 'PAT'}</span>
+            <span style={{ flex: 1 }} />
+            <button type="button" className="dgp-btn" onClick={() => void accountAction('recheck', account.id)}>{t('recheck')}</button>
+            <button type="button" className="dgp-btn" onClick={() => void accountAction('remove', account.id)}>{t('disconnect')}</button>
+          </div>
+        ))}
+        {accounts.length === 0 && <div className="dgp-empty">{t('noAccount')}</div>}
+        <button type="button" className="dgp-btn" style={{ marginTop: 6 }} onClick={() => setConnectOpen(!connectOpen)}>{t('connectAccount')}</button>
+        {connectOpen && (
+          <div style={{ marginTop: 8, border: '1px solid var(--dsh-border, #666)', borderRadius: 8, padding: 8 }}>
+            <div className="dgp-btnrow" style={{ marginBottom: 8 }}>
+              <button type="button" className="dgp-btn" onClick={() => setMethod('pat')} style={method === 'pat' ? { borderColor: 'var(--dsh-accent, #4a9eff)' } : undefined}>{t('methodPat')}</button>
+              <button type="button" className="dgp-btn" onClick={() => setMethod('oauth')} style={method === 'oauth' ? { borderColor: 'var(--dsh-accent, #4a9eff)' } : undefined}>{t('methodOauth')}</button>
+            </div>
+            {method === 'pat' ? (
+              <>
+                <div className="dgp-sect-title">{t('tokenLabel')}</div>
+                <input className="dgp-input" type="password" placeholder={t('tokenPlaceholder')} value={token} onChange={(e) => setToken(e.target.value)} />
+                <div className="dgp-sect-title" style={{ marginTop: 6 }}>{t('labelLabel')}</div>
+                <input className="dgp-input" value={label} onChange={(e) => setLabel(e.target.value)} />
+                <div className="dgp-btnrow" style={{ marginTop: 8 }}>
+                  <button type="button" className="dgp-btn" disabled={busy || token.trim().length === 0} onClick={() => void connectPat()}>{t('connect')}</button>
+                  <button type="button" className="dgp-btn" onClick={() => setConnectOpen(false)}>{t('cancel')}</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="dgp-sect-title">{t('clientIdLabel')}</div>
+                <div className="dgp-muted">{t('clientIdHint')}</div>
+                <input className="dgp-input" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+                {oauthFlow ? (
+                  <div style={{ marginTop: 8 }}>
+                    <div className="dgp-muted">{t('userCode')}</div>
+                    <div className="dgp-file"><a href={oauthFlow.verificationUri} target="_blank" rel="noreferrer">{oauthFlow.verificationUri}</a></div>
+                    <div style={{ fontSize: 18, fontFamily: 'var(--dsh-mono, monospace)', margin: '4px 0' }}>{oauthFlow.userCode}</div>
+                    <div className="dgp-muted">{t('waiting')}</div>
+                  </div>
+                ) : (
+                  <div className="dgp-btnrow" style={{ marginTop: 8 }}>
+                    <button type="button" className="dgp-btn" disabled={busy || clientId.trim().length === 0} onClick={() => void startOauth()}>{t('connect')}</button>
+                    <button type="button" className="dgp-btn" onClick={() => setConnectOpen(false)}>{t('cancel')}</button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        <div className="dgp-sect-title" style={{ marginTop: 10 }}>{t('rootsTitle')}</div>
+        <div className="dgp-muted">{t('rootsHint')}</div>
+        <textarea className="dgp-input" rows={3} value={rootsText ?? ''} placeholder={rootsText === null ? '…' : ''} onChange={(e) => setRootsText(e.target.value)} />
+        <div className="dgp-btnrow" style={{ marginTop: 6 }}>
+          <button type="button" className="dgp-btn" disabled={rootsText === null} onClick={() => void saveRoots()}>{saved ? t('saved') : t('save')}</button>
+        </div>
+
+        <div style={{ marginTop: 8 }}>
+          <label className="dgp-toggle">
+            <input type="checkbox" checked={flags?.allowWrite === true} disabled={flags === null} onChange={(e) => void toggleFlag('allowWrite', e.target.checked)} />
+            {t('allowWrite')}
+          </label>
+          <label className="dgp-toggle" style={{ marginTop: 4 }}>
+            <input type="checkbox" checked={flags?.requireConfirm !== false} disabled={flags === null} onChange={(e) => void toggleFlag('requireConfirm', e.target.checked)} />
+            {t('requireConfirm')}
+          </label>
+        </div>
+      </details>
+    </div>
+  )
+}
+
 // ─── chip + 弹层 ───
 
 function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; sessionId: string; sessions?: SessionsService }) {
@@ -308,6 +519,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
   const [promptValue, setPromptValue] = useState('')
   const toastTimer = useRef<number | null>(null)
   const chipRef = useRef<HTMLSpanElement | null>(null)
+  const panelRef = useRef<HTMLDivElement | null>(null)
   const [anchor, setAnchor] = useState({ left: 0, bottom: 0 })
 
   const cwd = useSessionCwd(sessions, sessionId)
@@ -347,7 +559,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
           ])
           setFiles(changes?.changes?.files ?? [])
           setCommits(log?.commits ?? [])
-          setAccounts(state?.state?.accounts ?? [])
+          if (state?.state?.accounts) setAccounts(state.state.accounts)
         } else {
           setFiles([])
           setCommits([])
@@ -386,7 +598,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
     const next = !open
     if (next && chipRef.current) {
       const rect = chipRef.current.getBoundingClientRect()
-      setAnchor({ left: Math.min(rect.left, window.innerWidth - 396), bottom: window.innerHeight - rect.top + 6 })
+      setAnchor({ left: Math.min(rect.left, window.innerWidth - 400), bottom: window.innerHeight - rect.top + 6 })
     }
     setOpen(next)
     if (next) void reload()
@@ -408,8 +620,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
   )
 
   const onActionClick = (spec: CommandSpec) => {
-    // 带 … 的按钮需要用户先补参数（分支名/文件/提交意图）；其余直接注入。
-    if (spec.id === 'stage-all' || spec.id === 'push' || spec.id === 'pull' || spec.id === 'fetch' || spec.id === 'stash' || spec.id === 'init') {
+    if (['stage-all', 'push', 'pull', 'fetch', 'stash', 'init'].includes(spec.id)) {
       void runCommand(spec)
     } else {
       setPrompt(spec)
@@ -449,7 +660,17 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
 
       {open &&
         createPortal(
-          <div className="dgp-panel" style={{ left: anchor.left, bottom: anchor.bottom }} onMouseLeave={() => setOpen(false)}>
+          <div
+            ref={panelRef}
+            className="dgp-panel"
+            style={{ left: anchor.left, bottom: anchor.bottom }}
+            onMouseLeave={() => {
+              // 折叠区里有输入焦点时不因鼠标离开关闭（避免填一半目录/令牌就掉面板）。
+              const active = document.activeElement
+              if (active && panelRef.current?.contains(active)) return
+              setOpen(false)
+            }}
+          >
             <div className="dgp-head">
               <span className="dgp-title">{t('panelTitle')}</span>
               <button type="button" className="dgp-iconbtn" title={t('refresh')} onClick={() => void reload()}>⟳</button>
@@ -512,18 +733,6 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
                 </div>
 
                 <div className="dgp-sect">
-                  <div className="dgp-sect-title">{t('account')}</div>
-                  {accounts.length === 0 && <div className="dgp-empty">{t('noAccount')}</div>}
-                  {accounts.map((account) => (
-                    <div key={account.id} className="dgp-account">
-                      <Dot state={account.status} />
-                      <span>{account.login}</span>
-                      <span className="dgp-muted">{account.kind === 'oauth' ? 'OAuth' : 'PAT'}</span>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="dgp-sect">
                   <div className="dgp-sect-title">{t('actions')}</div>
                   <div className="dgp-btnrow">
                     {COMMANDS.filter((c) => c.id !== 'init').map((command) => (
@@ -536,6 +745,8 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
                 </div>
               </>
             )}
+
+            <GearSection t={t} accounts={accounts} onAccounts={setAccounts} />
 
             {prompt && (
               <div className="dgp-sect" style={{ border: '1px solid var(--dsh-border, #666)', borderRadius: 8, padding: 8 }}>
@@ -576,226 +787,6 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
   )
 }
 
-// ─── 设置分节：账号连接 + 目录白名单 + 写策略 ───
-
-function GitSection({ t }: { t: (key: string) => string }) {
-  useStyles()
-  const [state, setState] = useState<PanelState | null>(null)
-  const [rootsText, setRootsText] = useState('')
-  const [saved, setSaved] = useState(false)
-  const [connectOpen, setConnectOpen] = useState(false)
-  const [method, setMethod] = useState<'pat' | 'oauth'>('pat')
-  const [token, setToken] = useState('')
-  const [label, setLabel] = useState('')
-  const [clientId, setClientId] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [oauthFlow, setOauthFlow] = useState<{ verificationUri: string; userCode: string } | null>(null)
-  const [oauthStatus, setOauthStatus] = useState('')
-  const pollRef = useRef<number | null>(null)
-  const [error, setError] = useState('')
-
-  const load = useCallback(async () => {
-    try {
-      const data = await api<{ ok: boolean; state?: PanelState }>('/state')
-      if (data.ok && data.state) {
-        setState(data.state)
-        setRootsText(data.state.settings.allowedRoots.join('\n'))
-      }
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }, [])
-
-  useEffect(() => {
-    void load()
-    return () => {
-      if (pollRef.current !== null) window.clearInterval(pollRef.current)
-    }
-  }, [load])
-
-  const saveSettings = async () => {
-    const allowedRoots = rootsText.split('\n').map((line) => line.trim()).filter(Boolean)
-    try {
-      const data = await api<{ ok: boolean; state?: PanelState }>('/settings', { allowedRoots })
-      if (data.ok && data.state) {
-        setState(data.state)
-        setSaved(true)
-        window.setTimeout(() => setSaved(false), 1500)
-      } else {
-        setError(t('detectFailed'))
-      }
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }
-
-  const toggleFlag = async (key: 'allowWrite' | 'requireConfirm', value: boolean) => {
-    try {
-      const data = await api<{ ok: boolean; state?: PanelState }>('/settings', { [key]: value })
-      if (data.ok && data.state) setState(data.state)
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }
-
-  const connectPat = async () => {
-    setBusy(true)
-    setError('')
-    try {
-      const data = await api<{ ok: boolean; error?: string; state?: PanelState }>('/pat/connect', { token, label })
-      if (data.ok && data.state) {
-        setState(data.state)
-        setConnectOpen(false)
-        setToken('')
-      } else {
-        setError(data.error ?? t('injectFailed'))
-      }
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const startOauth = async () => {
-    setBusy(true)
-    setError('')
-    try {
-      const data = await api<{
-        ok: boolean
-        error?: string
-        pollKey?: string
-        flow?: { userCode: string; verificationUri: string }
-      }>('/oauth/start', { clientId })
-      if (!data.ok || !data.pollKey || !data.flow) {
-        setError(data.error ?? t('detectFailed'))
-        return
-      }
-      setOauthFlow({ userCode: data.flow.userCode, verificationUri: data.flow.verificationUri })
-      setOauthStatus('waiting')
-      const pollKey = data.pollKey
-      pollRef.current = window.setInterval(async () => {
-        try {
-          const res = await api<{ ok: boolean; status?: string; account?: unknown; state?: PanelState; error?: string }>('/oauth/poll', { pollKey })
-          if (res.status === 'authorized' && res.state) {
-            if (pollRef.current !== null) window.clearInterval(pollRef.current)
-            setState(res.state)
-            setConnectOpen(false)
-            setOauthFlow(null)
-          } else if (res.status === 'denied' || res.status === 'expired' || res.status === 'error') {
-            if (pollRef.current !== null) window.clearInterval(pollRef.current)
-            setError(res.error ?? t('injectFailed'))
-            setOauthFlow(null)
-          }
-        } catch {
-          /* 网络抖动：下一轮再试 */
-        }
-      }, 4000)
-    } catch (err) {
-      setError((err as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const accountAction = async (action: 'remove' | 'recheck', id: string) => {
-    try {
-      const data = await api<{ ok: boolean; state?: PanelState }>(`/accounts/${action}`, { id })
-      if (data.state) setState(data.state)
-    } catch (err) {
-      setError((err as Error).message)
-    }
-  }
-
-  const settings = state?.settings
-
-  return (
-    <div className="dgp-root dgp-section" style={{ maxWidth: 640 }}>
-      <div className="dgp-head"><span className="dgp-title">{t('settingsTitle')}</span></div>
-      {error && <div className="dgp-empty" role="alert">{error} <button type="button" className="dgp-iconbtn" onClick={() => setError('')}>✕</button></div>}
-
-      <div className="dgp-sect">
-        <div className="dgp-sect-title">{t('account')}</div>
-        {(state?.accounts ?? []).map((account) => (
-          <div key={account.id} className="dgp-account">
-            <Dot state={account.status} />
-            <span>{account.login}</span>
-            <span className="dgp-muted">{account.kind === 'oauth' ? 'OAuth' : 'PAT'} · {account.scopes.join(' ')}</span>
-            <span style={{ flex: 1 }} />
-            <button type="button" className="dgp-btn" onClick={() => void accountAction('recheck', account.id)}>{t('recheck')}</button>
-            <button type="button" className="dgp-btn" onClick={() => void accountAction('remove', account.id)}>{t('disconnect')}</button>
-          </div>
-        ))}
-        {(state?.accounts ?? []).length === 0 && <div className="dgp-empty">{t('noAccount')}</div>}
-        <button type="button" className="dgp-btn" style={{ marginTop: 6 }} onClick={() => setConnectOpen(!connectOpen)}>
-          {t('connectAccount')}
-        </button>
-        {connectOpen && (
-          <div style={{ marginTop: 8, border: '1px solid var(--dsh-border, #666)', borderRadius: 8, padding: 10 }}>
-            <div className="dgp-btnrow" style={{ marginBottom: 8 }}>
-              <button type="button" className="dgp-btn" onClick={() => setMethod('pat')} style={method === 'pat' ? { borderColor: 'var(--dsh-accent, #4a9eff)' } : undefined}>{t('methodPat')}</button>
-              <button type="button" className="dgp-btn" onClick={() => setMethod('oauth')} style={method === 'oauth' ? { borderColor: 'var(--dsh-accent, #4a9eff)' } : undefined}>{t('methodOauth')}</button>
-            </div>
-            {method === 'pat' ? (
-              <>
-                <div className="dgp-sect-title">{t('tokenLabel')}</div>
-                <input className="dgp-input" type="password" placeholder={t('tokenPlaceholder')} value={token} onChange={(e) => setToken(e.target.value)} />
-                <div className="dgp-sect-title" style={{ marginTop: 6 }}>{t('labelLabel')}</div>
-                <input className="dgp-input" value={label} onChange={(e) => setLabel(e.target.value)} />
-                <div className="dgp-btnrow" style={{ marginTop: 8 }}>
-                  <button type="button" className="dgp-btn" disabled={busy || token.trim().length === 0} onClick={() => void connectPat()}>{t('connect')}</button>
-                  <button type="button" className="dgp-btn" onClick={() => setConnectOpen(false)}>{t('cancel')}</button>
-                </div>
-              </>
-            ) : (
-              <>
-                <div className="dgp-sect-title">{t('clientIdLabel')}</div>
-                <div className="dgp-muted">{t('clientIdHint')}</div>
-                <input className="dgp-input" value={clientId} onChange={(e) => setClientId(e.target.value)} />
-                {oauthFlow ? (
-                  <div style={{ marginTop: 8 }}>
-                    <div className="dgp-muted">{t('userCode')}</div>
-                    <div className="dgp-file"><a href={oauthFlow.verificationUri} target="_blank" rel="noreferrer">{oauthFlow.verificationUri}</a></div>
-                    <div style={{ fontSize: 18, fontFamily: 'var(--dsh-mono, monospace)', margin: '4px 0' }}>{oauthFlow.userCode}</div>
-                    <div className="dgp-muted">{oauthStatus === 'waiting' ? t('waiting') : ''}</div>
-                  </div>
-                ) : (
-                  <div className="dgp-btnrow" style={{ marginTop: 8 }}>
-                    <button type="button" className="dgp-btn" disabled={busy || clientId.trim().length === 0} onClick={() => void startOauth()}>{t('connect')}</button>
-                    <button type="button" className="dgp-btn" onClick={() => setConnectOpen(false)}>{t('cancel')}</button>
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="dgp-sect">
-        <div className="dgp-sect-title">{t('rootsTitle')}</div>
-        <div className="dgp-muted">{t('rootsHint')}</div>
-        <textarea className="dgp-input" rows={4} value={rootsText} onChange={(e) => setRootsText(e.target.value)} />
-        <div className="dgp-btnrow" style={{ marginTop: 6 }}>
-          <button type="button" className="dgp-btn" onClick={() => void saveSettings()}>{saved ? t('saved') : t('save')}</button>
-        </div>
-      </div>
-
-      <div className="dgp-sect">
-        <label className="dgp-toggle">
-          <input type="checkbox" checked={settings?.allowWrite === true} onChange={(e) => void toggleFlag('allowWrite', e.target.checked)} />
-          {t('allowWrite')}
-        </label>
-        <div className="dgp-muted">{t('allowWriteHint')}</div>
-        <label className="dgp-toggle" style={{ marginTop: 6 }}>
-          <input type="checkbox" checked={settings?.requireConfirm !== false} onChange={(e) => void toggleFlag('requireConfirm', e.target.checked)} />
-          {t('requireConfirm')}
-        </label>
-        <div className="dgp-muted">{t('requireConfirmHint')}</div>
-      </div>
-    </div>
-  )
-}
-
 export function apply(ctx: ClientContext): void {
   let t: (key: string) => string = (key: string) => ZH[key] ?? EN[key] ?? key
   try {
@@ -813,25 +804,8 @@ export function apply(ctx: ClientContext): void {
 
   const sessions = ctx.sessions
 
-  // 1) 设置页分节（账号 / 目录白名单 / 写策略）。
-  try {
-    ctx.slots?.inject?.('settings.section', () => {
-      try {
-        return ctx.slots?.register?.(
-          { name: 'settings.section', id: 'git-panel', order: 20, label: () => t('navLabel'), locale: NS, inject: () => ({ t }) },
-          GitSection,
-        )
-      } catch (error) {
-        ctx.logger?.error?.(`[${NS}] settings.section 注册失败：${String(error)}`)
-        return undefined
-      }
-    })
-    ctx.logger?.info?.(`[${NS}] 设置分节已注册（${BUILD}）`)
-  } catch (error) {
-    ctx.logger?.error?.(`[${NS}] settings.section 注入失败：${String(error)}`)
-  }
-
-  // 2) 输入框左侧 chip。
+  // v3.2 拍板：不注册 settings.section —— 全部设置并入 chip 弹层的「账号与授权」折叠区。
+  // 输入框左侧 chip。
   try {
     ctx.slots?.inject?.('conversation.input.left', () => {
       try {

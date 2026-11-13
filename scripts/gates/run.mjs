@@ -118,7 +118,10 @@ check('providers 设备码 client_id 由调用方传入（零内置凭据）', p
 // ---- client 半边契约（v3 命令注入器）----
 const clientIndex = await readText(resolve(root, 'src/client/index.tsx'))
 check('client 导出 inject + apply', clientIndex !== null && clientIndex.includes('export const inject') && clientIndex.includes('export function apply'))
-check('client 注册 conversation.input.left 与 settings.section', clientIndex !== null && clientIndex.includes("'conversation.input.left'") && clientIndex.includes("'settings.section'"))
+check('client 注册 conversation.input.left', clientIndex !== null && clientIndex.includes("'conversation.input.left'"))
+check('client 不再注册 settings.section（v3.2 拍板：设置并入面板）', clientIndex !== null && !clientIndex.includes("'settings.section'"))
+check('面板含账号与授权折叠区（GearSection + details）', clientIndex !== null && clientIndex.includes('GearSection') && clientIndex.includes('<details'))
+check('折叠区覆盖账号/目录/写策略三块', clientIndex !== null && clientIndex.includes('/pat/connect') && clientIndex.includes('/oauth/start') && clientIndex.includes('allowedRoots') && clientIndex.includes('allowWrite'))
 check('指令模板统一引用 git_write（乙案受控通道）', clientIndex !== null && (clientIndex.match(/git_write/g) ?? []).length >= 6)
 check('client 调用 injectCommand 注入', clientIndex !== null && clientIndex.includes('injectCommand('))
 const shared = await readText(resolve(root, 'src/client/shared.tsx'))
