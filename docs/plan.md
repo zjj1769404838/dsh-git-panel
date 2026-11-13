@@ -1,11 +1,11 @@
-# @zjj/dsh-git-panel 插件计划
+# @zjjlivingfree/dsh-git-panel 插件计划
 
 > 本文件记录「需求 → 形态 → 配方 → 验证 → 安装 → 发布」全过程的决策与勾选状态，可回放、可交接。
 > 项目不是由 dsh-plugin-studio 脚手架生成（从零手写后按该 skill 的合同逐项对齐），故部分阶段为「回溯补齐」。
 
 ## 阶段 ①：需求捕获
 
-- [x] 插件名：`@zjj/dsh-git-panel`（原名 `dsh-git-panel`，因 npm 裸名与社区列表已有 3 条同名，改为 scope 化）
+- [x] 插件名：`@zjjlivingfree/dsh-git-panel`（原名 `dsh-git-panel`，因 npm 裸名与社区列表已有 3 条同名，改为 scope 化）
 - [x] 一句话目标：把 Git 账号接入与受控仓库操作（查看 / 暂存 / 提交 / 拉推 / 分支 / 远程 / 建仓）提供给 DSH 桌面端用户与 Agent，写入路径受账号与仓库级权限约束。
 - [x] 能力面清单：
   - HTTP 接口（node 半边，前缀 `/dsh-git-panel`）：账号与仓库、仓库状态/图/改动/分支/远程/提交/差异、暂存/取消暂存/丢弃/提交、分支新建/切换/删除/重命名、fetch/pull/push、远程增删、冲突检测、初始化与 bootstrap、**在账号下新建远程仓库**、账号级仓库权限单条写入、设置读写。
@@ -25,7 +25,7 @@
 
 ## 阶段 ③：配方装配
 
-- [x] `src/index.ts` 已生成（`export const name = '@zjj/dsh-git-panel'`，注册 `webServer` 路由与 Agent 工具）
+- [x] `src/index.ts` 已生成（`export const name = '@zjjlivingfree/dsh-git-panel'`，注册 `webServer` 路由与 Agent 工具）
 - [x] `src/client/index.tsx` 已生成（`inject = ['slots','sessions','locale','shortcuts']`，注册 `settings.section` 与 `conversation.input.left`）
 - [x] `inject` 已覆盖所有服务（`@deepseek-ai/dsh-client-ui-slots`、`@deepseek-ai/dsh-client-locale`）
 - [x] 冒烟功能就绪（chip 三态、菜单分组、设置页、工作台、向导、分支详情均有 e2e 覆盖）
@@ -48,7 +48,7 @@
 
 ## 阶段 ⑤：安装与浏览器冒烟
 
-- [x] 安装成功（`dsh plugin --profile desktop add link:D:/my-projects/plugins/dsh-git-panel`，profile 里以 `@zjj/dsh-git-panel` 链接）
+- [x] 安装成功（`dsh plugin --profile desktop add link:D:/my-projects/plugins/dsh-git-panel`，profile 里以 `@zjjlivingfree/dsh-git-panel` 链接）
 - [x] 启动日志无 `plugin tree failed to load`
 - [x] 浏览器无 `slot entry crashed`
 - [x] 冒烟功能可用（chip / 菜单 / 设置页 / 工作台 / 向导 / 分支详情均在 `http://127.0.0.1:63801` 实测通过）
@@ -66,7 +66,7 @@
 
 - **降级说明**：本项目为从零手写实现，未使用 dsh-plugin-studio 的脚手架；该 skill 的合同（package.json 字段、`cordis.patch.yml`、external、`verify_plugin.py`）已逐条对齐。
 - **决策变更记录**：
-  - 2026-10-30 包名由 `dsh-git-panel` 改为 `@zjj/dsh-git-panel` —— 原因：npm 裸名已被 `a792883583/dsh-git-panel` 占用，社区列表另有 `fengbinmov/dsh-git-panel` 与 `xbzbing/dsh-git-panel` 两条同名。
+  - 2026-10-30 包名由 `dsh-git-panel` 改为 `@zjjlivingfree/dsh-git-panel` —— 原因：npm 裸名已被 `a792883583/dsh-git-panel` 占用，社区列表另有 `fengbinmov/dsh-git-panel` 与 `xbzbing/dsh-git-panel` 两条同名。
   - 2026-10-30 `.gitignore` 移除 `lib/` —— 原因：git 源分发要求构建产物入库，否则 clone 后装不上。
   - 2026-10-30 工作台形态由「贴右全高抽屉」改为「居中模态框」—— 原因：用户明确要求「不要抽屉，使用模态框」。
   - 2026-10-30 设置页 Git 分节整体重做（旧三 tab / 四格统计卡 / 账号行 6 按钮 / 权限 select 全废弃）—— 原因：用户要求「忘记之前的设计完全重构」。

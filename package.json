@@ -1,5 +1,5 @@
 {
-  "name": "@zjj/dsh-git-panel",
+  "name": "@zjjlivingfree/dsh-git-panel",
   "version": "0.1.0",
   "description": "Git 账号接入与受控仓库操作：在 DSH 输入框下方左侧加入口，支持 OAuth 设备码与 PAT 两种接入方式，把仓库信息/分支/差异/提交记录与受控写操作封装成 Agent 工具，令牌永不明文回显。",
   "type": "module",

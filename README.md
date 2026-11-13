@@ -1,4 +1,4 @@
-# @zjj/dsh-git-panel
+# @zjjlivingfree/dsh-git-panel
 
 DSH（DeepSeek Harness）桌面端插件：**Git 账号接入 + 受控仓库操作**。
 
@@ -80,7 +80,7 @@ dsh plugin --profile desktop add link:/absolute/path/to/dsh-git-panel
 卸载：
 
 ```bash
-dsh plugin --profile desktop remove @zjj/dsh-git-panel
+dsh plugin --profile desktop remove @zjjlivingfree/dsh-git-panel
 ```
 
 ---

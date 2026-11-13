@@ -4,7 +4,7 @@ import { createHandler, ROUTE_PREFIX } from './node/handler.js'
 import { registerGitTools } from './node/tools.js'
 import { redact } from './node/vault.js'
 
-export const name = '@zjj/dsh-git-panel'
+export const name = '@zjjlivingfree/dsh-git-panel'
 export const inject = ['webServer']
 export const PLUGIN_VERSION = '0.1.0'
 
@@ -40,7 +40,7 @@ export function apply(ctx: Context): void {
     return () => {
       if (typeof disposer === 'function') disposer()
     }
-  }, '@zjj/dsh-git-panel:http')
+  }, '@zjjlivingfree/dsh-git-panel:http')
 
   ctx.effect(() => {
     const dispose = registerGitTools({
@@ -49,5 +49,5 @@ export function apply(ctx: Context): void {
       log,
     })
     return dispose
-  }, '@zjj/dsh-git-panel:tools')
+  }, '@zjjlivingfree/dsh-git-panel:tools')
 }

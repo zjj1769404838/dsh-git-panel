@@ -3,3 +3,6 @@ node_modules/
 docs/preview/*.html
 .tmp-*
 *.log
+
+.dsh-ops/
+backup-rename-*/

@@ -39,7 +39,7 @@ const pkg = pkgRaw ? JSON.parse(pkgRaw) : {}
 
 check(
   'package.json name 与目录一致（允许 scope 前缀）',
-  pkg.name === 'dsh-git-panel' || pkg.name === '@zjj/dsh-git-panel',
+  pkg.name === 'dsh-git-panel' || pkg.name === '@zjj/dsh-git-panel' || pkg.name === '@zjjlivingfree/dsh-git-panel',
   `实际 ${pkg.name}`,
 )
 check('type=module', pkg.type === 'module')
