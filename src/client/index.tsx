@@ -109,17 +109,19 @@ const COMMANDS: CommandSpec[] = [
   },
   {
     // npm 发布不走 git_write（该通道仅限 git 子命令），由 AI 经 shell 按内嵌 SOP 执行；无参数占位，点击即注入。
+    // 通用性红线（v3.7 拍板）：模板面向任意 DSH 作者的任意机器，禁止内嵌任何个人路径/个人环境假设；
+    // 前置不满足时 fail-closed 输出「需要用户手动补的配置清单」，AI 绝不代登录、绝不写凭据、绝不动全局配置。
     id: 'npm-publish',
     labelKey: 'cmdNpmPublish',
     build: (cwd) =>
-      `请把当前项目发布到 npm（这是不可逆外部写操作，严格按以下 SOP，任何一步不满足就停下来向我汇报，禁止凭 exit 0 判定发布成功）：` +
-      `0) 完整阅读本机 D:/my-projects/skills/npm-publish-调研报告.md 作为流程权威参考；` +
-      `1) 在 ${cwd} 核对版本三处锁步一致（package.json / package-lock.json / 源码常量），且 git 工作区干净、门禁全绿；` +
-      `2) 确认 name+version 组合未被占用：钉官方源直查 https://registry.npmjs.org/<包名>（带 ?nocache= 时间戳），404 或无此版本才放行；已占用则停并报告——name+version 永久占用不可复用；` +
-      `3) npm pack --dry-run 核对产物白名单与体积，逐项贴出；` +
-      `4) 发布命令必须显式钉官方源并公开：npm publish --registry=https://registry.npmjs.org --access=public（本机默认 registry 可能是只读镜像，PUT 会被拒；不改全局 .npmrc）；凭据只走 ~/.npmrc 既有 authToken，禁止把 token 写入任何文件或在输出中回显；` +
-      `5) PUT 返回 202 只是 staged：禁止重发，改为带 ?nocache= 轮询官方 packument 直至该版本出现（终验以 packument 为权威），把最终证据（版本号、dist-tags、时间戳）贴出来；` +
-      `6) 失败先分层归因（网络→身份→配置→实现），错误码会伪装（404 可能掩盖权限/邮箱问题），归因坐实前不重试；E401/ENEEDAUTH 优先核对是否漏钉官方源。完成后汇报终验证据。`,
+      `请把当前项目（${cwd}）发布到 npm。这是不可逆外部写操作，严格按以下通用流程执行，任何一步不满足就停下来向我汇报；禁止凭 exit 0 判定发布成功。本流程不假设我的机器上有任何预先配置：缺什么就如实列出需要我手动补的步骤，不要替我登录、不要替我写凭据、不要修改任何全局配置。` +
+      `1) 环境预检：npm 是否可用及版本；执行 npm whoami --registry=https://registry.npmjs.org 确认官方源已登录——未登录或无凭据时立即停止，只输出「需要我手动执行的配置步骤」（例如自行 npm login --registry=https://registry.npmjs.org，或把官方源 authToken 配进 ~/.npmrc），不得索要、代填或在输出中回显任何 token；` +
+      `2) 包信息核对：读取 package.json 的 name/version/files/publishConfig；name+version 组合在 npm 上永久占用不可复用；若仓库存在多处版本声明（lockfile、源码常量）须逐处核对一致，不一致即停止并列出差异；` +
+      `3) 占用预检：用带 ?nocache= 时间戳的 https://registry.npmjs.org/<包名> 直查（官方源为权威，勿经镜像），404 或该版本不存在才放行；已占用则停止并报告现状；` +
+      `4) 产物预检：npm pack --dry-run，把文件清单与体积逐项贴出来供我过目，发现明显多余或缺失文件先报告；` +
+      `5) 发布：只有我明确确认后才执行 npm publish --registry=https://registry.npmjs.org --access=public（scoped 包必须显式 --access=public；即使系统默认源可用也要显式钉官方源；不得为发布改用户的 .npmrc）；` +
+      `6) 终验：PUT 返回 202 只代表 staged，禁止重发；改为带 ?nocache= 轮询 packument 直至该版本出现，把终验证据（版本号、dist-tags、发布时间戳）贴出来；` +
+      `7) 失败分层归因（网络→身份→配置→实现），错误码会伪装（如 404 掩盖权限/邮箱问题），归因坐实前不重试；E401/ENEEDAUTH 优先核对是否漏钉官方源或凭据失效。完成后汇报终验证据。`,
   },
 ]
 
