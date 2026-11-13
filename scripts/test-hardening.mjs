@@ -3,7 +3,7 @@
  * 加固回归（v3.1 极简化版）：用 mock ctx 驱动真实产物（lib/index.js），验证
  *  - 请求体上限 / 同源校验 / nosniff / no-store
  *  - 令牌永不明文出现在响应里（/state、/pat/connect 返回）
- *  - 目录白名单判定：未授权目录的读端点 fail-closed（不泄露仓库内容）
+ *  - 目录闸门（v3.3 移除白名单后）：非仓库/不存在目录给可读错误，不再 403
  *  - Agent 工具：写通道唯一（HTTP 写端点 404）、allowWrite=false 拒绝、
  *    requireConfirm 两段确认（git_write → git_confirm）、confirmToken 一次性
  *  - 错误信息可读（不是异常栈）
@@ -220,17 +220,15 @@ check('无 git_remote_info（平台 API 已删）', !registeredTools.has('git_re
   }
 }
 
-// ---- 目录白名单：未授权目录读端点 fail-closed ----
+// ---- v3.3 契约：目录白名单已移除——任意目录可读（非仓库不再是 403，而是可读原因的错误）----
 {
   const outside = join(tmpdir(), 'dgp-outside-' + String(Date.now()))
   const r = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/branches?cwd=${encodeURIComponent(outside)}` })
-  check('未授权目录 branches 被拒 403', r.status === 403, String(r.status))
-  check('拒绝信息说明授权范围', /不在可读范围|已授权根目录/.test(String(r.json?.error)), String(r.json?.error).slice(0, 120))
-  const r2 = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/commits?cwd=${encodeURIComponent(outside)}` })
-  check('未授权目录 commits 被拒 403', r2.status === 403, String(r2.status))
+  check('任意目录不再被 403 拦截', r.status === 200, String(r.status))
+  check('非仓库目录返回可读原因（而非授权话术）', r.json?.ok === false && !/授权|白名单|allowed/i.test(String(r.json?.error ?? 'x')) && String(r.json?.error ?? '').length > 0, JSON.stringify(r.json))
 }
 
-// ---- 真实仓库：授权后 reads 正常 ----
+// ---- 真实仓库：任意目录直接可读（v3.3 起无授权步骤）----
 const repo = join(tmp, 'repo')
 await mkdir(repo, { recursive: true })
 {
@@ -243,17 +241,8 @@ await mkdir(repo, { recursive: true })
   await run(['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-m', 'first'])
   await writeFile(join(repo, 'a.txt'), 'hello world\n')
 
-  // 授权该目录
-  const s = await call(handler, {
-    method: 'POST',
-    url: '/dsh-git-panel/settings',
-    body: JSON.stringify({ allowedRoots: [repo] }),
-  })
-  check('保存 allowedRoots 成功', s.json?.ok === true, JSON.stringify(s.json))
-  check('设置回显含该目录', Array.isArray(s.json?.settings?.allowedRoots) && s.json.settings.allowedRoots.includes(repo), JSON.stringify(s.json?.settings))
-
   const st = await call(handler, { method: 'GET', url: `/dsh-git-panel/repo/status?cwd=${encodeURIComponent(repo)}` })
-  check('授权后 status ok 且 isRepo', st.json?.ok === true && st.json?.status?.isRepo === true, JSON.stringify(st.json))
+  check('status ok 且 isRepo', st.json?.ok === true && st.json?.status?.isRepo === true, JSON.stringify(st.json))
   check('status 报分支 main', st.json?.status?.branch === 'main', st.json?.status?.branch)
   check('status 报 1 个改动', st.json?.status?.changed === 1, String(st.json?.status?.changed))
 
@@ -267,12 +256,12 @@ await mkdir(repo, { recursive: true })
   check('diff 含 hello world', String(df.json?.diff ?? '').includes('hello world'), JSON.stringify(df.json)?.slice(0, 120))
 }
 
-// ---- Agent 工具：未授权目录被拒 ----
+// ---- Agent 工具：不存在的目录给出可读错误（不再是授权话术）----
 {
   const tool = registeredTools.get('git_repo_info')
   const result = await tool.execute({ cwd: join(tmpdir(), 'no-such-dir-zzz') })
-  check('未授权目录被拒', result.ok === false, JSON.stringify(result))
-  check('拒绝信息列出已授权根目录', String(result.error).includes('不在允许范围内'), result.error)
+  check('不存在目录被 ensureRepo 拒绝', result.ok === false, JSON.stringify(result))
+  check('拒绝原因为目录不存在（无授权字样）', /目录不存在/.test(String(result.error)) && !/授权|白名单|allowed/i.test(String(result.error)), result.error)
 }
 
 // ---- Agent 工具：allowWrite=false 时 git_write 拒绝 ----
@@ -287,7 +276,7 @@ await mkdir(repo, { recursive: true })
   await call(handler, { method: 'POST', url: '/dsh-git-panel/settings', body: JSON.stringify({ allowWrite: true, requireConfirm: true }) })
   const tool = registeredTools.get('git_write')
   const bad = await tool.execute({ cwd: join(tmpdir(), 'dgp-not-exist-zzz'), action: 'nonsense', args: [] })
-  check('非法动作优先于目录检查被拒', bad.ok === false && /不支持的写动作/.test(String(bad.error)), JSON.stringify(bad))
+  check('非法动作优先于文件系统检查被拒', bad.ok === false && /不支持的写动作/.test(String(bad.error)), JSON.stringify(bad))
 }
 
 // ---- requireConfirm 两段确认：git_write → pending + token；git_confirm 一次性 ----

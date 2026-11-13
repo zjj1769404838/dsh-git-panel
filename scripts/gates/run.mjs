@@ -101,7 +101,9 @@ check('tools 不再注册 git_remote_info（平台 API 已删）', tools !== nul
 const WRITE_ACTIONS = ['init', 'add', 'commit', 'checkout', 'switch', 'restore', 'reset', 'stash', 'merge', 'rebase', 'push', 'pull', 'fetch', 'cherry-pick', 'revert', 'tag', 'branch', 'clean']
 check('git_write 动作面覆盖基础 git（拍板红线）', tools !== null && WRITE_ACTIONS.every((action) => tools.includes(`'${action}'`)))
 check('git_write 仍走 confirmToken 机制', tools !== null && tools.includes('confirmToken') && tools.includes('pendingWrites'))
-check('tools 授权闸门=目录白名单（repo 三档已删）', tools !== null && tools.includes('isRootAllowed') && !tools.includes('isRepoAllowed'))
+// v3.3 拍板改契约（透明披露）：目录白名单闸门整体移除——旧断言「授权闸门=目录白名单」作废，
+// 换成防复活断言：store/tools/handler 不得再出现 isRootAllowed/allowedRoots/normalizeRoots 标识符。
+check('目录白名单闸门已移除且防复活（isRootAllowed 零出现）', tools !== null && !tools.includes('isRootAllowed') && !tools.includes('allowedRoots'))
 
 // ---- store 契约 ----
 const store = await readText(resolve(root, 'src/node/store.ts'))
@@ -121,7 +123,8 @@ check('client 导出 inject + apply', clientIndex !== null && clientIndex.includ
 check('client 注册 conversation.input.left', clientIndex !== null && clientIndex.includes("'conversation.input.left'"))
 check('client 不再注册 settings.section（v3.2 拍板：设置并入面板）', clientIndex !== null && !clientIndex.includes("'settings.section'"))
 check('面板含账号与授权折叠区（GearSection + details）', clientIndex !== null && clientIndex.includes('GearSection') && clientIndex.includes('<details'))
-check('折叠区覆盖账号/目录/写策略三块', clientIndex !== null && clientIndex.includes('/pat/connect') && clientIndex.includes('/oauth/start') && clientIndex.includes('allowedRoots') && clientIndex.includes('allowWrite'))
+check('折叠区覆盖账号/写策略两块（目录编辑已随 v3.3 移除）', clientIndex !== null && clientIndex.includes('/pat/connect') && clientIndex.includes('/oauth/start') && clientIndex.includes('allowWrite') && !clientIndex.includes('allowedRoots'))
+check('client 防复活：不再出现目录白名单标识符', clientIndex !== null && !clientIndex.includes('rootsTitle') && !clientIndex.includes('saveRoots'))
 check('指令模板统一引用 git_write（乙案受控通道）', clientIndex !== null && (clientIndex.match(/git_write/g) ?? []).length >= 6)
 check('client 调用 injectCommand 注入', clientIndex !== null && clientIndex.includes('injectCommand('))
 const shared = await readText(resolve(root, 'src/client/shared.tsx'))

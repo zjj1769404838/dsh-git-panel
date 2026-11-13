@@ -26,8 +26,6 @@ export interface AccountRecord {
 }
 
 export interface Settings {
-  /** 允许 Agent 操作的本地工作区根目录（绝对路径）；本地 git 命令只在这些目录内执行。 */
-  allowedRoots: string[]
   /** 是否允许写操作（git_write）。默认关闭。 */
   allowWrite: boolean
   /** 写操作前是否要求用户在界面上确认（git_write → git_confirm）。 */
@@ -44,28 +42,10 @@ export interface PanelState {
 }
 
 const DEFAULT_SETTINGS: Settings = {
-  allowedRoots: [],
   allowWrite: false,
   requireConfirm: true,
   defaultAccountId: '',
   autoSubmit: false,
-}
-
-function normalizeRoot(value: unknown): string | null {
-  if (typeof value !== 'string') return null
-  const raw = value.trim()
-  if (raw.length === 0) return null
-  return raw.replace(/[\\/]+$/, '')
-}
-
-export function normalizeRoots(input: unknown): string[] {
-  if (!Array.isArray(input)) return []
-  const out: string[] = []
-  for (const item of input) {
-    const root = normalizeRoot(item)
-    if (root && !out.includes(root)) out.push(root)
-  }
-  return out
 }
 
 function emptyState(): PanelState {
@@ -112,7 +92,6 @@ export class PanelStore {
             lastError: typeof item.lastError === 'string' ? item.lastError : '',
           })),
         settings: {
-          allowedRoots: normalizeRoots(raw.settings?.allowedRoots),
           allowWrite: raw.settings?.allowWrite === true,
           requireConfirm: raw.settings?.requireConfirm !== false,
           defaultAccountId: typeof raw.settings?.defaultAccountId === 'string' ? raw.settings.defaultAccountId : '',
@@ -142,7 +121,7 @@ export class PanelStore {
     return {
       version: this.state.version,
       accounts: this.state.accounts.map((item) => ({ ...item, secret: '' })),
-      settings: { ...this.state.settings, allowedRoots: [...this.state.settings.allowedRoots] },
+      settings: { ...this.state.settings },
     }
   }
 
@@ -242,28 +221,13 @@ export class PanelStore {
 
   updateSettings(patch: Partial<Settings>): Settings {
     const next = { ...this.state.settings, ...patch }
-    if ('allowedRoots' in patch) next.allowedRoots = normalizeRoots(patch.allowedRoots)
     if ('allowWrite' in patch) next.allowWrite = patch.allowWrite === true
     if ('requireConfirm' in patch) next.requireConfirm = patch.requireConfirm !== false
     if ('autoSubmit' in patch) next.autoSubmit = patch.autoSubmit === true
     if (typeof next.defaultAccountId !== 'string') next.defaultAccountId = ''
     this.state.settings = next
     this.persist()
-    return { ...next, allowedRoots: [...next.allowedRoots] }
-  }
-
-  /** 本地目录是否在授权根目录内（按路径段比较，避免 `/repo-evil` 命中 `/repo`）。`*` 表示全部目录。 */
-  isRootAllowed(dir: string): boolean {
-    const target = normalizeRoot(dir)
-    if (!target) return false
-    if (this.state.settings.allowedRoots.includes('*')) return true
-    const norm = (value: string) => value.replace(/\\/g, '/').toLowerCase()
-    const targetNorm = norm(target)
-    return this.state.settings.allowedRoots.some((root) => {
-      const rootNorm = norm(normalizeRoot(root) ?? '')
-      if (!rootNorm) return false
-      return targetNorm === rootNorm || targetNorm.startsWith(rootNorm + '/')
-    })
+    return { ...next }
   }
 
   reset(): void {
@@ -272,4 +236,3 @@ export class PanelStore {
   }
 }
 
-export { normalizeRoot }

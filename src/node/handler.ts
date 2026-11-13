@@ -1,7 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { PanelStore } from './store.js'
-import { normalizeRoots } from './store.js'
 import { readRepoChanges, readRepoStatus } from './git.js'
 import {
   readBranches,
@@ -145,24 +144,6 @@ export function createHandler(deps: HandlerDeps) {
             return
           }
           const status = await readRepoStatus(cwd)
-          if (status.isRepo && !deps.store.isRootAllowed(cwd)) {
-            sendJson(res, 200, {
-              ok: true,
-              status: {
-                isRepo: true,
-                root: status.root,
-                branch: status.branch,
-                detached: status.detached,
-                head: status.head,
-                ahead: 0,
-                behind: 0,
-                changed: status.changed,
-                authorized: false,
-                error: '',
-              },
-            })
-            return
-          }
           sendJson(res, 200, { ok: true, status: { ...status, authorized: true } })
           return
         }
@@ -173,27 +154,15 @@ export function createHandler(deps: HandlerDeps) {
             return
           }
           const changes = await readRepoChanges(cwd)
-          if (changes.isRepo && !deps.store.isRootAllowed(cwd)) {
-            sendJson(res, 200, { ok: true, changes: { isRepo: true, root: '', branch: '', dirty: false, files: [] } })
-            return
-          }
           sendJson(res, 200, { ok: true, changes })
           return
         }
 
-        /** 读端点统一闸门：目录授权（未授权 fail-closed，不泄露仓库内容）。 */
+        /** 读端点统一闸门：目录闸门已随白名单移除（v3.3 拍板：本地目录默认可读），只校验 cwd。 */
         const requireRead = (errorPayload: Record<string, unknown>): string | null => {
           const dir = str(url.searchParams.get('cwd')).trim()
           if (!dir) {
             sendJson(res, 400, { ok: false, error: '缺少 cwd 参数', ...errorPayload })
-            return null
-          }
-          if (!deps.store.isRootAllowed(dir)) {
-            sendJson(res, 403, {
-              ok: false,
-              error: `目录不在可读范围内：${dir}（已授权根目录：${deps.store.settings().allowedRoots.join('、') || '无'}）`,
-              ...errorPayload,
-            })
             return null
           }
           return dir
@@ -486,7 +455,6 @@ export function createHandler(deps: HandlerDeps) {
 
       if (path === '/settings') {
         const patch: Record<string, unknown> = {}
-        if ('allowedRoots' in body) patch.allowedRoots = normalizeRoots(body.allowedRoots)
         if ('allowWrite' in body) patch.allowWrite = body.allowWrite === true
         if ('requireConfirm' in body) patch.requireConfirm = body.requireConfirm !== false
         if ('autoSubmit' in body) patch.autoSubmit = body.autoSubmit === true

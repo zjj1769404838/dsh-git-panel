@@ -110,7 +110,6 @@ export interface AccountView {
 }
 
 export interface SettingsView {
-  allowedRoots: string[]
   allowWrite: boolean
   requireConfirm: boolean
   defaultAccountId: string

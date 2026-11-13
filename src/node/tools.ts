@@ -63,17 +63,9 @@ function fail(error: string, extra: Record<string, unknown> = {}) {
 }
 
 function resolveRoot(ctx: ToolContext, cwd: string) {
-  // 先判授权范围，再看目录是不是仓库：未授权路径连「是不是仓库」都不该被告知。
+  // v3.3 拍板：目录白名单移除——任何目录都可读可操作；
+  // 写侧约束仍由 allowWrite + requireConfirm 两段确认兜底（ensureRepo 继续把「绝对路径 + 真实仓库」两道硬校验）。
   if (typeof cwd !== 'string' || cwd.trim().length === 0) return { error: '缺少工作目录参数（cwd）' }
-  if (!ctx.store.isRootAllowed(cwd)) {
-    const allowed = ctx.store.settings().allowedRoots
-    return {
-      error:
-        `目录 ${cwd} 不在允许范围内。已授权根目录：` +
-        (allowed.length > 0 ? allowed.join('、') : '（尚未设置）') +
-        '。请让用户在 Git 面板的「本地目录」里添加该目录。',
-    }
-  }
   const repo = ensureRepo(cwd)
   if (!repo.ok) return { error: repo.error ?? '目录不可用' }
   return { root: repo.root! }
@@ -106,7 +98,7 @@ export function registerGitTools(ctx: ToolContext): () => void {
   add({
     name: 'git_panel_status',
     description:
-      '查看 Git 面板状态：已连接账号（脱敏）、允许操作的本地目录、是否允许写操作、写操作是否需确认。调用任何其它 git_* 工具前可先查这个确认权限范围。',
+      '查看 Git 面板状态：已连接账号（脱敏）、是否允许写操作、写操作是否需确认。调用任何其它 git_* 工具前可先查这个确认权限范围。',
     parameters: { type: 'object', properties: {}, required: [] },
     output: { schema: OBJECT_SCHEMA, render: (_args: any, value: any) => textBlocks(JSON.stringify(value, null, 2)) },
     async execute() {
@@ -122,13 +114,9 @@ export function registerGitTools(ctx: ToolContext): () => void {
           lastCheckedAt: item.lastCheckedAt,
           lastError: item.lastError,
         })),
-        allowedRoots: settings.allowedRoots,
         allowWrite: settings.allowWrite,
         requireConfirm: settings.requireConfirm,
-        note:
-          settings.allowedRoots.length === 0
-            ? '尚未授权任何本地目录：所有 git_* 工具都会被拒绝，请让用户在 Git 面板里添加目录。'
-            : '本地操作仅限 allowedRoots 内（含子目录）的仓库。',
+        note: '本地目录不限（v3.3 起无目录白名单）；读操作直接执行，写操作受 allowWrite 与 requireConfirm 约束。',
       })
     },
   })
@@ -136,7 +124,7 @@ export function registerGitTools(ctx: ToolContext): () => void {
   add({
     name: 'git_repo_info',
     description:
-      '读取本地仓库基本信息：当前分支、远端地址（已脱敏）、工作区改动统计、最近一次提交。cwd 必须是已授权的本地仓库根目录。',
+      '读取本地仓库基本信息：当前分支、远端地址（已脱敏）、工作区改动统计、最近一次提交。cwd 需是本地仓库根目录（绝对路径）。',
     parameters: {
       type: 'object',
       properties: { cwd: { type: 'string', description: '本地仓库根目录的绝对路径' } },

@@ -1,6 +1,6 @@
 {
   "name": "@zjjlivingfree/dsh-git-panel",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "DSH Git 面板（v3 极简）：输入框旁 chip 展示仓库状态，动作按钮把 git 指令注入输入框交给 AI 经 git_write/git_confirm 受控执行；支持 GitHub OAuth 设备码与 PAT，令牌加密保存、永不明文回显。",
   "type": "module",
   "main": "lib/index.js",

@@ -116,8 +116,7 @@ const ZH: Dict = {
   refresh: '刷新',
   close: '关闭',
   notRepo: '当前会话目录不是 Git 仓库',
-  notRepoHint: '可让 AI 初始化仓库，或在「账号与授权」里把该目录加入授权范围。',
-  unauthorized: '该目录不在授权范围内（下方「账号与授权」里添加）',
+  notRepoHint: '可让 AI 初始化仓库（下方「动作」区有对应按钮）。',
   changedFiles: '改动文件',
   noChanges: '工作区干净',
   recentCommits: '最近提交',
@@ -148,10 +147,6 @@ const ZH: Dict = {
   injectFailed: '注入失败',
   detectFailed: '无法检测仓库状态',
   retry: '重新检测',
-  rootsTitle: '允许操作的本地目录',
-  rootsHint: '每行一个绝对路径；* 表示不限制。AI 只在这些目录（含子目录）内执行 git。',
-  save: '保存',
-  saved: '已保存',
   allowWrite: '允许 Agent 修改仓库',
   allowWriteHint: '总开关：关闭时 git_write 一律拒绝。',
   requireConfirm: '写操作前需要我确认',
@@ -181,8 +176,7 @@ const EN: Dict = {
   refresh: 'Refresh',
   close: 'Close',
   notRepo: 'This session directory is not a Git repository',
-  notRepoHint: 'Let the AI init a repo, or authorize this directory below.',
-  unauthorized: 'Directory outside the authorized scope (add it under Accounts & Access)',
+  notRepoHint: 'Let the AI init a repo (button below).',
   changedFiles: 'Changed files',
   noChanges: 'Working tree clean',
   recentCommits: 'Recent commits',
@@ -212,10 +206,6 @@ const EN: Dict = {
   injectFailed: 'Inject failed',
   detectFailed: 'Cannot detect repository status',
   retry: 'Check again',
-  rootsTitle: 'Authorized local directories',
-  rootsHint: 'One absolute path per line; * means no limit.',
-  save: 'Save',
-  saved: 'Saved',
   allowWrite: 'Allow the agent to modify repositories',
   allowWriteHint: 'Master switch: git_write refuses when off.',
   requireConfirm: 'Ask me before every write',
@@ -287,9 +277,7 @@ function useSessionCwd(sessions: SessionsService | undefined, sessionId: string)
 // ─── 折叠区：账号与授权（原设置页分节全部内容并入面板）───
 
 function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; accounts: AccountView[]; onAccounts: (next: AccountView[]) => void }) {
-  const [rootsText, setRootsText] = useState<string | null>(null)
   const [flags, setFlags] = useState<{ allowWrite: boolean; requireConfirm: boolean } | null>(null)
-  const [saved, setSaved] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [method, setMethod] = useState<'pat' | 'oauth'>('pat')
   const [token, setToken] = useState('')
@@ -308,18 +296,17 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
 
   // 首次展开时拉一次 state；之后账号变更由父级同步进来。
   const ensureLoaded = useCallback(async () => {
-    if (rootsText !== null && flags !== null) return
+    if (flags !== null) return
     try {
       const data = await api<{ ok: boolean; state?: PanelState }>('/state')
       if (data.ok && data.state) {
-        setRootsText(data.state.settings.allowedRoots.join('\n'))
         setFlags({ allowWrite: data.state.settings.allowWrite, requireConfirm: data.state.settings.requireConfirm })
         onAccounts(data.state.accounts)
       }
     } catch (err) {
       setError((err as Error).message)
     }
-  }, [rootsText, flags, onAccounts])
+  }, [flags, onAccounts])
 
   const applySettings = async (patch: Record<string, unknown>) => {
     try {
@@ -334,15 +321,6 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
       setError((err as Error).message)
     }
     return null
-  }
-
-  const saveRoots = async () => {
-    const allowedRoots = (rootsText ?? '').split('\n').map((line) => line.trim()).filter(Boolean)
-    const state = await applySettings({ allowedRoots })
-    if (state) {
-      setSaved(true)
-      window.setTimeout(() => setSaved(false), 1500)
-    }
   }
 
   const toggleFlag = async (key: 'allowWrite' | 'requireConfirm', value: boolean) => {
@@ -480,13 +458,6 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
           </div>
         )}
 
-        <div className="dgp-sect-title" style={{ marginTop: 10 }}>{t('rootsTitle')}</div>
-        <div className="dgp-muted">{t('rootsHint')}</div>
-        <textarea className="dgp-input" rows={3} value={rootsText ?? ''} placeholder={rootsText === null ? '…' : ''} onChange={(e) => setRootsText(e.target.value)} />
-        <div className="dgp-btnrow" style={{ marginTop: 6 }}>
-          <button type="button" className="dgp-btn" disabled={rootsText === null} onClick={() => void saveRoots()}>{saved ? t('saved') : t('save')}</button>
-        </div>
-
         <div style={{ marginTop: 8 }}>
           <label className="dgp-toggle">
             <input type="checkbox" checked={flags?.allowWrite === true} disabled={flags === null} onChange={(e) => void toggleFlag('allowWrite', e.target.checked)} />
@@ -551,7 +522,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
       if (data.ok && data.status) {
         setStatus(data.status)
         setDetectError('')
-        if (data.status.isRepo && data.status.authorized) {
+        if (data.status.isRepo) {
           const [changes, log, state] = await Promise.all([
             api<{ ok: boolean; changes?: RepoChangesView }>(`/repo/changes?cwd=${encodeURIComponent(cwd)}`).catch(() => null),
             api<{ ok: boolean; commits?: CommitRowView[] }>(`/repo/commits?cwd=${encodeURIComponent(cwd)}&limit=5`).catch(() => null),
@@ -629,7 +600,6 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
   }
 
   const isRepo = status?.isRepo === true
-  const authorized = status?.authorized === true
 
   return (
     <span className="dgp-root" ref={chipRef}>
@@ -649,7 +619,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
         <span className="dgp-chip-branch">
           {checking && !status ? '…' : isRepo ? status?.branch || '—' : 'Git'}
         </span>
-        {isRepo && authorized && (
+        {isRepo && (
           <span className="dgp-chip-badge">
             {status!.ahead > 0 ? `↑${status!.ahead}` : ''}
             {status!.behind > 0 ? `↓${status!.behind}` : ''}
@@ -704,9 +674,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
               </div>
             )}
 
-            {isRepo && !authorized && <div className="dgp-sect"><div className="dgp-empty">{t('unauthorized')}</div></div>}
-
-            {isRepo && authorized && (
+            {isRepo && (
               <>
                 <div className="dgp-sect">
                   <div className="dgp-sect-title">{t('changedFiles')} ({files.length})</div>

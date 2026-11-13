@@ -14,7 +14,7 @@ v3.2 起宿主设置页不再有 Git 分节：账号连接、本地目录白名�
 | 弹层·改动 | 未提交文件列表（状态字母 + 增删行数） |
 | 弹层·历史 | 最近 5 条提交摘要 |
 | 弹层·动作 | 暂存全部 / 提交… / 推送 / 拉取 / 抓取 / 新建分支… / 切换分支… / 丢弃改动… / 贮藏 / 打标签… /（非仓库时）初始化仓库 |
-| 弹层·账号与授权 | 折叠区：GitHub 账号连接（PAT / OAuth 设备码）、本地目录白名单、allowWrite 与 requireConfirm 两个写策略开关 |
+| 弹层·账号与授权 | 折叠区：GitHub 账号连接（PAT / OAuth 设备码）、allowWrite 与 requireConfirm 两个写策略开关 |
 | 直接提交 | 开关：注入后插件代按发送按钮（找不到发送按钮时自动退化为"停在输入框"并提示） |
 
 带 `…` 的按钮先弹出参数输入（分支名 / 文件 / 提交意图 / 标签名），参数留空则指令里保留 `<占位>` 由 AI 反问。注入的指令可编辑后再回车——发起权在按钮，落锤权在你。
@@ -25,7 +25,7 @@ v3.2 起宿主设置页不再有 Git 分节：账号连接、本地目录白名�
 
 - `git_write` 动作面覆盖基础 git：init / add / commit / checkout / switch / restore / reset / stash / merge / rebase / push / pull / fetch / cherry-pick / revert / tag / branch / clean。
 - 开启「写操作前需要我确认」时，`git_write` 只返回 confirmToken 与摘要，AI 必须经你点头再调 `git_confirm`；取消也会作废该 token。
-- 所有本地 git 命令只在「Git 面板 → 账号与授权 → 允许操作的本地目录」白名单内执行；未授权目录连读取都被拒（fail-closed）。
+- 所有本地 git 命令在任何目录都可执行（v3.3 拍板：目录白名单已移除）；写操作仍受 allowWrite 总开关与 confirmToken 两段确认约束，非仓库目录会给出可读错误。
 
 ## 三、安装
 
