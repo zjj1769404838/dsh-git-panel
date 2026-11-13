@@ -258,12 +258,13 @@ export const CSS = `
 .dgp-btn { border: 1px solid var(--dgp-border-strong); background: var(--dgp-bg-soft); color: var(--dgp-fg);
   border-radius: 7px; padding: 5px 11px; cursor: pointer; font-size: 12px; line-height: 16px;
   transition: transform 120ms ease-out, background 150ms ease, border-color 150ms ease, color 150ms ease, filter 150ms ease; }
-.dgp-btn:hover:not(:disabled) { border-color: var(--dgp-accent); background: var(--dgp-bg-hover); }
+/* 实心强调按钮不套用通用 hover 背景：否则浅色主题下会变成「白字 + 浅灰底」看不清（v3.12 修复）。 */
+.dgp-btn:hover:not(:disabled):not(.dgp-btn-accent) { border-color: var(--dgp-accent); background: var(--dgp-bg-hover); }
 .dgp-btn:active:not(:disabled) { transform: translateY(1px); }
 .dgp-btn:disabled { opacity: .4; cursor: default; }
 .dgp-btn-primary { border-color: var(--dgp-accent); color: var(--dgp-accent); font-weight: 600; }
 .dgp-btn-accent { background: var(--dgp-accent); color: var(--dgp-accent-fg); border-color: var(--dgp-accent); font-weight: 600; }
-.dgp-btn-accent:hover:not(:disabled) { filter: brightness(1.08); border-color: var(--dgp-accent); }
+.dgp-btn-accent:hover:not(:disabled) { background: var(--dgp-accent); color: var(--dgp-accent-fg); filter: brightness(1.08); border-color: var(--dgp-accent); }
 .dgp-btn-danger { color: var(--dgp-danger); border-color: rgba(239,68,68,.5); }
 .dgp-btn-danger:hover:not(:disabled) { border-color: var(--dgp-danger); }
 .dgp-btnrow { display: flex; flex-wrap: wrap; gap: 6px; }
