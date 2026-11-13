@@ -125,6 +125,12 @@ check('client 不再注册 settings.section（v3.2 拍板：设置并入面板�
 check('面板含账号与授权折叠区（GearSection + details）', clientIndex !== null && clientIndex.includes('GearSection') && clientIndex.includes('<details'))
 check('折叠区覆盖账号/写策略两块（目录编辑已随 v3.3 移除）', clientIndex !== null && clientIndex.includes('/pat/connect') && clientIndex.includes('/oauth/start') && clientIndex.includes('allowWrite') && !clientIndex.includes('allowedRoots'))
 check('client 防复活：不再出现目录白名单标识符', clientIndex !== null && !clientIndex.includes('rootsTitle') && !clientIndex.includes('saveRoots'))
+// v3.9：npm 凭据卡（像连 GitHub 账号一样连 npm：验证 token → 写 ~/.npmrc 官方源 authToken 行）
+check('npm 卡端点契约：/npm/status + /npm/connect 在 handler 与 client 双侧在位', handler !== null && handler.includes("'/npm/connect'") && handler.includes("'/npm/status'") && clientIndex !== null && clientIndex.includes('/npm/connect') && clientIndex.includes('/npm/status'))
+const npmMod = await readText(resolve(root, 'src/node/npm.ts'))
+check('npm 模块契约：whoami Bearer 验证 + 仅写 TOKEN_KEY 行 + 备份语义', npmMod !== null && npmMod.includes('/-/whoami') && npmMod.includes('//registry.npmjs.org/:_authToken') && npmMod.includes('copyFileSync'))
+check('npm 模块零泄漏：响应视图不含 token 字段（npmConfigView 只回 configured/masked）', npmMod !== null && npmMod.includes('npmConfigView') && !/return \{ configured: true/.test(npmMod.replace(/\n/g, ' ')))
+check('npm-publish 指令模板指向面板 npm 卡（不再要求手动 npm login 为唯一路径）', clientIndex !== null && clientIndex.includes('「账号与授权 → npm」'))
 check('指令模板统一引用 git_write（乙案受控通道）', clientIndex !== null && (clientIndex.match(/git_write/g) ?? []).length >= 6)
 check('client 调用 injectCommand 注入', clientIndex !== null && clientIndex.includes('injectCommand('))
 const shared = await readText(resolve(root, 'src/client/shared.tsx'))

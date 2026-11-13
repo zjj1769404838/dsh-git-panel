@@ -116,7 +116,7 @@ const COMMANDS: CommandSpec[] = [
     labelKey: 'cmdNpmPublish',
     build: (cwd) =>
       `请把当前项目（${cwd}）发布到 npm。我点这个按钮就是最终授权：此后你全程自主执行到终验完成，不要逐步回来问我，除非撞上下面两种「需要我手动处理」的前置失败。这是不可逆外部写操作，禁止凭 exit 0 判定发布成功。` +
-      `1) 前置检查（两种可停情况）：a. 执行 npm whoami --registry=https://registry.npmjs.org——未登录/无凭据就停止，只输出需要我手动做的配置步骤（npm login，或把官方源 authToken 配进 ~/.npmrc；和配 git token 同理，配好一次之后全程就归你自动跑），不得替我登录、不得索要或回显任何 token；b. 带 ?nocache= 时间戳直查 https://registry.npmjs.org/<包名>（官方源为权威，勿经镜像），若我要发的版本已存在也停止并报告（name+version 永久占用不可复用）；` +
+      `1) 前置检查（两种可停情况）：a. 执行 npm whoami --registry=https://registry.npmjs.org——未登录/无凭据就停止，提示用户在本面板「账号与授权 → npm」卡里粘贴 token 连接（本插件会先向官方源验证、再写入 ~/.npmrc，等同 npm login；和配 git token 同理，配好一次之后全程就归你自动跑）；用户不便用面板时可指引 npm login；不得替用户登录、不得索要 token 到聊天里、不得回显任何 token；b. 带 ?nocache= 时间戳直查 https://registry.npmjs.org/<包名>（官方源为权威，勿经镜像），若我要发的版本已存在也停止并报告（name+version 永久占用不可复用）；` +
       `2) 自动执行段：读取 package.json 的 name/version/files 核对；若仓库存在多处版本声明（lockfile、源码常量）逐处比对，不一致停止并列出差异；npm pack --dry-run 取产物清单（写入最终汇报即可，不用停下等我过目）；然后直接执行 npm publish --registry=https://registry.npmjs.org --access=public（scoped 包必须显式 --access=public；不得修改我的任何配置文件）；` +
       `3) 自主终验：PUT 返回 202 只代表 staged，禁止重发；带 ?nocache= 轮询 packument 直至该版本出现，以 packument 为权威；` +
       `4) 失败分层归因（网络→身份→配置→实现），错误码会伪装（如 404 掩盖权限/邮箱问题），归因坐实前不重试；E401/ENEEDAUTH 优先核对是否漏钉官方源或凭据失效；` +
@@ -157,6 +157,14 @@ const ZH: Dict = {
   clientIdHint: '本插件不内置任何应用凭据：需你自建 GitHub OAuth App 并填入 Client ID。',
   userCode: '浏览器打开下面的地址并输入代码完成授权',
   waiting: '等待授权…',
+  npmAccount: 'npm 发布账号',
+  npmNoAccount: '未配置 npm 凭据（发布按钮会提示先配置）',
+  npmConnect: '连接 npm',
+  npmReconnect: '重新连接',
+  npmError: '凭据校验失败',
+  npmTokenLabel: 'npm token',
+  npmTokenHint: '在 npmjs.com → Access Tokens 生成；验证通过后写入 ~/.npmrc（等同 npm login），保存后不再回显。',
+  npmTokenPlaceholder: '粘贴 npm token（npm_ 或旧式长 hex 均可）',
   connect: '连接',
   cancel: '取消',
   disconnect: '断开',
@@ -220,6 +228,14 @@ const EN: Dict = {
   clientIdHint: 'No third-party app credential is bundled: create your own GitHub OAuth App and paste its Client ID.',
   userCode: 'Open the URL below in a browser and enter the code',
   waiting: 'Waiting for authorization…',
+  npmAccount: 'npm publishing account',
+  npmNoAccount: 'No npm credential (the publish button will tell you to set one up)',
+  npmConnect: 'Connect npm',
+  npmReconnect: 'Reconnect',
+  npmError: 'Credential check failed',
+  npmTokenLabel: 'npm token',
+  npmTokenHint: 'Create one at npmjs.com → Access Tokens; after verification it is written to ~/.npmrc (same as npm login) and never shown again.',
+  npmTokenPlaceholder: 'Paste npm token (npm_ or legacy long hex)',
   connect: 'Connect',
   cancel: 'Cancel',
   disconnect: 'Disconnect',
@@ -482,6 +498,8 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
           </div>
         )}
 
+        <NpmCard t={t} />
+
         <div style={{ marginTop: 8 }}>
           <label className="dgp-toggle">
             <input type="checkbox" checked={flags?.allowWrite === true} disabled={flags === null} onChange={(e) => void toggleFlag('allowWrite', e.target.checked)} />
@@ -493,6 +511,95 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
           </label>
         </div>
       </details>
+    </div>
+  )
+}
+
+// ─── npm 凭据卡（v3.9）：像连 GitHub 账号一样连 npm ───
+// 状态来自 node 端 /npm/status（读 ~/.npmrc 官方源 authToken 行 + whoami 验真）；
+// 连接 = POST /npm/connect：node 端先验证 token 再写入 ~/.npmrc（等同 npm login）。
+
+interface NpmStatusView {
+  configured: boolean
+  masked: string
+  username: string
+  status: 'connected' | 'error' | 'none'
+  error: string
+}
+
+function NpmCard({ t }: { t: (key: string) => string }) {
+  const [view, setView] = useState<NpmStatusView | null>(null)
+  const [token, setToken] = useState('')
+  const [open, setOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const load = useCallback(async () => {
+    try {
+      const data = await api<{ ok: boolean; npm?: NpmStatusView }>('/npm/status', {})
+      if (data.ok && data.npm) setView(data.npm)
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }, [])
+
+  useEffect(() => {
+    void load()
+  }, [load])
+
+  const connect = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      const data = await api<{ ok: boolean; username?: string; error?: string }>('/npm/connect', { token })
+      if (data.ok) {
+        setOpen(false)
+        setToken('')
+        await load()
+      } else {
+        setError(data.error ?? t('injectFailed'))
+      }
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="dgp-sect">
+      <div className="dgp-sect-title">{t('npmAccount')}</div>
+      {error && <div className="dgp-empty" role="alert">{error}</div>}
+      {view?.status === 'connected' && (
+        <div className="dgp-account">
+          <Dot state="connected" />
+          <span className="dgp-acct-login" title={view.username}>{view.username}</span>
+          <span className="dgp-muted">npm · {view.masked}</span>
+        </div>
+      )}
+      {view?.status === 'error' && (
+        <div className="dgp-account">
+          <Dot state="error" />
+          <span className="dgp-muted">{t('npmError')}: {view.error}</span>
+          <span className="dgp-spacer" />
+          <button type="button" className="dgp-btn" onClick={() => setOpen(true)}>{t('npmReconnect')}</button>
+        </div>
+      )}
+      {(view === null || view.status === 'none') && <div className="dgp-empty">{t('npmNoAccount')}</div>}
+      {view?.status !== 'connected' && !open && (
+        <button type="button" className="dgp-btn" style={{ marginTop: 6 }} onClick={() => setOpen(true)}>{t('npmConnect')}</button>
+      )}
+      {open && (
+        <div className="dgp-card">
+          <div className="dgp-sect-title">{t('npmTokenLabel')}</div>
+          <div className="dgp-muted">{t('npmTokenHint')}</div>
+          <input className="dgp-input" type="password" autoComplete="off" aria-label={t('npmTokenLabel')} placeholder={t('npmTokenPlaceholder')} value={token} onChange={(e) => setToken(e.target.value)} />
+          <div className="dgp-btnrow" style={{ marginTop: 8 }}>
+            <button type="button" className="dgp-btn" disabled={busy || token.trim().length === 0} onClick={() => void connect()}>{t('connect')}</button>
+            <button type="button" className="dgp-btn" onClick={() => setOpen(false)}>{t('cancel')}</button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

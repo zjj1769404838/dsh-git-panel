@@ -228,6 +228,26 @@ check('无 git_remote_info（平台 API 已删）', !registeredTools.has('git_re
   check('非仓库目录返回可读原因（而非授权话术）', r.json?.ok === false && !/授权|白名单|allowed/i.test(String(r.json?.error ?? 'x')) && String(r.json?.error ?? '').length > 0, JSON.stringify(r.json))
 }
 
+// ---- npm 凭据卡：/npm/connect 无效 token fail-closed（400，不落盘）----
+{
+  const r = await call(handler, {
+    method: 'POST',
+    url: '/dsh-git-panel/npm/connect',
+    body: JSON.stringify({ token: 'npm_definitely_invalid_token_000' }),
+  })
+  check('无效 npm token 被拒 400', r.status === 400 && r.json?.ok === false, `${r.status} ${JSON.stringify(r.json)}`)
+  check('拒绝原因可读且不回显 token', typeof r.json?.error === 'string' && r.json.error.length > 0 && !String(r.json.error).includes('npm_definitely_invalid'), JSON.stringify(r.json))
+}
+
+// ---- /npm/status 响应零明文 token ----
+{
+  const r = await call(handler, { method: 'POST', url: '/dsh-git-panel/npm/status', body: JSON.stringify({}) })
+  check('npm status ok', r.json?.ok === true, JSON.stringify(r.json))
+  const body = String(r.body)
+  check('status 响应不含 _authToken 明文形态', !/_authToken=|npm_[A-Za-z0-9]{20,}/.test(body), body.slice(0, 140))
+  check('status 字段形状合法（configured/masked/username/status）', r.json?.npm && typeof r.json.npm.configured === 'boolean' && 'masked' in r.json.npm && 'username' in r.json.npm, body.slice(0, 140))
+}
+
 // ---- 真实仓库：任意目录直接可读（v3.3 起无授权步骤）----
 const repo = join(tmp, 'repo')
 await mkdir(repo, { recursive: true })

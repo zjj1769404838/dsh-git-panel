@@ -17,6 +17,7 @@ import {
   startDeviceFlow,
   verifyToken,
 } from './providers.js'
+import { configureNpmToken, npmConfigView, npmTokenFromNpmrc, whoamiNpm } from './npm.js'
 import { redact } from './vault.js'
 
 export const ROUTE_PREFIX = '/dsh-git-panel'
@@ -450,6 +451,43 @@ export function createHandler(deps: HandlerDeps) {
           scopes: verified.identity?.scopes?.length ? verified.identity.scopes : account.scopes,
         })
         sendJson(res, 200, { ok: true, state: deps.store.snapshot() })
+        return
+      }
+
+      // ---- npm 发布凭据（发布走 AI 执行，npm 凭据配进 npm 官方存储位置 ~/.npmrc）----
+      // 连接：验证 token → 写入 ~/.npmrc 的官方源 authToken 行（等同 npm login 效果）。
+      if (path === '/npm/connect') {
+        const token = str(body.token).trim()
+        if (token.length === 0) {
+          sendJson(res, 400, { ok: false, error: '请填写 npm token' })
+          return
+        }
+        const identity = await whoamiNpm(token)
+        if (!identity.ok || !identity.username) {
+          sendJson(res, 400, { ok: false, error: identity.error ?? 'token 验证失败' })
+          return
+        }
+        const written = configureNpmToken(token)
+        if (!written.ok) {
+          sendJson(res, 500, { ok: false, error: written.error ?? '写入失败' })
+          return
+        }
+        deps.log?.('info', `npm 凭据已配置：${identity.username}（写入 ~/.npmrc 官方源 authToken 行）`)
+        sendJson(res, 200, { ok: true, username: identity.username, npm: npmConfigView() })
+        return
+      }
+      // 状态查询：界面只拿掩码；whoami 验真在服务端内部用明文 token，不外泄。
+      if (path === '/npm/status') {
+        const view = npmConfigView()
+        if (view.configured) {
+          const identity = await whoamiNpm(npmTokenFromNpmrc())
+          sendJson(res, 200, {
+            ok: true,
+            npm: { configured: true, masked: view.masked, username: identity.ok ? identity.username : '', status: identity.ok ? 'connected' : 'error', error: identity.ok ? '' : identity.error ?? '' },
+          })
+          return
+        }
+        sendJson(res, 200, { ok: true, npm: { configured: false, masked: '', username: '', status: 'none', error: '' } })
         return
       }
 
