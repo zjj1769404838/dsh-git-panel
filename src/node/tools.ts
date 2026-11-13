@@ -1,9 +1,6 @@
 import { randomBytes } from 'node:crypto'
 import type { PanelStore } from './store.js'
-import { normalizeRepo } from './store.js'
 import { ensureRepo, runGit } from './git.js'
-import { fetchRepo, PROVIDERS, providerOf } from './providers.js'
-import { parseRemoteRepo } from './git-ops.js'
 import { redact } from './vault.js'
 
 const OBJECT_SCHEMA = { type: 'object', additionalProperties: true }
@@ -21,7 +18,6 @@ export interface ToolContext {
 
 interface PendingWrite {
   token: string
-  repo: string
   root: string
   args: string[]
   action: string
@@ -33,23 +29,37 @@ const PENDING_TTL_MS = 5 * 60_000
 /** 待确认的写操作队列（内存态；重启即失效，符合「不落盘、不残留」的预期）。 */
 const pendingWrites = new Map<string, PendingWrite>()
 
+/**
+ * git_write 允许的子命令（v3 极简化：执行权从 UI 移交 Agent，动作面对齐基础 git）。
+ * 与 git.ts 的 WRITE 集合一致；merge/rebase/cherry-pick 需确认流兜底。
+ */
+const WRITE_ACTIONS = [
+  'init',
+  'add',
+  'commit',
+  'checkout',
+  'switch',
+  'restore',
+  'reset',
+  'stash',
+  'merge',
+  'rebase',
+  'push',
+  'pull',
+  'fetch',
+  'cherry-pick',
+  'revert',
+  'tag',
+  'branch',
+  'clean',
+]
+
 function ok(value: unknown) {
   return { ok: true, ...(value as object) }
 }
 
 function fail(error: string, extra: Record<string, unknown> = {}) {
   return { ok: false, error, ...extra }
-}
-
-function requireAccount(ctx: ToolContext, accountId?: string) {
-  const account = ctx.store.activeAccount(accountId)
-  if (!account) return { error: '尚未接入任何 Git 账号，请先在输入框左侧的 Git 面板里连接账号（支持 OAuth 或访问令牌）' }
-  if (account.status === 'expired') {
-    return { error: `账号 ${account.login} 的授权已失效，请在 Git 面板里重新授权` }
-  }
-  const token = ctx.store.revealSecret(account.id)
-  if (!token) return { error: `账号 ${account.login} 的凭据无法解密，请重新授权` }
-  return { account, token }
 }
 
 function resolveRoot(ctx: ToolContext, cwd: string) {
@@ -61,7 +71,7 @@ function resolveRoot(ctx: ToolContext, cwd: string) {
       error:
         `目录 ${cwd} 不在允许范围内。已授权根目录：` +
         (allowed.length > 0 ? allowed.join('、') : '（尚未设置）') +
-        '。请让用户在 Git 面板的「仓库范围」里添加该目录。',
+        '。请让用户在 Git 面板的「本地目录」里添加该目录。',
     }
   }
   const repo = ensureRepo(cwd)
@@ -96,7 +106,7 @@ export function registerGitTools(ctx: ToolContext): () => void {
   add({
     name: 'git_panel_status',
     description:
-      '查看 Git 接入状态：已连接账号（脱敏）、授权状态、允许 Agent 操作的远端仓库与本地目录、是否允许写操作。调用任何其它 git_* 工具前可先查这个确认权限范围。',
+      '查看 Git 面板状态：已连接账号（脱敏）、允许操作的本地目录、是否允许写操作、写操作是否需确认。调用任何其它 git_* 工具前可先查这个确认权限范围。',
     parameters: { type: 'object', properties: {}, required: [] },
     output: { schema: OBJECT_SCHEMA, render: (_args: any, value: any) => textBlocks(JSON.stringify(value, null, 2)) },
     async execute() {
@@ -112,14 +122,13 @@ export function registerGitTools(ctx: ToolContext): () => void {
           lastCheckedAt: item.lastCheckedAt,
           lastError: item.lastError,
         })),
-        allowedRepos: settings.allowedRepos,
         allowedRoots: settings.allowedRoots,
         allowWrite: settings.allowWrite,
         requireConfirm: settings.requireConfirm,
         note:
-          settings.allowedRepos.length === 0
-            ? '尚未授权任何远端仓库：远端 API 操作会被拒绝，只能对 allowedRoots 内的本地仓库做只读操作。'
-            : '远端操作仅限 allowedRepos 内仓库。',
+          settings.allowedRoots.length === 0
+            ? '尚未授权任何本地目录：所有 git_* 工具都会被拒绝，请让用户在 Git 面板里添加目录。'
+            : '本地操作仅限 allowedRoots 内（含子目录）的仓库。',
       })
     },
   })
@@ -294,78 +303,15 @@ export function registerGitTools(ctx: ToolContext): () => void {
   })
 
   add({
-    name: 'git_remote_info',
-    description:
-      '查询已授权远端仓库的元信息（默认分支、可见性、最近推送时间、stars 等）。仓库必须在用户授权的 allowedRepos 范围内。',
-    parameters: {
-      type: 'object',
-      properties: {
-        repo: { type: 'string', description: 'owner/repo 形式' },
-        accountId: { type: 'string', description: '可选：指定用哪个已连接账号' },
-      },
-      required: ['repo'],
-    },
-    output: { schema: OBJECT_SCHEMA, render: (_args: any, value: any) => textBlocks(JSON.stringify(value, null, 2)) },
-    async execute(args: any) {
-      const repo = String(args?.repo ?? '').trim()
-      // 远端仓库键：优先按 URL 形态解析，退回 owner/repo 直接归一化。
-      const repoKey = parseRemoteRepo(repo) ?? (normalizeRepo(repo) || null)
-      // 授权判定：优先按「账号 → 仓库」权限表（表内未列出的仓库默认 full）；
-      // 没有权限表的老账号回落到全局 allowedRepos。两条路径都拒绝才报错。
-      const accountId = args?.accountId ? String(args.accountId) : undefined
-      const account0 = accountId ? ctx.store.getAccount(accountId) : ctx.store.activeAccount()
-      if (accountId && !account0) {
-        return fail(`账号 ${accountId} 不存在，请在 Git 面板里重新选择账号后重试。`)
-      }
-      const permitted = account0
-        ? repoKey !== null && ctx.store.isRepoAllowedFor(account0.id, repoKey)
-        : ctx.store.isRepoAllowed(repo)
-      if (!permitted) {
-        const allowed = ctx.store.settings().allowedRepos
-        return fail(
-          `仓库 ${repo} 不在授权范围内。已授权：` +
-            (allowed.length > 0 ? allowed.join('、') : '（尚未授权任何仓库）') +
-            '。请让用户在 Git 面板里添加该仓库后再试。',
-        )
-      }
-      const found = requireAccount(ctx, accountId)
-      if ('error' in found) return fail(found.error!)
-      const account = found.account!
-      const meta = PROVIDERS[providerOf(account.provider)]
-      const result = await fetchRepo(providerOf(account.provider), found.token!, repo, account.apiBase || undefined, account.host)
-      if (!result.ok) {
-        if (/401/.test(result.error ?? '')) ctx.store.markAccount(account.id, { status: 'expired', lastError: result.error })
-        return fail(result.error ?? '查询失败')
-      }
-      const data = result.repo ?? {}
-      const permission = repoKey ? ctx.store.repoPermission(account.id, repoKey) : 'none'
-      return ok({
-        provider: meta.label,
-        account: account.login,
-        repo,
-        repoKey,
-        permission,
-        writable: permission === 'full',
-        defaultBranch: data.default_branch ?? data.default_branch ?? '',
-        private: data.private ?? data.visibility === 'private',
-        description: data.description ?? '',
-        stars: data.stargazers_count ?? data.star_count ?? 0,
-        pushedAt: data.pushed_at ?? data.last_activity_at ?? '',
-        htmlUrl: data.html_url ?? data.web_url ?? '',
-      })
-    },
-  })
-
-  add({
     name: 'git_write',
     description:
-      '执行会改变仓库状态的操作（add / commit / checkout / switch / restore / stash / tag）。' +
+      '执行会改变仓库状态的操作（init / add / commit / checkout / switch / restore / reset / stash / merge / rebase / push / pull / fetch / cherry-pick / revert / tag / branch / clean）。' +
       '调用前必须向用户说明将执行的动作与目标仓库；若用户开启了「写操作需确认」，本工具只返回待确认信息与 confirmToken，需再调用 git_confirm 才真正执行。',
     parameters: {
       type: 'object',
       properties: {
         cwd: { type: 'string', description: '本地仓库根目录的绝对路径' },
-        action: { type: 'string', description: '动作名：add / commit / checkout / switch / restore / stash / tag' },
+        action: { type: 'string', description: `动作名：${WRITE_ACTIONS.join(' / ')}` },
         args: { type: 'array', items: { type: 'string' }, description: '传给 git 的附加参数（不含子命令）' },
         reason: { type: 'string', description: '为什么要做这个改动（会展示给用户）' },
       },
@@ -379,9 +325,8 @@ export function registerGitTools(ctx: ToolContext): () => void {
       }
       // 先做零成本的参数校验，再碰文件系统：非法动作不该因为目录不存在而报出误导性错误。
       const action = String(args?.action ?? '')
-      const allowedActions = ['add', 'commit', 'checkout', 'switch', 'restore', 'stash', 'tag']
-      if (!allowedActions.includes(action)) {
-        return fail(`不支持的写动作：${action || '(空)'}。允许：${allowedActions.join(' / ')}`)
+      if (!WRITE_ACTIONS.includes(action)) {
+        return fail(`不支持的写动作：${action || '(空)'}。允许：${WRITE_ACTIONS.join(' / ')}`)
       }
       const resolved = resolveRoot(ctx, String(args?.cwd ?? ''))
       if ('error' in resolved) return fail(resolved.error!)
@@ -393,7 +338,6 @@ export function registerGitTools(ctx: ToolContext): () => void {
         const token = randomBytes(9).toString('hex')
         pendingWrites.set(token, {
           token,
-          repo: root,
           root,
           args: [action, ...rawArgs],
           action,
@@ -431,8 +375,12 @@ export function registerGitTools(ctx: ToolContext): () => void {
     },
     output: { schema: OBJECT_SCHEMA, render: (_args: any, value: any) => textBlocks(JSON.stringify(value, null, 2)) },
     async execute(args: any) {
-      if (args?.confirmed === false) return fail('用户未同意执行，已取消该写操作')
       const token = String(args?.confirmToken ?? '')
+      if (args?.confirmed === false) {
+        // 取消也要消费 token：拒绝后 AI 不能拿同一 token 换个说法再确认。
+        pendingWrites.delete(token)
+        return fail('用户未同意执行，已取消该写操作（confirmToken 已作废）')
+      }
       const pending = pendingWrites.get(token)
       if (!pending) return fail('确认令牌无效或已过期（有效期 5 分钟），请重新调用 git_write')
       pendingWrites.delete(token)

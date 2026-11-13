@@ -1,7 +1,7 @@
 {
   "name": "@zjjlivingfree/dsh-git-panel",
-  "version": "0.1.0",
-  "description": "Git 账号接入与受控仓库操作：在 DSH 输入框下方左侧加入口，支持 OAuth 设备码与 PAT 两种接入方式，把仓库信息/分支/差异/提交记录与受控写操作封装成 Agent 工具，令牌永不明文回显。",
+  "version": "0.2.0",
+  "description": "DSH Git 面板（v3 极简）：输入框旁 chip 展示仓库状态，动作按钮把 git 指令注入输入框交给 AI 经 git_write/git_confirm 受控执行；支持 GitHub OAuth 设备码与 PAT，令牌加密保存、永不明文回显。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -28,17 +28,11 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "gates": "node scripts/gates/run.mjs",
     "test:hardening": "node scripts/test-hardening.mjs",
-    "preview": "node scripts/shot-preview.mjs",
-    "test:e2e": "node scripts/e2e-settings.mjs",
-    "test": "node scripts/gates/run.mjs && node scripts/test-hardening.mjs",
-    "test:e2e:wb": "node scripts/e2e-workbench.mjs",
-    "test:e2e:newui": "node scripts/e2e-newui.mjs",
-    "test:e2e:v20": "node scripts/e2e-v20.mjs"
+    "test": "node scripts/gates/run.mjs && node scripts/test-hardening.mjs"
   },
   "files": [
     "lib",
     "cordis.patch.yml",
-    "screenshots.json",
     "README.md",
     "LICENSE",
     "docs/*.md",
@@ -56,7 +50,6 @@
   },
   "devDependencies": {
     "@types/node": "^22.20.5",
-    "@types/prismjs": "^1.26.6",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "esbuild": "^0.28.2",
@@ -78,7 +71,5 @@
   "allowScripts": {
     "esbuild@0.28.2": true
   },
-  "dependencies": {
-    "prismjs": "^1.30.0"
-  }
+  "dependencies": {}
 }

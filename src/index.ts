@@ -25,9 +25,6 @@ export function apply(ctx: Context): void {
     store,
     version: PLUGIN_VERSION,
     log,
-    // 软取：模型服务缺失时「生成提交信息」明确不可用，不阻塞其余能力。
-    llm: ctx.get?.('llm'),
-    defaultModel: ctx.get?.('agentDefaultModel'),
   })
 
   ctx.effect(() => {

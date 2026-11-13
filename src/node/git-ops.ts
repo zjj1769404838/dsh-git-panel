@@ -1,6 +1,24 @@
 import { redact } from './vault.js'
 import { ensureRepo, runGit } from './git.js'
-import { normalizeRepo } from './store.js'
+
+/**
+ * 把各种写法的仓库标识归一成 `owner/repo`（v3 极简化：原在 store.ts，
+ * 现仅 parseRemoteRepo 一处使用，本地化于此）。段数 ≥2 时全部保留。
+ */
+function normalizeRepo(value: string): string | null {
+  const raw = value.trim()
+  if (raw.length === 0) return null
+  if (raw === '*') return '*'
+  const cleaned = raw
+    .replace(/^git@[^:]+:/, '')
+    .replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]+\//i, '')
+    .replace(/\.git$/, '')
+    .replace(/^\/+|\/+$/g, '')
+  const parts = cleaned.split('/').filter((segment) => segment.length > 0)
+  if (parts.length < 2) return null
+  if (!parts.every((segment) => /^[\w.-]+$/.test(segment))) return null
+  return parts.join('/')
+}
 
 /**
  * Git 工作台（IDEA 式面板）的命令层：全部走 `runGit`（execFile 参数数组、

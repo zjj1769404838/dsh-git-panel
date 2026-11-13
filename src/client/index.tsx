@@ -1,1201 +1,333 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+/**
+ * client 半边（v3 极简化）：输入框左侧分支 chip + 点击弹层。
+ * 弹层只做两件事：展示只读状态（分支/领先落后/改动文件/最近提交/账号），
+ * 以及「动作按钮」——每个按钮把一条给 Agent 的自然语言指令注入输入框
+ * （指令要求 AI 走 git_write / git_confirm 受控工具执行），绝不本地直接写仓库。
+ * 「直接提交」开关打开时注入后尝试代按发送按钮。
+ */
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import {
   NS,
   api,
-  routeUrl,
   useStyles,
   Dot,
-  BranchIcon,
-  RefreshIcon,
-  CopyIcon,
-  GearIcon,
-  PlusIcon,
-  EmptyState,
-  Skeleton,
-  Toast,
   fmt,
   readPref,
+  writePref,
   subscribePref,
-  PREF_CHIP_HIDDEN,
-  type AccountRepoView,
+  injectCommand,
+  PREF_AUTO_SUBMIT,
   type AccountView,
+  type ChangeFileView,
   type Dict,
   type PanelState,
-  type ProviderView,
-  type RepoPermission,
+  type RepoChangesView,
   type RepoStatusView,
+  type CommitRowView,
 } from './shared.js'
-import { Workbench } from './workbench.js'
-import { GitSection } from './settings.js'
-import { InitWizard, BranchDetailModal } from './onboard.js'
-import { EXTRA_LANGUAGES, EXTRA_LOCALES } from './locales/index.js'
 
-/** 服务短名（不是 package.json 里的全名）。 */
 export const inject = ['slots', 'sessions', 'locale', 'shortcuts']
 
-const BUILD = 'dgp-v22'
+const BUILD = 'dgp-v3-slim'
+
+// ─── 指令模板（乙案：AI 统一走插件的 git_write / git_confirm 受控通道）───
+const TOOL_PREAMBLE =
+  '请通过本项目的 Git 面板工具执行（调用 git_write，必要时接 git_confirm 完成确认；不要用裸 shell 绕过确认）。'
+
+interface CommandSpec {
+  id: string
+  labelKey: string
+  build: (cwd: string, extra?: string) => string
+}
+
+const COMMANDS: CommandSpec[] = [
+  {
+    id: 'stage-all',
+    labelKey: 'cmdStageAll',
+    build: (cwd) =>
+      `${TOOL_PREAMBLE}在仓库 ${cwd} 用 git_write(action=add, args=["-A"]) 暂存全部改动，然后用 git_panel_status/git_repo_info 复核并简述结果。`,
+  },
+  {
+    id: 'commit',
+    labelKey: 'cmdCommit',
+    build: (cwd, extra) =>
+      `${TOOL_PREAMBLE}在仓库 ${cwd} 先 git_diff(mode=staged) 看已暂存内容，总结一条规范的提交信息${extra ? `（意图补充：${extra}）` : ''}，再 git_write(action=commit, args=["-m", "<信息>"]) 提交。若暂存区为空，先提示我。`,
+  },
+  {
+    id: 'push',
+    labelKey: 'cmdPush',
+    build: (cwd) =>
+      `${TOOL_PREAMBLE}在仓库 ${cwd} 先 git_repo_info 确认分支与远端；无上游则 git_write(action=push, args=["-u","origin","<当前分支>"])，否则 git_write(action=push, args=[])。认证失败时如实汇报，不要索要或回显任何令牌。`,
+  },
+  {
+    id: 'pull',
+    labelKey: 'cmdPull',
+    build: (cwd) =>
+      `${TOOL_PREAMBLE}在仓库 ${cwd} 执行 git_write(action=pull, args=["--rebase"])（若明显有分叉风险改用默认 merge）；出现冲突立刻停下并汇报冲突文件清单，不要自行取舍。`,
+  },
+  {
+    id: 'fetch',
+    labelKey: 'cmdFetch',
+    build: (cwd) => `${TOOL_PREAMBLE}在仓库 ${cwd} 执行 git_write(action=fetch, args=["--prune"])，然后汇报各分支领先/落后变化。`,
+  },
+  {
+    id: 'branch-create',
+    labelKey: 'cmdBranchCreate',
+    build: (cwd, extra) =>
+      `${TOOL_PREAMBLE}在仓库 ${cwd} 用 git_write(action=branch, args=["${extra || '<新分支名>'}"]) 基于当前 HEAD 新建分支，再 git_write(action=checkout, args=["${extra || '<新分支名>'}"]) 切过去。分支名未提供时先问我。`,
+  },
+  {
+    id: 'branch-switch',
+    labelKey: 'cmdBranchSwitch',
+    build: (cwd, extra) =>
+      `${TOOL_PREAMBLE}在仓库 ${cwd} 用 git_write(action=checkout, args=["${extra || '<目标分支>'}"]) 切换分支；工作区不干净导致失败时先向我说明，不要强制。分支名未提供时先列出 git_branches 让我选。`,
+  },
+  {
+    id: 'discard',
+    labelKey: 'cmdDiscard',
+    build: (cwd, extra) =>
+      `${TOOL_PREAMBLE}这是破坏性操作：先在回复里向用户复述将丢弃的文件（${extra || '<未跟踪/已修改文件>'}），得到确认后 git_write(action=restore, args=["--","<文件>"])；未跟踪文件用 clean 前必须再次单独确认。`,
+  },
+  {
+    id: 'stash',
+    labelKey: 'cmdStash',
+    build: (cwd) => `${TOOL_PREAMBLE}在仓库 ${cwd} 执行 git_write(action=stash, args=[]) 贮藏当前改动，完成后汇报贮藏内容摘要。`,
+  },
+  {
+    id: 'tag',
+    labelKey: 'cmdTag',
+    build: (cwd, extra) =>
+      `${TOOL_PREAMBLE}在仓库 ${cwd} 用 git_write(action=tag, args=["${extra || '<vX.Y.Z>'}"]) 打标签；标签名未提供时先问我。推不推送远端由我决定，先别自动 push tag。`,
+  },
+  {
+    id: 'init',
+    labelKey: 'cmdInit',
+    build: (cwd) =>
+      `${TOOL_PREAMBLE}该目录还不是仓库：请在 ${cwd} 执行 git_write(action=init, args=["-b","main"]) 初始化本地仓库，完成后汇报。远程关联等我另行指示。`,
+  },
+]
 
 const ZH: Dict = {
   entry: 'Git',
-  entryTitle: '当前仓库状态',
   navLabel: 'Git',
-  panelTitle: 'Git 账号与仓库授权',
-  panelSubtitle: '连接账号，并限定 Agent 可以触达的仓库与目录',
-  accountLabel: '账号备注名（可选）',
-  accountLabelHint: '同一平台多个账号时用于区分，如「工作」「个人」',
-  groupScopeRepos: '远端仓库',
-  groupScopeRoots: '本地目录',
-  groupPolicy: '写操作策略',
-  noAccount: '尚未连接任何 Git 账号',
-  noAccountHint: '连接后，Agent 才能在授权范围内读取仓库信息、分支、差异与提交记录。',
-  connected: '已连接',
-  expired: '授权已失效',
-  errored: '凭据异常',
+  panelTitle: 'Git 面板',
+  refresh: '刷新',
+  close: '关闭',
+  notRepo: '当前会话目录不是 Git 仓库',
+  notRepoHint: '可让 AI 初始化仓库，或在设置里把该目录加入授权范围。',
+  unauthorized: '该目录不在授权范围内（设置 → Git → 本地目录）',
+  branch: '分支',
+  ahead: '领先',
+  behind: '落后',
+  changedFiles: '改动文件',
+  noChanges: '工作区干净',
+  recentCommits: '最近提交',
+  noCommits: '还没有提交',
+  actions: '动作（生成指令给 AI 执行）',
+  inputHint: '可改词后再回车；指令只是发起，写操作仍受确认约束。',
+  autoSubmit: '直接提交（注入后代按发送）',
+  account: 'GitHub 账号',
+  noAccount: '未连接账号（不影响本地 git 操作）',
+  connectAccount: '连接账号',
+  methodPat: 'PAT 令牌',
+  methodOauth: 'OAuth 设备码',
+  tokenLabel: '访问令牌',
+  tokenPlaceholder: '粘贴 PAT（保存后不再回显）',
+  labelLabel: '备注名（可选）',
+  clientIdLabel: 'OAuth App Client ID',
+  clientIdHint: '本插件不内置任何应用凭据：需你自建 GitHub OAuth App 并填入 Client ID。',
+  userCode: '浏览器打开下面的地址并输入代码完成授权',
+  waiting: '等待授权…',
+  connect: '连接',
+  cancel: '取消',
   disconnect: '断开',
   recheck: '校验',
-  provider: '平台',
-  method: '接入方式',
-  oauth: 'OAuth 设备码',
-  pat: '个人访问令牌（PAT）',
-  oauthPro: '适合本机交互式使用：浏览器打开一次授权页、输入代码即可，不需要复制令牌，权限由平台授权页控制。',
-  patPro: '适合无人值守/CI/自建实例：可精确限制到单个仓库与只读 scope，令牌只在本机加密保存。',
-  tokenLabel: '访问令牌',
-  tokenPlaceholder: '粘贴 PAT（仅本次提交，保存后不再回显）',
-  clientIdLabel: 'OAuth App Client ID',
-  clientIdHint: '需要你在平台上自建 OAuth App 并填入其 Client ID；本插件不内置任何第三方应用凭据。',
-  hostLabel: '实例地址（自建时填）',
-  hostPlaceholder: '例如 git.example.com',
-  apiBaseLabel: 'API 地址（可选）',
-  apiBasePlaceholder: '例如 https://git.example.com/api/v1',
-  connect: '连接',
-  connecting: '连接中…',
-  cancel: '取消',
-  save: '保存范围',
-  saved: '已保存',
-  scopeRepos: '允许 Agent 操作的远端仓库',
-  scopeReposHint: '每行一个 owner/repo；填 * 表示全部仓库（不推荐）。留空表示不允许任何远端操作。',
-  scopeReposNote: '这里是全局兜底名单：只有还没有账号级权限表的账号（老账号/刚升级）才按它判定；账号页里逐仓库设过档位的，以账号页为准。',
-  scopeRoots: '允许 Agent 操作的本地仓库目录',
-  scopeDiscoverTitle: '检测到的仓库',
-  scopeDiscoverEmpty: '授权根目录下暂未扫描到 Git 仓库（保存授权目录后点「重新扫描」）',
-  scopeDiscoverNoRemote: '无远程',
-  scopeDiscoverUse: '加入授权',
-  scopeDiscoverReload: '重新扫描',
-  scopeRootsHint: '每行一个绝对路径。本地 git 命令只会在这些目录（含子目录）内执行；填 * 表示不限制目录（等同于放开本机全部仓库，谨慎使用）。',
-  allowWrite: '允许 Agent 修改仓库',
-  allowWriteHint: '这是写操作的唯一总开关：开启后 Agent 与本页按钮都能暂存、提交、推送；关闭后所有写接口一律 403（含手点按钮）。',
-  requireConfirm: '写操作前需要我确认',
-  requireConfirmHint: '只作用于 Agent 工具调用：开启后 Agent 的写操作先返回待确认，你确认后才执行。本页按钮是你亲手点的，不受此项约束。',
-  userCode: '在浏览器中打开下面的地址，输入代码完成授权',
-  copy: '复制',
   copied: '已复制',
-  waiting: '等待授权…',
-  authFailed: '授权失败',
-  notRepo: '当前会话目录不是 Git 仓库',
-  menuInit: '初始化 Git 项目',
-  menuInitHint: '打开初始化页：可只建本地仓库，也可顺带关联或新建远程仓库',
-  menuSettings: '打开 Git 设置',
-  menuNewVersion: '有新版本 {v}',
-  menuOpenDir: '打开项目目录',
-  menuGroupRepo: '仓库',
-  menuGroupOpen: '打开',
-  toastOpened: '已在文件管理器中打开项目目录',
-  openFailed: '打开项目目录失败',
-  menuRefresh: '刷新状态',
-  menuRefreshHint: '重新读取分支、领先落后与改动数',
-  menuChecking: '正在检测仓库状态…',
-  menuDetectFailed: '无法检测仓库状态',
-  menuRetry: '重新检测',
-  alreadyRepo: '当前目录已经是 Git 仓库，无需初始化',
-  initRunning: '正在初始化…',
-  initDone: '仓库已初始化',
-  initFailed: '初始化失败',
-  menuTitle: '仓库',
-  unauthorizedRoot: '当前目录未在授权范围内',
-  graphTitle: '分支拓扑',
-  graphLoading: '正在读取提交图…',
-  graphEmpty: '仓库还没有任何提交',
-  graphFailed: '读取提交图失败',
-  graphTruncated: '仅显示最近 {n} 条提交',
-  graphLanes: '{n} 条车道',
-  graphCopyHash: '复制提交哈希',
-  graphCopied: '已复制哈希',
-  refresh: '刷新',
-  errLoad: '无法读取面板状态，请确认插件已加载并重试',
-  helpText:
-    '授权边界：本地命令只在「高级设置 → 本地目录」列出的目录内执行；远端仓库按「账号卡片里每个仓库的三档」判定，未单独设过的仓库默认完整权限，显式设为只读或无权限才受限。未授权、授权失效、仓库不存在或 git 命令失败时，工具都会返回可读的原因，不会静默失败。令牌只以 AES-256-GCM 加密保存在本机 ~/.dsh/git-panel/state.json，界面与日志中都不会出现明文。',
-  removeConfirm: '断开后该账号的令牌会被立即删除，Agent 将无法再使用它。确定断开？',
-  /* ---- 授权概览（统计条） ---- */
-  statsTitle: '授权概览',
-  statsAccounts: '账号',
-  statsAccountsHintMixed: '{n} 个已连接 · {m} 个异常',
-  statsRoots: '授权目录',
-  statsRepos: '授权仓库',
-  statsReposHintDefault: '未单列的仓库默认完整权限',
-  statsWrite: '写操作',
-  statsWriteOn: '已允许',
-  statsWriteOff: '已关闭',
-  /* ---- 账号卡片增强 ---- */
-  setDefault: '设为默认',
-  isDefault: '默认账号',
-  /* ---- 工作区改动 ---- */
-  changesEmpty: '工作区干净，没有未提交改动',
-  changesFailed: '读取改动失败',
-  changesStaleNode: '插件服务端是旧版本（DSH 的 node 半边不热重载），重启 DSH 桌面端后恢复',
-  changesStaged: '已暂存',
-  /* ---- 轻提示 ---- */
-  toastSaved: '已保存授权范围',
-  toastDefault: '已设为默认账号',
-  toastRecheck: '账号校验完成',
-  /* ---- Git 工作台（IDEA 式主面板） ---- */
-  wbTitle: 'Git 工作台',
-  wbOpenHint: '打开完整 Git 操作面板（变更 / 提交 / 拉取 / 推送 / 分支 / 历史）',
-  wbFetch: 'Fetch',
-  wbPull: 'Pull',
-  wbPush: 'Push',
-  wbUnstaged: '未暂存',
-  wbUntracked: '未跟踪',
-  wbStage: '暂存',
-  wbUnstage: '取消暂存',
-  wbDiscard: '丢弃',
-  wbHistory: '历史',
-  wbHistoryStyle: '历史视图呈现方式',
-  wbHistoryList: '列表',
-  wbHistoryLane: '泳道',
-  wbHistoryLaneHint: '泳道取自当前分支的提交拓扑；搜索过滤后仍按提交对齐',
-  wbChangesTab: '改动',
-  wbStageAll: '全部暂存',
-  wbDiffTitle: '差异预览',
-  wbDiffExpand: '放大',
-  wbMsgPlaceholder: '提交信息（必填）',
-  wbAmend: '修补上次提交',
-  wbCommit: '提交',
-  wbCommitNeedsStaged: '暂存区为空：先在下方勾选文件并暂存，再填写提交信息',
-  wbCleanHint: '没有可提交的改动。编辑文件后会出现在这里。',
-  wbInitHint: '此目录还不是 Git 仓库。初始化后即可在这里暂存、提交与查看历史。',
-  wbInitRemote: '远程仓库地址（可选，留空则仅本地初始化）',
-  wbUnauthorizedHint: '该目录不在授权范围内。到「设置 → Git → 高级设置 → 本地目录」加入后即可操作。',
-  wbNoCommits: '仓库还没有提交',
-  wbNoCommitsHint: '完成首次提交后，历史会显示在这里。',
-  wbBranchTitle: '分支管理',
-  wbLocalBranches: '本地分支',
-  wbRemoteBranches: '远程分支',
-  wbNoRemoteBranches: '尚无远程分支（先 fetch 或推送）',
-  wbNewBranch: '新建分支',
-  wbBranchName: '分支名',
-  wbCheckoutAfterCreate: '创建后立即切换',
-  wbCreate: '创建',
-  wbCancel: '取消',
-  wbCheckout: '切换',
-  wbDelete: '删除',
-  wbConfirmDelete: '确认删除',
-  wbCommitDetail: '提交详情',
-  wbDetailFailed: '读取提交详情失败',
-  wbAuthor: '作者',
-  wbDate: '日期',
-  wbFiles: '变更文件',
-  wbRemoteTitle: '远程仓库',
-  wbNoRemotes: '还没有配置远程仓库。添加后才能 Push / Pull。',
-  wbRemoteName: '名称',
-  wbRemoteUrl: 'URL（https:// 或 git@）',
-  wbAdd: '添加',
-  wbRemove: '移除',
-  wbPullTitle: '拉取（Pull）',
-  wbPullMerge: '合并（merge）',
-  wbPullRebase: '变基（rebase）',
-  wbPullUpstream: '将拉取自',
-  wbPullNoUpstream: '当前分支没有上游，Pull 会按远程同名分支拉取',
-  wbPullHint: '合并把远程提交并入当前分支并产生合并提交；变基把本地提交挪到远程之后，历史更线性。',
-  wbDiscardTitle: '丢弃未提交改动',
-  wbDiscardText: '以下文件的改动将被永久丢弃（未跟踪文件会被删除），此操作不可撤销：',
-  /* ---- 工作台 toast ---- */
-  toastStaged: '已暂存所选文件',
-  toastUnstaged: '已取消暂存',
-  toastDiscarded: '已丢弃所选改动',
-  toastCommitted: '提交成功',
-  toastAmended: '已修补上次提交',
-  toastFetched: 'Fetch 完成',
-  toastPulledMerge: 'Pull（merge）完成',
-  toastPulledRebase: 'Pull（rebase）完成',
-  toastPushed: 'Push 完成',
-  toastCheckedOut: '已切换分支',
-  toastBranchDeleted: '分支已删除',
-  toastBranchCreated: '分支已创建',
-  toastRemoteAdded: '远程仓库已添加',
-  toastRemoteRemoved: '远程仓库已移除',
-  /* ---- 工作台错误与状态 ---- */
-  actionFailed: '操作失败',
-  syncConflicted: '产生合并冲突：请解决冲突后重新提交（可用命令行或 IDE 处理）',
-  syncRejected: '推送被拒绝：远端有新提交，请先 Pull 再 Push',
-  syncMissingConfig: '未配置远程仓库或上游分支：点分支名打开分支管理，或到设置页配置远程',
-  diffFailed: '读取 diff 失败',
-  diffEmpty: '没有差异',
-  diffEmptyHint: '该文件当前没有未提交改动，或已全部暂存。',
-  diffTruncated: 'diff 过长已截断，完整内容请用命令行查看',
-  /* ---- 账号 → 远程仓库权限（多账号管理） ---- */
-  reposEmpty: '该账号没有可访问的远程仓库',
-  reposEmptyHint: '可以在本页「新建仓库」直接创建，或去平台侧建好后点刷新。',
-  reposFailed: '读取远程仓库失败',
-  repoPrivate: '私有',
-  repoPublic: '公开',
-  repoDefaultBranch: '默认分支 {branch}',
-  permLabel: '权限',
-  permFull: '完整',
-  permRead: '只读',
-  permNone: '无权限',
-  permSaved: '已更新仓库权限',
-  permSaveFailed: '保存仓库权限失败',
-  permSaving: '保存中…',
-  reposReload: '刷新仓库列表',
-  reposTruncated: '仓库较多，仅显示前 500 个；未列出的仓库按该账号默认档位处理。',
-  accountEdit: '编辑账号',
-  editHint: '修改后需要重新校验，凭据只在保存时写一次',
-  connectAccount: '连接账号',
-  connectFailed: '连接失败',
-  tokenRequired: '请填写访问令牌',
-  repoSearch: '搜索仓库',
-  repoFilter: '按权限筛选',
-  filterAll: '全部',
-  reposCount: '共 {n} / {m} 个仓库',
-  acctRepoSummary: '可访问 {n} / {m} 仓库',
-  acctReposLoading: '仓库加载中…',
-  acctMenu: '账号操作',
-  scopesToggle: '权限范围 {n} 项',
-  helpShow: '授权说明',
-  helpHide: '收起授权说明',
-  reposNoMatch: '没有匹配的仓库',
-  advancedShow: '高级设置',
-  advancedHide: '收起高级设置',
-  interfaceShow: '界面',
-  interfaceHide: '收起界面设置',
-  groupInterface: '界面',
-  interfaceHint: '这些都只存在本机浏览器，换台机器要重新选；服务端权限不受影响。',
-  prefDiffLayout: '差异视图默认呈现',
-  prefDiffLayoutHint: '打开差异时用哪种布局；在差异视图里切换也会记住。',
-  prefBehavior: '行为开关',
-  prefHighlight: '语法高亮',
-  prefHighlightHint: '关掉后差异只上色增删行，不再逐 token 上色，长文件滚动更快。',
-  prefChip: '输入框旁显示 Git 按钮',
-  prefChipHint: '关掉后仍可从命令面板或设置进入 Git 面板。',
-  prefLanes: '历史列表显示泳道',
-  prefLanesHint: '在提交列表左侧画出分支走向；提交很多时关掉可以更省空间。',
-  prefGraphLimit: '泳道一次拉多少条',
-  prefGraphLimitHint: '20~200 条，越大越完整、拉取越慢。',
-  prefReset: '恢复默认',
-  /* ---- 当前分支详情 ---- */
-  branchDetail: '当前分支详情',
-  branchDetailTitle: '当前分支详情',
-  branchDetailEmpty: '该分支还没有提交',
-  branchDetailEmptyHint: '完成首次提交后，提交记录会显示在这里。',
-  branchDetailFailed: '读取提交记录失败',
-  branchDetailTruncated: '仅显示最近 {n} 条提交',
-  branchDetailClose: '关闭',
-  /* ---- 分步初始化向导 ---- */
-  initTitle: '初始化 Git 项目',
-  initStepAccount: '账号',
-  initStepRemote: '远程仓库',
-  initStepBranch: '分支',
-  initStart: '开始初始化',
-  initCancel: '取消',
-  initClose: '关闭',
-  initNoAccount: '尚未连接 Git 账号',
-  initNewRemote: '填写其它远程地址',
-  initRemoteUrl: '远程仓库地址',
-  initRemoteUrlHint: '填写已存在的远程地址；也可以点上方「在该账号下新建仓库」',
-  repoCreateOpen: '在该账号下新建仓库',
-  repoCreateName: '仓库名',
-  repoCreatePrivate: '私有仓库',
-  repoCreateHint: '将在 {account} 名下创建一个空仓库，并自动授权为「完整」',
-  repoCreateSubmit: '创建并选用',
-  repoCreating: '创建中…',
-  repoCreateFailed: '创建远程仓库失败',
-  initManualRepoHint: '连上账号后会自动列出仓库；现在也可以只初始化本地仓库',
-  initQuickLocal: '仅初始化本地仓库',
-  initRepoListFailed: '读取仓库列表失败：{reason}',
-  initRepoListEmpty: '该账号没有可用的远程仓库',
-  initAuthorizedRepos: '已授权的仓库',
-  initBranchName: '分支名',
-  initNoBranches: '分支名可自由填写；留空则用远程默认分支',
-  initCommitMessage: '首次提交信息（可选）',
-  initConfirmTitle: '将要执行的操作',
-  initPlanInit: '初始化本地仓库',
-  initPlanRemote: '添加远程 origin',
-  initPlanBranch: '切换或创建分支 {branch}',
-  initPlanCommit: '创建首次提交',
-  initSuccess: '初始化完成',
-  initResultRoot: '仓库目录',
-  initResultBranch: '分支',
-  initResultRemote: '远程地址',
-  initStepsTitle: '执行步骤',
-  initRepoRequired: '请选择或填写一个远程仓库',
-  /* ---- dgp-v19：差异视图 ---- */
-  diffFind: '查找',
-  diffFindPlaceholder: '在差异里查找（Ctrl/⌘+F）',
-  diffLayout: '布局',
-  diffSplit: '并排',
-  diffUnified: '统一',
-  diffBefore: '变更前',
-  diffAfter: '变更后',
-  diffHighlight: '语法高亮',
-  diffFoldHint: '展开 {n} 行未变更内容',
-  split: '并排',
-  unified: '统一',
-  /* ---- dgp-v19：文件浏览 ---- */
-  fbBack: '返回目录',
-  fbBinary: '二进制文件，无法预览',
-  fbEmpty: '这个目录是空的',
-  fbEmptyHint: '换个目录看看，或确认仓库里确实没有内容',
-  fbLoadFailed: '读取目录失败',
-  fbPick: '从左侧选择一个文件',
-  fbPickHint: '支持代码、Markdown、图片等常见格式的只读预览',
-  fbReadFailed: '读取文件失败',
-  fbTruncated: '目录条目过多，仅显示前 {n} 项',
-  fbTruncatedFile: '文件过大，仅显示前 {n} KB',
-  fbWrap: '自动换行',
-  fbImageFailed: '图片读取失败',
-  fbImageZoomHint: '点击图片切换原尺寸/适应窗口',
-  fbImageTooBig: '图片 {n}，超过 4 MB 预览上限，可在本地打开查看',
-  fbRendered: '渲染',
-  /* ---- dgp-v19：历史搜索 ---- */
-  wbSearchCommit: '搜索提交信息',
-  wbSearch: '搜索',
-  wbSearchClear: '清空',
-  wbSearchEmpty: '没有匹配的提交',
-  wbSearchEmptyHint: '换个关键词，或清空搜索看全部历史',
-  wbNoMoreCommits: '已经到底了',
-  wbLoadMore: '加载更多',
-  wbLoadingMore: '正在加载…',
-  /* ---- dgp-v19：仓库切换 ---- */
-  wbSwitchRepo: '切换仓库',
-  wbSwitchRepoHint: '在工作区里发现的其他仓库',
-  /* ---- dgp-v19：AI 生成提交信息 ---- */
-  wbSuggest: 'AI 生成',
-  wbSuggesting: '生成中…',
-  wbSuggestHint: '按当前暂存改动和近期提交风格生成一行提交信息',
-  toastSuggested: '已生成提交信息',
-  suggestFailed: '生成提交信息失败',
-  /* ---- dgp-v19：标签 ---- */
-  wbTagsTab: '标签',
-  wbTagName: '标签名，例如 v1.0.0',
-  wbTagNote: '附注信息（留空为轻量标签）',
-  wbTagCreate: '创建标签',
-  wbTagAnnotated: '附注',
-  wbTagPush: '推送',
-  wbNoTags: '还没有标签',
-  wbNoTagsHint: '在上面填标签名即可创建一个指向当前提交的标签',
-  toastTagCreated: '标签已创建',
-  toastTagDeleted: '标签已删除',
-  toastTagPushed: '标签已推送',
-  /* ---- dgp-v19：贮藏 ---- */
-  wbStashTab: '贮藏',
-  wbSummary: '改动汇总',
-  wbSummaryFiles: '文件',
-  wbSummaryAdded: '新增',
-  wbSummaryDeleted: '删除',
-  wbSummaryStaged: '已暂存',
-  wbResetSoft: '回退并保留暂存',
-  wbResetMixed: '回退并保留改动',
-  wbResetHard: '回退并丢弃改动',
-  wbResetHardConfirm: '确认丢弃改动？',
-  wbRevert: '撤销此提交',
-  wbActHint: '回退会移动当前分支的 HEAD；撤销会生成一个反向的新提交。两者都不可自动还原，远端需另行推送。',
-  wbActFailed: '操作失败',
-  prefAiModel: 'AI 模型',
-  prefAiDefault: '跟随会话默认',
-  prefAiModelHint: '「生成提交信息」用哪个模型；选「跟随会话默认」时会随会话切换。',
-  prefAiLoading: '正在读取模型目录…',
-  prefAiUnavailable: '读取模型目录失败，暂只能用会话默认模型',
-  wbPublish: '发布分支',
-  wbPublishHint: '当前分支还没有上游，点一下会推送到远端并建立跟踪（git push -u）',
-  wbStashNote: '贮藏说明（可选）',
-  wbStashUntracked: '包含未跟踪文件',
-  wbStashSave: '贮藏当前改动',
-  wbStashPop: '恢复并删除',
-  wbStashApply: '恢复',
-  wbStashDrop: '删除',
-  wbStashNoSubject: '（无说明）',
-  wbNoStashes: '还没有贮藏',
-  wbNoStashesHint: '把当前改动暂存起来，工作区会回到干净状态',
-  toastStashed: '已贮藏',
-  toastStashPopped: '已恢复并删除该贮藏',
-  toastStashApplied: '已恢复该贮藏',
-  toastStashDropped: '已删除该贮藏',
-  /* ---- dgp-v19：文件浏览视图 ---- */
-  wbFilesTab: '文件',
-  /* ---- 刷新 ---- */
+  injected: '指令已放入输入框',
+  injectedSubmitted: '指令已提交给 AI',
+  injectFailed: '注入失败',
+  detectFailed: '无法检测仓库状态',
+  retry: '重新检测',
+  settingsTitle: 'Git 设置（v3 精简）',
+  rootsTitle: '允许操作的本地目录',
+  rootsHint: '每行一个绝对路径；* 表示不限制。AI 只在这些目录（含子目录）内执行 git。',
+  save: '保存',
+  saved: '已保存',
+  allowWrite: '允许 Agent 修改仓库',
+  allowWriteHint: '总开关：关闭时 git_write 一律拒绝。',
+  requireConfirm: '写操作前需要我确认',
+  requireConfirmHint: '开启时 git_write 返回 confirmToken，你确认后 AI 才能调 git_confirm 执行。',
+  cmdStageAll: '暂存全部',
+  cmdCommit: '提交…',
+  cmdPush: '推送',
+  cmdPull: '拉取',
+  cmdFetch: '抓取',
+  cmdBranchCreate: '新建分支…',
+  cmdBranchSwitch: '切换分支…',
+  cmdDiscard: '丢弃改动…',
+  cmdStash: '贮藏',
+  cmdTag: '打标签…',
+  cmdInit: '初始化仓库',
+  askParam: '填入参数',
+  commitIntent: '提交意图（可留空）',
+  branchName: '分支名',
+  discardFiles: '要丢弃的文件（空格分隔）',
+  tagName: '标签名',
 }
 
 const EN: Dict = {
   entry: 'Git',
-  entryTitle: 'Current repository status',
   navLabel: 'Git',
-  panelTitle: 'Git account access',
-  panelSubtitle: 'Connect accounts and limit which repositories the agent may touch',
-  accountLabel: 'Account label (optional)',
-  accountLabelHint: 'Distinguish multiple accounts on the same host, e.g. work / personal',
-  groupScopeRepos: 'Remote repositories',
-  groupScopeRoots: 'Local directories',
-  groupPolicy: 'Write policy',
-  noAccount: 'No Git account connected yet',
-  noAccountHint: 'Once connected, the agent can read repository info, branches, diffs and commits within the authorized scope.',
-  connected: 'Connected',
-  expired: 'Authorization expired',
-  errored: 'Credential error',
-  disconnect: 'Disconnect',
-  recheck: 'Verify',
-  provider: 'Provider',
-  method: 'Method',
-  oauth: 'OAuth device flow',
-  pat: 'Personal access token (PAT)',
-  oauthPro: 'Best for interactive local use: open one browser page, type the code, no token copying.',
-  patPro: 'Best for unattended/CI/self-hosted: scope it to a single repository, read-only; stored encrypted locally.',
-  tokenLabel: 'Access token',
-  tokenPlaceholder: 'Paste a PAT (submitted once, never shown again)',
-  clientIdLabel: 'OAuth App Client ID',
-  clientIdHint: 'Create your own OAuth App on the provider and paste its Client ID; this plugin ships no third-party credentials.',
-  hostLabel: 'Instance host (self-hosted)',
-  hostPlaceholder: 'e.g. git.example.com',
-  apiBaseLabel: 'API base (optional)',
-  apiBasePlaceholder: 'e.g. https://git.example.com/api/v1',
-  connect: 'Connect',
-  connecting: 'Connecting…',
-  cancel: 'Cancel',
-  save: 'Save scope',
-  saved: 'Saved',
-  scopeRepos: 'Remote repositories the agent may use',
-  scopeReposHint: 'One owner/repo per line; * means all repositories (not recommended). Empty means no remote access.',
-  scopeReposNote: 'This is the global fallback list, used only for accounts that have no per-repository table yet. Per-repository settings on the Accounts tab take precedence.',
-  scopeRoots: 'Local repository directories the agent may use',
-  scopeDiscoverTitle: 'Discovered repositories',
-  scopeDiscoverEmpty: 'No Git repositories found under authorized roots yet (save roots, then rescan)',
-  scopeDiscoverNoRemote: 'no remote',
-  scopeDiscoverUse: 'Authorize',
-  scopeDiscoverReload: 'Rescan',
-  scopeRootsHint: 'One absolute path per line. Local git commands only run inside these directories. * means no directory limit (the whole machine — use with care).',
-  allowWrite: 'Allow the agent to modify repositories',
-  allowWriteHint: 'This is the single switch for writes: when on, both the agent and the buttons here can stage, commit and push; when off, every write endpoint returns 403, including manual clicks.',
-  requireConfirm: 'Ask me before every write',
-  requireConfirmHint: 'Applies to agent tool calls only: when on, an agent write returns a pending confirmation you must approve. Buttons you click here are not gated by it.',
-  userCode: 'Open the URL below in a browser and enter the code',
-  copy: 'Copy',
-  copied: 'Copied',
-  waiting: 'Waiting for authorization…',
-  authFailed: 'Authorization failed',
-  notRepo: 'The current session directory is not a Git repository',
-  menuInit: 'Initialize Git project',
-  menuInitHint: 'Opens the setup page: local-only init, or also attach / create a remote repository',
-  menuSettings: 'Open Git settings',
-  menuNewVersion: 'Update available {v}',
-  menuOpenDir: 'Open project folder',
-  menuGroupRepo: 'Repository',
-  menuGroupOpen: 'Open',
-  toastOpened: 'Project folder opened in file manager',
-  openFailed: 'Failed to open project folder',
-  menuRefresh: 'Refresh status',
-  menuRefreshHint: 'Re-read branch, ahead/behind and change count',
-  menuChecking: 'Checking repository status…',
-  menuDetectFailed: 'Cannot detect repository status',
-  menuRetry: 'Check again',
-  alreadyRepo: 'This directory is already a Git repository',
-  initRunning: 'Initializing…',
-  initDone: 'Repository initialized',
-  initFailed: 'Initialization failed',
-  menuTitle: 'Repository',
-  unauthorizedRoot: 'The current directory is outside the authorized scope',
-  graphTitle: 'Branch topology',
-  graphLoading: 'Loading commit graph…',
-  graphEmpty: 'This repository has no commits yet',
-  graphFailed: 'Failed to load the commit graph',
-  graphTruncated: 'Showing the latest {n} commits',
-  graphLanes: '{n} lanes',
-  graphCopyHash: 'Copy commit hash',
-  graphCopied: 'Hash copied',
+  panelTitle: 'Git Panel',
   refresh: 'Refresh',
-  errLoad: 'Cannot read panel state; make sure the plugin is loaded and retry',
-  helpText:
-    'Authorization boundary: the agent can only read the repositories and directories listed in “Scope”. Unauthorized repos, expired grants, missing repositories and failing git commands all return a readable reason. Tokens are stored with AES-256-GCM in ~/.dsh/git-panel/state.json and never appear in the UI or logs.',
-  removeConfirm: 'Disconnecting deletes this token immediately; the agent will no longer be able to use it. Continue?',
-  /* ---- Authorization overview ---- */
-  statsTitle: 'Authorization overview',
-  statsAccounts: 'Accounts',
-  statsAccountsHintMixed: '{n} connected · {m} unhealthy',
-  statsRoots: 'Directories',
-  statsRepos: 'Repositories',
-  statsReposHintDefault: 'Unlisted repos default to full access',
-  statsWrite: 'Writes',
-  statsWriteOn: 'Allowed',
-  statsWriteOff: 'Disabled',
-  /* ---- Account cards ---- */
-  setDefault: 'Set as default',
-  isDefault: 'Default account',
-  /* ---- Workspace changes ---- */
-  changesEmpty: 'Working tree is clean — no uncommitted changes',
-  changesFailed: 'Failed to read changes',
-  changesStaleNode: 'Plugin backend is stale (DSH node side does not hot-reload) — restart the DSH desktop app to fix',
-  changesStaged: 'staged',
-  /* ---- Toasts ---- */
-  toastSaved: 'Scope saved',
-  toastDefault: 'Default account updated',
-  toastRecheck: 'Account verification finished',
-  /* ---- Misc ---- */
-  /* ---- Git 工作台（IDEA 式主面板） ---- */
-  wbTitle: 'Git Workbench',
-  wbOpenHint: 'Open the full Git panel (changes / commit / pull / push / branches / history)',
-  wbFetch: 'Fetch',
-  wbPull: 'Pull',
-  wbPush: 'Push',
-  wbUnstaged: 'Unstaged',
-  wbUntracked: 'Untracked',
-  wbStage: 'Stage',
-  wbUnstage: 'Unstage',
-  wbDiscard: 'Discard',
-  wbHistory: 'History',
-  wbHistoryStyle: 'History layout',
-  wbHistoryList: 'List',
-  wbHistoryLane: 'Lanes',
-  wbHistoryLaneHint: 'Lanes follow the current branch topology; filtered commits stay aligned',
-  wbChangesTab: 'Changes',
-  wbStageAll: 'Stage all',
-  wbDiffTitle: 'Diff preview',
-  wbDiffExpand: 'Expand',
-  wbMsgPlaceholder: 'Commit message (required)',
-  wbAmend: 'Amend last commit',
-  wbCommit: 'Commit',
-  wbCommitNeedsStaged: 'Nothing staged: tick files below and stage them, then write a commit message',
-  wbCleanHint: 'No changes to commit. Edited files will appear here.',
-  wbInitHint: 'This directory is not a Git repository yet. Initialize it to stage, commit and browse history here.',
-  wbInitRemote: 'Remote URL (optional, leave empty for local only)',
-  wbUnauthorizedHint: 'This directory is not authorized. Add it in Settings → Git → Advanced → Local directories.',
-  wbNoCommits: 'No commits yet',
-  wbNoCommitsHint: 'History will appear here after the first commit.',
-  wbBranchTitle: 'Manage branches',
-  wbLocalBranches: 'Local',
-  wbRemoteBranches: 'Remote',
-  wbNoRemoteBranches: 'No remote branches yet (fetch or push first)',
-  wbNewBranch: 'New branch',
-  wbBranchName: 'Branch name',
-  wbCheckoutAfterCreate: 'Check out after create',
-  wbCreate: 'Create',
-  wbCancel: 'Cancel',
-  wbCheckout: 'Check out',
-  wbDelete: 'Delete',
-  wbConfirmDelete: 'Confirm delete',
-  wbCommitDetail: 'Commit',
-  wbDetailFailed: 'Failed to load commit detail',
-  wbAuthor: 'Author',
-  wbDate: 'Date',
-  wbFiles: 'Files',
-  wbRemoteTitle: 'Manage remotes',
-  wbNoRemotes: 'No remotes configured yet. Add one to enable Push / Pull.',
-  wbRemoteName: 'Name',
-  wbRemoteUrl: 'URL (https:// or git@)',
-  wbAdd: 'Add',
-  wbRemove: 'Remove',
-  wbPullTitle: 'Pull',
-  wbPullMerge: 'Merge',
-  wbPullRebase: 'Rebase',
-  wbPullUpstream: 'Pulling from',
-  wbPullNoUpstream: 'Current branch has no upstream; Pull will use the same-named remote branch',
-  wbPullHint: 'Merge folds remote commits into this branch with a merge commit; rebase moves local commits after remote ones for a linear history.',
-  wbDiscardTitle: 'Discard uncommitted changes',
-  wbDiscardText: 'Changes in the following files will be permanently discarded (untracked files deleted). This cannot be undone:',
-  toastStaged: 'Files staged',
-  toastUnstaged: 'Unstaged',
-  toastDiscarded: 'Changes discarded',
-  toastCommitted: 'Committed',
-  toastAmended: 'Last commit amended',
-  toastFetched: 'Fetch done',
-  toastPulledMerge: 'Pull (merge) done',
-  toastPulledRebase: 'Pull (rebase) done',
-  toastPushed: 'Push done',
-  toastCheckedOut: 'Branch switched',
-  toastBranchDeleted: 'Branch deleted',
-  toastBranchCreated: 'Branch created',
-  toastRemoteAdded: 'Remote added',
-  toastRemoteRemoved: 'Remote removed',
-  actionFailed: 'Action failed',
-  syncConflicted: 'Merge conflicts: resolve them and commit again (CLI or IDE)',
-  syncRejected: 'Push rejected: remote has new commits. Pull first, then push',
-  syncMissingConfig: 'No remote or upstream configured: click the branch name to manage branches, or configure remotes in Settings',
-  diffFailed: 'Failed to load diff',
-  diffEmpty: 'No differences',
-  diffEmptyHint: 'This file has no uncommitted changes, or everything is staged.',
-  diffTruncated: 'Diff is truncated; view the full output in a terminal',
-  /* ---- Account → remote repository permissions ---- */
-  reposEmpty: 'No accessible remote repository for this account',
-  reposEmptyHint: 'Create one with “New repository” above, or make it on the platform and hit refresh.',
-  reposFailed: 'Failed to load remote repositories',
-  repoPrivate: 'private',
-  repoPublic: 'public',
-  repoDefaultBranch: 'default branch {branch}',
-  permLabel: 'Access',
-  permFull: 'Full',
-  permRead: 'Read-only',
-  permNone: 'No access',
-  permSaved: 'Repository access updated',
-  permSaveFailed: 'Failed to save repository access',
-  permSaving: 'Saving…',
-  reposReload: 'Reload repositories',
-  reposTruncated: 'Too many repositories; showing the first 500. Unlisted repositories use the account default.',
-  accountEdit: 'Edit account',
-  editHint: 'Changes need a recheck; the credential is written only once on save',
+  close: 'Close',
+  notRepo: 'This session directory is not a Git repository',
+  notRepoHint: 'Let the AI init a repo, or authorize this directory in settings.',
+  unauthorized: 'Directory outside the authorized scope (Settings → Git → Local directories)',
+  branch: 'Branch',
+  ahead: 'ahead',
+  behind: 'behind',
+  changedFiles: 'Changed files',
+  noChanges: 'Working tree clean',
+  recentCommits: 'Recent commits',
+  noCommits: 'No commits yet',
+  actions: 'Actions (inject a command for the AI)',
+  inputHint: 'You can edit before pressing Enter; writes stay confirm-gated.',
+  autoSubmit: 'Auto submit (press send after injecting)',
+  account: 'GitHub account',
+  noAccount: 'No account connected (local git still works)',
   connectAccount: 'Connect account',
-  connectFailed: 'Connection failed',
-  tokenRequired: 'Enter an access token',
-  repoSearch: 'Search repositories',
-  repoFilter: 'Filter by access',
-  filterAll: 'All',
-  reposCount: '{n} of {m} repositories',
-  acctRepoSummary: '{n} of {m} repositories accessible',
-  acctReposLoading: 'Loading repositories…',
-  acctMenu: 'Account actions',
-  scopesToggle: '{n} permission scopes',
-  helpShow: 'Access notes',
-  helpHide: 'Collapse access notes',
-  reposNoMatch: 'No matching repositories',
-  advancedShow: 'Advanced settings',
-  advancedHide: 'Hide advanced settings',
-  interfaceShow: 'Interface',
-  interfaceHide: 'Hide interface settings',
-  groupInterface: 'Interface',
-  interfaceHint: 'These live in this browser only and do not change server-side permissions.',
-  prefDiffLayout: 'Default diff layout',
-  prefDiffLayoutHint: 'Layout used when a diff opens; switching inside the diff is remembered too.',
-  prefBehavior: 'Behavior',
-  prefHighlight: 'Syntax highlighting',
-  prefHighlightHint: 'Off colors only added/removed lines, which scrolls faster on long diffs.',
-  prefChip: 'Show Git button beside the composer',
-  prefChipHint: 'Turning it off keeps the panel reachable from the command palette and settings.',
-  prefLanes: 'Show lanes in history',
-  prefLanesHint: 'Draws the branch graph beside each commit; turn off to save horizontal space.',
-  prefGraphLimit: 'Commits fetched for lanes',
-  prefGraphLimitHint: '20 to 200; higher is more complete but slower.',
-  prefReset: 'Restore defaults',
-  /* ---- Current branch details ---- */
-  branchDetail: 'Current branch details',
-  branchDetailTitle: 'Current branch details',
-  branchDetailEmpty: 'This branch has no commits yet',
-  branchDetailEmptyHint: 'Commits will appear here after the first commit.',
-  branchDetailFailed: 'Failed to load commits',
-  branchDetailTruncated: 'Showing the latest {n} commits',
-  branchDetailClose: 'Close',
-  /* ---- Step-by-step initialization wizard ---- */
-  initTitle: 'Initialize Git project',
-  initStepAccount: 'Account',
-  initStepRemote: 'Remote',
-  initStepBranch: 'Branch',
-  initStart: 'Start initialization',
-  initCancel: 'Cancel',
-  initClose: 'Close',
-  initNoAccount: 'No Git account connected yet',
-  initNewRemote: 'Enter another remote URL',
-  initRemoteUrl: 'Remote repository URL',
-  initRemoteUrlHint: 'Provide an existing remote URL, or create a repository in the account above',
-  repoCreateOpen: 'Create repository in this account',
-  repoCreateName: 'Repository name',
-  repoCreatePrivate: 'Private repository',
-  repoCreateHint: 'Creates an empty repository under {account} and grants it full access',
-  repoCreateSubmit: 'Create and use',
-  repoCreating: 'Creating…',
-  repoCreateFailed: 'Failed to create the remote repository',
-  initManualRepoHint: 'Repositories are listed once an account is connected; you can also init a local-only repository now',
-  initQuickLocal: 'Initialize local repository only',
-  initRepoListFailed: 'Failed to list repositories: {reason}',
-  initRepoListEmpty: 'No remote repository available for this account',
-  initAuthorizedRepos: 'Authorized repositories',
-  initBranchName: 'Branch name',
-  initNoBranches: 'Type any branch name; leave it empty to use the remote default branch',
-  initCommitMessage: 'First commit message (optional)',
-  initConfirmTitle: 'Actions to run',
-  initPlanInit: 'Initialize the local repository',
-  initPlanRemote: 'Add remote origin',
-  initPlanBranch: 'Switch to or create branch {branch}',
-  initPlanCommit: 'Create the first commit',
-  initSuccess: 'Initialization finished',
-  initResultRoot: 'Repository folder',
-  initResultBranch: 'Branch',
-  initResultRemote: 'Remote URL',
-  initStepsTitle: 'Executed steps',
-  initRepoRequired: 'Pick or enter a remote repository',
-  /* ---- dgp-v19: diff view ---- */
-  diffFind: 'Find',
-  diffFindPlaceholder: 'Find in diff (Ctrl/⌘+F)',
-  diffLayout: 'Layout',
-  diffSplit: 'Side by side',
-  diffUnified: 'Unified',
-  diffBefore: 'Before',
-  diffAfter: 'After',
-  diffHighlight: 'Syntax highlight',
-  diffFoldHint: 'Show {n} unchanged lines',
-  split: 'Side by side',
-  unified: 'Unified',
-  /* ---- dgp-v19: file browser ---- */
-  fbBack: 'Back to folder',
-  fbBinary: 'Binary file; preview unavailable',
-  fbEmpty: 'This folder is empty',
-  fbEmptyHint: 'Try another folder, or check that the repository really has content',
-  fbLoadFailed: 'Failed to read the folder',
-  fbPick: 'Pick a file on the left',
-  fbPickHint: 'Read-only preview for code, Markdown, images and more',
-  fbReadFailed: 'Failed to read the file',
-  fbTruncated: 'Too many entries; showing the first {n}',
-  fbTruncatedFile: 'File too large; showing the first {n} KB',
-  fbWrap: 'Wrap lines',
-  fbImageFailed: 'Failed to load image',
-  fbImageZoomHint: 'Click the image to toggle actual size / fit',
-  fbImageTooBig: 'Image is {n}, above the 4 MB preview limit — open it locally',
-  fbRendered: 'Rendered',
-  /* ---- dgp-v19: history search ---- */
-  wbSearchCommit: 'Search commit messages',
-  wbSearch: 'Search',
-  wbSearchClear: 'Clear',
-  wbSearchEmpty: 'No matching commits',
-  wbSearchEmptyHint: 'Try another keyword, or clear the search to see all history',
-  wbNoMoreCommits: 'No more commits',
-  wbLoadMore: 'Load more',
-  wbLoadingMore: 'Loading…',
-  /* ---- dgp-v19: repo switching ---- */
-  wbSwitchRepo: 'Switch repository',
-  wbSwitchRepoHint: 'Other repositories found in the workspace',
-  /* ---- dgp-v19: AI commit message ---- */
-  wbSuggest: 'Generate',
-  wbSuggesting: 'Generating…',
-  wbSuggestHint: 'Draft one commit message line from the staged diff and recent commit style',
-  toastSuggested: 'Commit message generated',
-  suggestFailed: 'Failed to generate a commit message',
-  /* ---- dgp-v19: tags ---- */
-  wbTagsTab: 'Tags',
-  wbTagName: 'Tag name, e.g. v1.0.0',
-  wbTagNote: 'Annotation (leave empty for a lightweight tag)',
-  wbTagCreate: 'Create tag',
-  wbTagAnnotated: 'Annotated',
-  wbTagPush: 'Push',
-  wbNoTags: 'No tags yet',
-  wbNoTagsHint: 'Enter a tag name above to tag the current commit',
-  toastTagCreated: 'Tag created',
-  toastTagDeleted: 'Tag deleted',
-  toastTagPushed: 'Tag pushed',
-  /* ---- dgp-v19: stash ---- */
-  wbStashTab: 'Stashes',
-  wbSummary: 'Change summary',
-  wbSummaryFiles: 'Files',
-  wbSummaryAdded: 'Added',
-  wbSummaryDeleted: 'Removed',
-  wbSummaryStaged: 'Staged',
-  wbResetSoft: 'Reset, keep staged',
-  wbResetMixed: 'Reset, keep changes',
-  wbResetHard: 'Reset, discard changes',
-  wbResetHardConfirm: 'Discard changes?',
-  wbRevert: 'Revert this commit',
-  wbActHint: 'Reset moves the current branch HEAD; revert creates a new commit that undoes this one. Neither is auto-undoable, and the remote needs a separate push.',
-  wbActFailed: 'Operation failed',
-  prefAiModel: 'AI model',
-  prefAiDefault: 'Follow session default',
-  prefAiModelHint: 'Which model drafts commit messages. "Follow session default" tracks the current session selection.',
-  prefAiLoading: 'Reading model catalog…',
-  prefAiUnavailable: 'Could not read the model catalog; only the session default is usable',
-  wbPublish: 'Publish branch',
-  wbPublishHint: 'This branch has no upstream yet; pushing also sets tracking (git push -u)',
-  wbStashNote: 'Stash note (optional)',
-  wbStashUntracked: 'Include untracked files',
-  wbStashSave: 'Stash changes',
-  wbStashPop: 'Pop',
-  wbStashApply: 'Apply',
-  wbStashDrop: 'Drop',
-  wbStashNoSubject: '(no note)',
-  wbNoStashes: 'No stashes yet',
-  wbNoStashesHint: 'Stash the current changes to leave a clean working tree',
-  toastStashed: 'Changes stashed',
-  toastStashPopped: 'Stash popped',
-  toastStashApplied: 'Stash applied',
-  toastStashDropped: 'Stash dropped',
-  /* ---- dgp-v19: files view ---- */
-  wbFilesTab: 'Files',
+  methodPat: 'PAT token',
+  methodOauth: 'OAuth device flow',
+  tokenLabel: 'Access token',
+  tokenPlaceholder: 'Paste PAT (never shown again after save)',
+  labelLabel: 'Label (optional)',
+  clientIdLabel: 'OAuth App Client ID',
+  clientIdHint: 'No third-party app credential is bundled: create your own GitHub OAuth App and paste its Client ID.',
+  userCode: 'Open the URL below in a browser and enter the code',
+  waiting: 'Waiting for authorization…',
+  connect: 'Connect',
+  cancel: 'Cancel',
+  disconnect: 'Disconnect',
+  recheck: 'Recheck',
+  copied: 'Copied',
+  injected: 'Command placed in the input box',
+  injectedSubmitted: 'Command sent to the AI',
+  injectFailed: 'Inject failed',
+  detectFailed: 'Cannot detect repository status',
+  retry: 'Check again',
+  settingsTitle: 'Git Settings (v3 slim)',
+  rootsTitle: 'Authorized local directories',
+  rootsHint: 'One absolute path per line; * means no limit.',
+  save: 'Save',
+  saved: 'Saved',
+  allowWrite: 'Allow the agent to modify repositories',
+  allowWriteHint: 'Master switch: git_write refuses when off.',
+  requireConfirm: 'Ask me before every write',
+  requireConfirmHint: 'git_write returns a confirmToken you must approve via git_confirm.',
+  cmdStageAll: 'Stage all',
+  cmdCommit: 'Commit…',
+  cmdPush: 'Push',
+  cmdPull: 'Pull',
+  cmdFetch: 'Fetch',
+  cmdBranchCreate: 'New branch…',
+  cmdBranchSwitch: 'Switch branch…',
+  cmdDiscard: 'Discard…',
+  cmdStash: 'Stash',
+  cmdTag: 'Tag…',
+  cmdInit: 'Init repo',
+  askParam: 'Fill parameter',
+  commitIntent: 'Commit intent (optional)',
+  branchName: 'Branch name',
+  discardFiles: 'Files to discard (space separated)',
+  tagName: 'Tag name',
 }
 
-/** 设置面板在 DOM 里的稳定锚点（宿主 SettingsPanel 上写死）。 */
-const SETTINGS_PANEL_SELECTOR = '[data-shortcut-modal="settings"]'
-
-/**
- * 设置入口按钮的候选选择器。
- * 宿主 SettingsRoot 的 trigger 恒带 `aria-haspopup="dialog"`；`aria-keyshortcuts`
- * 只在快捷键目录里有 settings.open 这一行时才渲染，所以不能只依赖后者。
- */
-const SETTINGS_TRIGGER_SELECTORS = [
-  'button[aria-haspopup="dialog"][aria-keyshortcuts]',
-  'button[aria-haspopup="dialog"]',
-]
-
-/** 按可见文案认设置按钮（宿主 locale 可能给中文或英文）。 */
-const SETTINGS_TRIGGER_LABEL = /设置|設定|Settings|Preferences/i
-
-/**
- * 必须排除的按钮：这些也是 `aria-haspopup="dialog"`，但打开的是别的浮层。
- * `[data-team-action]` 是 Agent Teams 的「智能体团队」触发按钮（同 asar 包
- * `dsh-experimental-client-ui-agent-team`），它的 aria-label 恰是「智能体团队」。
- */
-const SETTINGS_TRIGGER_EXCLUDE = '[data-team-action],[data-team-panel],[aria-label*="团队"],[aria-label*="Team"]'
-
-/**
- * 宿主账号菜单按钮（`dsh-client-ui-settings-account` 的 AccountMenu）。
- * 它无条件占用 `settings.launcher` slot，导致宿主的设置按钮 fallback 不渲染，
- * 真正的设置入口是这个账号菜单里的「设置」项。
- */
-const ACCOUNT_MENU_SELECTORS = ['button[aria-haspopup="menu"]', 'button[aria-haspopup="true"]']
-
-/** 账号菜单按钮的文案（中文/英文两种宿主 locale）。 */
-const ACCOUNT_MENU_LABEL = /账号菜单|账户菜单|帐号菜单|Account\s*Menu|Account/i
-
-/** 账号菜单里「设置」菜单项的文案前缀（后面常跟着快捷键提示，如「设置 Ctrl+Alt+,」）。 */
-const SETTINGS_MENU_ITEM_LABEL = /^(设置|設定|Settings|Preferences)/i
-
-function isSettingsOpen(): boolean {
-  return document.querySelector(SETTINGS_PANEL_SELECTOR) !== null
-}
-
-/**
- * 找到宿主的设置入口按钮。
- *
- * 只认**文案匹配**的按钮，绝不退化成「随便拿第一个 aria-haspopup 按钮」：
- * 宿主把设置入口渲染在 `settings.launcher` slot 的 fallback 里，一旦该 slot
- * 被 `dsh-client-ui-settings-account` 的账号菜单占用，真正的设置按钮就根本
- * 不在 DOM 里，此时页面上其余 `aria-haspopup="dialog"` 按钮全是别的浮层
- * （智能体团队 / 插件市场 / 定时任务 …），点错会把无关面板打开。
- * 已展开的也不收（再点会把它关掉）。
- */
-function findSettingsTrigger(): HTMLButtonElement | undefined {
-  for (const selector of SETTINGS_TRIGGER_SELECTORS) {
-    const nodes = Array.from(document.querySelectorAll<HTMLButtonElement>(selector))
-    const labeled = nodes.find((node) => {
-      if (node.disabled) return false
-      if (node.getAttribute('aria-expanded') === 'true') return false
-      if (node.closest(SETTINGS_TRIGGER_EXCLUDE) !== null) return false
-      const name = node.getAttribute('aria-label') ?? node.textContent ?? ''
-      return SETTINGS_TRIGGER_LABEL.test(name)
-    })
-    if (labeled !== undefined) return labeled
+interface SessionsService {
+  list?: {
+    subscribe?: (listener: () => void) => () => void
+    getSnapshot?: () => { byId?: Record<string, { cwd?: string }> }
   }
-  return undefined
 }
 
-/** 等一帧，让 React 把 state 刷到 DOM 上再判定。 */
-function nextFrame(): Promise<void> {
-  return new Promise((resolve) => {
-    try {
-      window.requestAnimationFrame(() => resolve())
-    } catch {
-      window.setTimeout(resolve, 16)
-    }
-  })
-}
-
-/**
- * 找到宿主账号菜单按钮（打开账号菜单的浮层触发器）。
- */
-function findAccountMenuTrigger(): HTMLButtonElement | undefined {
-  for (const selector of ACCOUNT_MENU_SELECTORS) {
-    const nodes = Array.from(document.querySelectorAll<HTMLButtonElement>(selector))
-    const matched = nodes.find((node) => {
-      if (node.disabled) return false
-      const name = node.getAttribute('aria-label') ?? node.textContent ?? ''
-      return ACCOUNT_MENU_LABEL.test(name)
-    })
-    if (matched !== undefined) return matched
+interface ClientContext {
+  slots?: {
+    inject?: (name: string, factory: () => any) => void
+    register?: (options: any, component: any) => any
   }
-  return undefined
-}
-
-/**
- * 走宿主真实路径打开设置页：账号菜单 → 「设置」菜单项。
- *
- * 宿主的设置按钮只是 `settings.launcher` slot 的 fallback，而
- * `dsh-client-ui-settings-account` 的 AccountMenu 无条件占用该 slot，
- * 于是设置按钮根本不在 DOM 里；唯一稳定可点的真入口是账号菜单里的「设置」项
- * （菜单项文案形如「设置  Ctrl+Alt+,」，后面跟着快捷键提示）。
- *
- * 返回 true 表示设置面板已打开。
- */
-async function openSettingsViaAccountMenu(): Promise<boolean> {
-  const trigger = findAccountMenuTrigger()
-  if (trigger === undefined) return false
-  if (trigger.getAttribute('aria-expanded') === 'true') {
-    // 菜单已经开着，直接找菜单项。
-  } else {
-    trigger.click()
-    await nextFrame()
-    await nextFrame()
+  locale?: {
+    register?: (namespace: string, dicts: Record<string, Dict>) => void
+    bind?: (namespace: string) => (key: string) => string
   }
-  const menus = Array.from(document.querySelectorAll<HTMLElement>('[role="menu"]'))
-  for (const menu of menus) {
-    const items = Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"],button'))
-    const target = items.find((item) => {
-      const text = (item.textContent ?? '').trim()
-      return SETTINGS_MENU_ITEM_LABEL.test(text)
-    })
-    if (target === undefined) continue
-    target.click()
-    await nextFrame()
-    await nextFrame()
-    if (isSettingsOpen()) return true
-  }
-  return isSettingsOpen()
-}
-
-/** 跑一次动作，等两帧后看设置面板有没有出现。 */
-async function attempt(open: () => void): Promise<boolean> {
-  if (isSettingsOpen()) return true
-  try {
-    open()
-  } catch {
-    return false
-  }
-  await nextFrame()
-  if (isSettingsOpen()) return true
-  await nextFrame()
-  return isSettingsOpen()
-}
-
-/**
- * 面板已打开后，把左侧导航切到 Git 分节。
- * 宿主导航行结构固定：`nav > div.navList > button[aria-current] > span.<navLabel 文案>`，
- * 文案来自我们注册 settings.section 时给的 `label`，即 t('navLabel')。
- */
-async function selectSettingsSection(label: string): Promise<void> {
-  const panel = document.querySelector(SETTINGS_PANEL_SELECTOR)
-  if (panel === null) return
-  const rows = Array.from(panel.querySelectorAll<HTMLButtonElement>('nav button'))
-  const target = rows.find((row) => {
-    const text = (row.textContent ?? '').trim()
-    return text === label
-  })
-  if (target === undefined) return
-  if (target.getAttribute('aria-current') === 'true') return
-  target.click()
-  await nextFrame()
-}
-
-/**
- * 打开 DSH 设置页并切到 Git 分节。
- *
- * 不能只靠派发合成键盘事件：桌面端 `installNativeKeyboard` 接管快捷键后走原生 IPC，
- * 且 `installKeyboard` 里 `if (native) return` 直接跳过 DOM keydown 分支，
- * 合成的 Ctrl/Cmd+, 在桌面端永远到不了 `settings.open`。
- *
- * 按可信度依次尝试，任一成功即止：
- * 1) 宿主账号菜单 → 「设置」菜单项（宿主真入口，最稳）；
- * 2) 点宿主自己的设置触发按钮（走宿主 onClick；部分构建里它确实在 DOM）；
- * 3) `shortcuts.registry.invoke('settings.open', ...)`（原生菜单走的同一条路，不校验 isTrusted）；
- * 4) 兜底派发 keydown（Web 端 runtime 无原生桥接，这条路有效）。
- */
-async function openSettingsSection(
-  ctx?: { shortcuts?: { registry?: { invoke?: (id: string, context: any) => void } } },
-  sectionLabel?: string,
-): Promise<void> {
-  if (!isSettingsOpen()) {
-    // 1) 宿主账号菜单里的「设置」。
-    const viaMenu = await openSettingsViaAccountMenu()
-    if (!viaMenu) {
-      // 2) 点宿主的设置触发按钮。
-      const trigger = findSettingsTrigger()
-      if (trigger !== undefined) {
-        const opened = await attempt(() => trigger.click())
-        if (!opened) await openSettingsFallback(ctx)
-      } else {
-        await openSettingsFallback(ctx)
-      }
-    }
-  }
-  if (sectionLabel !== undefined && sectionLabel !== '') await selectSettingsSection(sectionLabel)
-}
-
-/** 触发按钮不可用时的两条兜底路径。 */
-async function openSettingsFallback(ctx?: {
+  sessions?: SessionsService
+  get?: (name: string) => any
   shortcuts?: { registry?: { invoke?: (id: string, context: any) => void } }
-}): Promise<void> {
-  // 2) 直接调 ShortcutRegistry.invoke：与原生菜单调用完全一致。
-  const invoke = ctx?.shortcuts?.registry?.invoke
-  if (typeof invoke === 'function') {
-    const opened = await attempt(() =>
-      invoke('settings.open', {
-        region: 'page',
-        modal: null,
-        target: document.activeElement,
-        source: 'menu',
-      }),
-    )
-    if (opened) return
-  }
-
-  // 3) 兜底：Web 端 runtime 没有原生键盘桥接，keydown 分支可用。
-  //    宿主按运行端注册两套绑定：desktop:* 是 Comma+primary（Ctrl+,），
-  //    web:* 是 Comma+primary+alt（Ctrl+Alt+,）；两种都要试。
-  const variants: Array<{ ctrlKey: boolean; altKey: boolean }> = [
-    { ctrlKey: true, altKey: false },
-    { ctrlKey: true, altKey: true },
-  ]
-  for (const variant of variants) {
-    // Windows 上 primary = control，不能同时置 metaKey，否则 bindingKey 匹配不上。
-    const opened = await attempt(() => {
-      window.dispatchEvent(
-        new KeyboardEvent('keydown', {
-          key: ',',
-          code: 'Comma',
-          ctrlKey: variant.ctrlKey,
-          altKey: variant.altKey,
-          bubbles: true,
-          cancelable: true,
-        }),
-      )
-    })
-    if (opened) return
-  }
+  logger?: { info?: (msg: string) => void; warn?: (msg: string) => void; error?: (msg: string) => void }
+  effect?: (fn: () => void, label?: string) => void
 }
 
-/* ------------------------------------------------------------------ */
-/* 版本检查（client 侧，只在打开菜单时拉一次，5 秒超时 + 进程内缓存）      */
-/* ------------------------------------------------------------------ */
-
-/** 版本查询目标仓库（与 package.json 的 repository 保持一致）。 */
-const VERSION_REPO = 'zjj1769404838/dsh-git-panel'
-/** 进程内缓存：同一页面生命周期里只查一次，失败也缓存（避免反复打 GitHub）。 */
-let versionPromise: Promise<string> | null = null
-
-/** 把 `v1.2.3` / `1.2.3-rc.1` 解析成可比较的数字段；解析不出返回 null。 */
-export function parseVersion(raw: string): number[] | null {
-  const text = raw.trim().replace(/^v/iu, '')
-  const match = /^(\d+)\.(\d+)\.(\d+)/u.exec(text)
-  if (!match) return null
-  return [Number(match[1]), Number(match[2]), Number(match[3])]
-}
-
-/** a 是否比 b 新（逐段比较；解析失败视为不比它新）。 */
-export function isNewer(a: string, b: string): boolean {
-  const left = parseVersion(a)
-  const right = parseVersion(b)
-  if (!left || !right) return false
-  for (let i = 0; i < 3; i += 1) {
-    if (left[i] !== right[i]) return left[i] > right[i]
-  }
-  return false
-}
-
-/**
- * 拉 GitHub 最新 release 的 tag。
- *
- * 三条纪律：① 5 秒超时，绝不拖住菜单；② 预发布（`-rc` / `-beta`）不提示，
- * 与发布流程一致（预发布不发正式版本）；③ 失败静默返回空串，版本提示是锦上添花，
- * 不能因为它报错而打断正常使用。
- */
-function fetchLatestVersion(): Promise<string> {
-  if (versionPromise !== null) return versionPromise
-  versionPromise = (async () => {
-    const controller = new AbortController()
-    const timer = window.setTimeout(() => controller.abort(), 5000)
+function useSessionCwd(sessions: SessionsService | undefined, sessionId: string): string {
+  const subscribe = useMemo(
+    () => (listener: () => void) => {
+      try {
+        const list = sessions?.list
+        return typeof list?.subscribe === 'function' ? list.subscribe(listener) : () => {}
+      } catch {
+        return () => {}
+      }
+    },
+    [sessions],
+  )
+  const get = useCallback(() => {
     try {
-      const response = await fetch(`https://api.github.com/repos/${VERSION_REPO}/releases/latest`, {
-        signal: controller.signal,
-        headers: { Accept: 'application/vnd.github+json' },
-      })
-      if (!response.ok) return ''
-      const data = (await response.json()) as { tag_name?: unknown; prerelease?: unknown }
-      if (data.prerelease === true) return ''
-      const tag = typeof data.tag_name === 'string' ? data.tag_name : ''
-      return /-\w+/u.test(tag) ? '' : tag
+      if (!sessionId || !sessions) return ''
+      const value = sessions.list?.getSnapshot?.()?.byId?.[sessionId]?.cwd
+      return typeof value === 'string' ? value : ''
     } catch {
       return ''
-    } finally {
-      window.clearTimeout(timer)
     }
-  })()
-  return versionPromise
+  }, [sessionId, sessions])
+  return useSyncExternalStore(subscribe, get, () => '')
 }
 
-/** 有新版本时返回该版本号，否则返回空串。 */
-function useLatestVersion(enabled: boolean): string {
-  const [latest, setLatest] = useState('')
-  useEffect(() => {
-    if (!enabled) return
-    let alive = true
-    void fetchLatestVersion().then((tag) => {
-      if (alive && tag !== '' && isNewer(tag, BUILD)) setLatest(tag)
-    })
-    return () => {
-      alive = false
-    }
-  }, [enabled])
-  return latest
-}
+// ─── chip + 弹层 ───
 
-/* ------------------------------------------------------------------ */
-/* composer 状态 chip（opencode 风格）                                  */
-/* ------------------------------------------------------------------ */
-
-interface ChipProps {
-  t: (key: string) => string
-  sessionId?: string
-  sessions?: any
-  shortcuts?: { registry?: { invoke?: (id: string, context: any) => void } }
-}
-
-interface MenuAnchor {
-  left: number
-  /** 上方空间不足时翻到 chip 下方，此时用 top 而非 bottom。 */
-  top?: number
-  bottom?: number
-}
-
-function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
+function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; sessionId: string; sessions?: SessionsService }) {
   useStyles()
   const [status, setStatus] = useState<RepoStatusView | null>(null)
-  const [detectError, setDetectError] = useState('')
-  const [checking, setChecking] = useState(false)
-  const [open, setOpen] = useState(false)
-  const [workbench, setWorkbench] = useState(false)
-  /** 分步初始化向导是否打开。 */
-  const [wizardOpen, setWizardOpen] = useState(false)
-  /** 当前分支详情弹窗是否打开。 */
-  const [branchDetailOpen, setBranchDetailOpen] = useState(false)
-  /** 已连接账号（供初始化向导选账号）。 */
+  const [files, setFiles] = useState<ChangeFileView[]>([])
+  const [commits, setCommits] = useState<CommitRowView[]>([])
   const [accounts, setAccounts] = useState<AccountView[]>([])
-  /** 账号 → 仓库权限表（供向导列出已授权仓库）。 */
-  const [repoPermissions, setRepoPermissions] = useState<Record<string, Record<string, RepoPermission>>>({})
-  const [busy, setBusy] = useState(false)
-  const [toast, setToast] = useState<{ tone: 'ok' | 'error' | 'info'; text: string } | null>(null)
-  const toastTimerRef = useRef<number | null>(null)
-  const [anchor, setAnchor] = useState<MenuAnchor>({ left: 0, bottom: 0 })
-  /** 有新版本时是 tag 号，否则空串：只在菜单打开时查一次。 */
-  const latestVersion = useLatestVersion(open)
-  const wrapRef = useRef<HTMLSpanElement | null>(null)
-  const menuRef = useRef<HTMLSpanElement | null>(null)
+  const [detectError, setDetectError] = useState('')
+  const [open, setOpen] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [toast, setToast] = useState<string>('')
+  const [autoSubmit, setAutoSubmit] = useState(() => readPref(PREF_AUTO_SUBMIT, '0') === '1')
+  const [prompt, setPrompt] = useState<CommandSpec | null>(null)
+  const [promptValue, setPromptValue] = useState('')
+  const toastTimer = useRef<number | null>(null)
+  const chipRef = useRef<HTMLSpanElement | null>(null)
+  const [anchor, setAnchor] = useState({ left: 0, bottom: 0 })
 
-  // 会话列表变化（切换项目/会话）时立刻重算 cwd：不能沿用上一个项目的检测结果。
-  const cwd = useSyncExternalStore(
-    useMemo(() => {
-      return (listener: () => void) => {
-        try {
-          const list = sessions?.list
-          return typeof list?.subscribe === 'function' ? list.subscribe(listener) : () => {}
-        } catch {
-          return () => {}
-        }
-      }
-    }, [sessions]),
-    useCallback(() => {
-      try {
-        if (!sessionId || !sessions) return ''
-        const value = sessions.list?.getSnapshot?.()?.byId?.[sessionId]?.cwd
-        return typeof value === 'string' ? value : ''
-      } catch {
-        return ''
-      }
-    }, [sessionId, sessions]),
-    () => '',
-  )
+  const cwd = useSessionCwd(sessions, sessionId)
 
-  const reload = useCallback(async (): Promise<void> => {
+  useEffect(() => {
+    const stop = subscribePref(() => setAutoSubmit(readPref(PREF_AUTO_SUBMIT, '0') === '1'))
+    return stop
+  }, [])
+
+  const showToast = useCallback((text: string) => {
+    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
+    setToast(text)
+    toastTimer.current = window.setTimeout(() => setToast(''), 2400)
+  }, [])
+
+  const reload = useCallback(async () => {
     if (!cwd) {
       setStatus(null)
+      setFiles([])
+      setCommits([])
       setDetectError('')
       return
     }
@@ -1207,47 +339,32 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
       if (data.ok && data.status) {
         setStatus(data.status)
         setDetectError('')
+        if (data.status.isRepo && data.status.authorized) {
+          const [changes, log, state] = await Promise.all([
+            api<{ ok: boolean; changes?: RepoChangesView }>(`/repo/changes?cwd=${encodeURIComponent(cwd)}`).catch(() => null),
+            api<{ ok: boolean; commits?: CommitRowView[] }>(`/repo/commits?cwd=${encodeURIComponent(cwd)}&limit=5`).catch(() => null),
+            api<{ ok: boolean; state?: PanelState }>('/state').catch(() => null),
+          ])
+          setFiles(changes?.changes?.files ?? [])
+          setCommits(log?.commits ?? [])
+          setAccounts(state?.state?.accounts ?? [])
+        } else {
+          setFiles([])
+          setCommits([])
+        }
       } else {
-        // 接口正常但拿不到状态：视为检测失败，明确告知而不是当成「不是仓库」。
         setStatus(null)
-        setDetectError(data.error || t('menuDetectFailed'))
+        setDetectError(data.error || t('detectFailed'))
       }
     } catch (error) {
       setStatus(null)
-      setDetectError((error as Error).message || t('menuDetectFailed'))
+      setDetectError((error as Error).message || t('detectFailed'))
     } finally {
       setChecking(false)
     }
   }, [cwd, t])
-  /** 读取已连接账号与仓库权限表：初始化向导需要账号列表与该账号已授权的仓库。 */
-  const loadAccounts = useCallback(async (): Promise<void> => {
-    try {
-      const data = await api<{ ok: boolean; state?: PanelState }>('/state')
-      if (!data.ok || !data.state) return
-      setAccounts(Array.isArray(data.state.accounts) ? data.state.accounts : [])
-      setRepoPermissions(data.state.settings?.repoPermissions ?? {})
-    } catch {
-      // 拉不到就保持空列表：向导会提示先去连接账号。
-    }
-  }, [])
 
-  /** 轻提示：操作结果用 toast 反馈，不再往菜单里塞文字行。 */
-  const showToast = useCallback((tone: 'ok' | 'error' | 'info', text: string) => {
-    if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
-    setToast({ tone, text })
-    toastTimerRef.current = window.setTimeout(() => setToast(null), 2600)
-  }, [])
-
-  useEffect(() => {
-    return () => {
-      if (toastTimerRef.current !== null) window.clearTimeout(toastTimerRef.current)
-    }
-  }, [])
-
-  // 摘要刷新策略：只在「真的可能变了」的时刻取一次，不做定时轮询。
-  //   ① cwd 变化（切换项目/会话）  ② 窗口重新获得焦点（用户可能刚在外部改了仓库）
-  //   ③ 打开菜单时（已有 toggle 里显式 reload）  ④ 工作台/向导关闭后（动作反馈）
-  // 这样 composer 常驻的 chip 不再每 15 秒打一次 node 半边。
+  // 策略同旧版：cwd 变化 / 窗口聚焦 / 打开面板时刷新，不做轮询。
   useEffect(() => {
     setStatus(null)
     setDetectError('')
@@ -1258,461 +375,431 @@ function BranchChip({ t, sessionId, sessions, shortcuts }: ChipProps) {
     }
     load()
     const onFocus = () => load()
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') load()
-    }
     window.addEventListener('focus', onFocus)
-    document.addEventListener('visibilitychange', onVisible)
     return () => {
       alive = false
       window.removeEventListener('focus', onFocus)
-      document.removeEventListener('visibilitychange', onVisible)
     }
   }, [cwd, reload])
 
-  // 点空白 / Esc 关闭菜单
-  useEffect(() => {
-    if (!open) return
-    const onDown = (event: MouseEvent) => {
-      const target = event.target instanceof Node ? event.target : null
-      if (!target) return
-      // 菜单已 portal 到 body，不再位于 wrapRef 内，两处都要放过，否则点菜单项会先被关掉。
-      if (wrapRef.current?.contains(target) || menuRef.current?.contains(target)) return
-      setOpen(false)
+  const toggle = () => {
+    const next = !open
+    if (next && chipRef.current) {
+      const rect = chipRef.current.getBoundingClientRect()
+      setAnchor({ left: Math.min(rect.left, window.innerWidth - 396), bottom: window.innerHeight - rect.top + 6 })
     }
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown, true)
-    document.addEventListener('keydown', onKey, true)
-    return () => {
-      document.removeEventListener('mousedown', onDown, true)
-      document.removeEventListener('keydown', onKey, true)
-    }
-  }, [open])
+    setOpen(next)
+    if (next) void reload()
+  }
 
-  if (!cwd) return null
+  const runCommand = useCallback(
+    async (spec: CommandSpec, extra?: string) => {
+      if (!cwd) return
+      const text = spec.build(cwd, extra)
+      const result = await injectCommand(text, autoSubmit)
+      if (result.ok) {
+        showToast(result.submitted ? t('injectedSubmitted') : t('injected'))
+        setOpen(false)
+      } else {
+        showToast(`${t('injectFailed')}：${result.error ?? ''}`)
+      }
+    },
+    [cwd, autoSubmit, t, showToast],
+  )
 
-  const isRepo = status !== null && status.isRepo
-  // 路径非法/不存在属于「检测失败」，不能当成「未初始化」而给出初始化按钮。
-  const invalidPath = status !== null && !isRepo && status.reason === 'invalid'
-  // reason 缺失（旧版 node 半边）时回退为「不是仓库即可初始化」，不让功能失效。
-  const canInit = status !== null && !isRepo && (status.reason ? status.reason === 'no-repo' : true)
-  const detectFailed = !isRepo && (detectError.length > 0 || invalidPath)
-  const detectMessage = detectError || (invalidPath ? status?.error || '' : '') || t('menuDetectFailed')
-  const label = !status
-    ? t('entry')
-    : status.detached
-      ? status.head || 'HEAD'
-      : status.branch || status.head || t('entry')
-  const aux = isRepo
-    ? [status!.ahead > 0 ? `↑${status!.ahead}` : '', status!.behind > 0 ? `↓${status!.behind}` : '', status!.changed > 0 ? `${status!.changed}*` : '']
-        .filter(Boolean)
-        .join(' ')
-    : ''
-  const warn = isRepo && status!.authorized === false
-  // 二态色：有未提交改动（changed > 0）时 chip 用警示色，干净时不加任何强调。
-  const dirty = isRepo && status!.changed > 0
-
-  const title = !status
-    ? detectFailed
-      ? `${t('entryTitle')} · ${t('menuDetectFailed')}`
-      : t('entryTitle')
-    : isRepo
-      ? `${t('entryTitle')}${status.root ? ' · ' + status.root : ''}${warn ? ' · ' + t('unauthorizedRoot') : ''}`
-      : detectFailed
-        ? `${t('entryTitle')} · ${t('menuDetectFailed')}`
-        : `${t('entryTitle')} · ${t('notRepo')}`
-
-  // 菜单定位：优先在 chip 上方展开（composer 贴着窗口底部），上方放不下才翻到下方；
-  // 水平方向收敛在视口内。portal 到 body 后与 composer 的包含块彻底无关。
-  const placeMenu = useCallback(() => {
-    const chip = wrapRef.current?.getBoundingClientRect()
-    if (!chip) return
-    const menu = menuRef.current?.getBoundingClientRect()
-    const gap = 6
-    const width = menu?.width && menu.width > 0 ? menu.width : 260
-    const height = menu?.height && menu.height > 0 ? menu.height : 260
-    const left = Math.min(Math.max(8, chip.left), Math.max(8, window.innerWidth - width - 8))
-    const spaceAbove = chip.top - gap
-    const spaceBelow = window.innerHeight - chip.bottom - gap
-    if (spaceAbove >= height || spaceAbove >= spaceBelow) {
-      setAnchor({ left: Math.round(left), bottom: Math.round(window.innerHeight - chip.top + gap) })
+  const onActionClick = (spec: CommandSpec) => {
+    // 带 … 的按钮需要用户先补参数（分支名/文件/提交意图）；其余直接注入。
+    if (spec.id === 'stage-all' || spec.id === 'push' || spec.id === 'pull' || spec.id === 'fetch' || spec.id === 'stash' || spec.id === 'init') {
+      void runCommand(spec)
     } else {
-      setAnchor({ left: Math.round(left), top: Math.round(chip.bottom + gap) })
+      setPrompt(spec)
+      setPromptValue('')
+    }
+  }
+
+  const isRepo = status?.isRepo === true
+  const authorized = status?.authorized === true
+
+  return (
+    <span className="dgp-root" ref={chipRef}>
+      <button
+        type="button"
+        className="dgp-chip"
+        title={isRepo ? `${status?.branch ?? ''}` : detectError || t('entry')}
+        onClick={toggle}
+        aria-expanded={open}
+      >
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+          <circle cx="5" cy="4" r="2" />
+          <circle cx="5" cy="12" r="2" />
+          <circle cx="11" cy="7" r="2" />
+          <path d="M5 6v4M7 7h2M11 9v1a3 3 0 0 1-3 3H7" />
+        </svg>
+        <span className="dgp-chip-branch">
+          {checking && !status ? '…' : isRepo ? status?.branch || '—' : 'Git'}
+        </span>
+        {isRepo && authorized && (
+          <span className="dgp-chip-badge">
+            {status!.ahead > 0 ? `↑${status!.ahead}` : ''}
+            {status!.behind > 0 ? `↓${status!.behind}` : ''}
+            {status!.changed > 0 ? ` ${status!.changed}*` : ''}
+          </span>
+        )}
+      </button>
+
+      {open &&
+        createPortal(
+          <div className="dgp-panel" style={{ left: anchor.left, bottom: anchor.bottom }} onMouseLeave={() => setOpen(false)}>
+            <div className="dgp-head">
+              <span className="dgp-title">{t('panelTitle')}</span>
+              <button type="button" className="dgp-iconbtn" title={t('refresh')} onClick={() => void reload()}>⟳</button>
+              <label className="dgp-toggle" title={t('autoSubmit')}>
+                <input
+                  type="checkbox"
+                  checked={autoSubmit}
+                  onChange={(e) => {
+                    setAutoSubmit(e.target.checked)
+                    writePref(PREF_AUTO_SUBMIT, e.target.checked ? '1' : '0')
+                  }}
+                />
+                {t('autoSubmit')}
+              </label>
+              <button type="button" className="dgp-iconbtn" title={t('close')} onClick={() => setOpen(false)}>✕</button>
+            </div>
+
+            {detectError && !isRepo && (
+              <div className="dgp-sect">
+                <div className="dgp-empty">{detectError} <button type="button" className="dgp-btn" onClick={() => void reload()}>{t('retry')}</button></div>
+              </div>
+            )}
+
+            {!isRepo && !detectError && cwd && (
+              <div className="dgp-sect">
+                <div className="dgp-empty">{t('notRepo')}</div>
+                <div className="dgp-muted">{t('notRepoHint')}</div>
+                <div className="dgp-btnrow" style={{ marginTop: 6 }}>
+                  <button type="button" className="dgp-btn" onClick={() => onActionClick(COMMANDS.find((c) => c.id === 'init')!)}>{t('cmdInit')}</button>
+                </div>
+              </div>
+            )}
+
+            {isRepo && !authorized && <div className="dgp-sect"><div className="dgp-empty">{t('unauthorized')}</div></div>}
+
+            {isRepo && authorized && (
+              <>
+                <div className="dgp-sect">
+                  <div className="dgp-sect-title">{t('changedFiles')} ({files.length})</div>
+                  {files.length === 0 && <div className="dgp-empty">{t('noChanges')}</div>}
+                  {files.slice(0, 12).map((file) => (
+                    <div key={file.path} className="dgp-file" title={file.path}>
+                      <span className="dgp-file-status">{file.staged ? file.worktree === 'M' ? 'MM' : 'M' : file.untracked ? '?' : file.worktree}</span>
+                      <span className="dgp-file-path">{file.path}</span>
+                      <span className="dgp-file-stat">{file.added > 0 ? `+${file.added}` : ''}{file.deleted > 0 ? ` -${file.deleted}` : ''}</span>
+                    </div>
+                  ))}
+                  {files.length > 12 && <div className="dgp-muted">…{files.length - 12}</div>}
+                </div>
+
+                <div className="dgp-sect">
+                  <div className="dgp-sect-title">{t('recentCommits')}</div>
+                  {commits.length === 0 && <div className="dgp-empty">{t('noCommits')}</div>}
+                  {commits.map((commit) => (
+                    <div key={commit.hash} className="dgp-row-line" title={`${commit.subject} (${commit.author}, ${commit.date})`}>
+                      <span className="dgp-hash">{commit.hash}</span>
+                      {commit.subject}
+                    </div>
+                  ))}
+                </div>
+
+                <div className="dgp-sect">
+                  <div className="dgp-sect-title">{t('account')}</div>
+                  {accounts.length === 0 && <div className="dgp-empty">{t('noAccount')}</div>}
+                  {accounts.map((account) => (
+                    <div key={account.id} className="dgp-account">
+                      <Dot state={account.status} />
+                      <span>{account.login}</span>
+                      <span className="dgp-muted">{account.kind === 'oauth' ? 'OAuth' : 'PAT'}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="dgp-sect">
+                  <div className="dgp-sect-title">{t('actions')}</div>
+                  <div className="dgp-btnrow">
+                    {COMMANDS.filter((c) => c.id !== 'init').map((command) => (
+                      <button key={command.id} type="button" className="dgp-btn" onClick={() => onActionClick(command)}>
+                        {t(command.labelKey)}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="dgp-muted" style={{ marginTop: 6 }}>{t('inputHint')}</div>
+                </div>
+              </>
+            )}
+
+            {prompt && (
+              <div className="dgp-sect" style={{ border: '1px solid var(--dsh-border, #666)', borderRadius: 8, padding: 8 }}>
+                <div className="dgp-sect-title">{t(prompt.labelKey).replace('…', '')} · {t('askParam')}</div>
+                <input
+                  className="dgp-input"
+                  autoFocus
+                  placeholder={
+                    prompt.id === 'commit' ? t('commitIntent')
+                      : prompt.id === 'discard' ? t('discardFiles')
+                        : prompt.id === 'tag' ? t('tagName')
+                          : t('branchName')
+                  }
+                  value={promptValue}
+                  onChange={(e) => setPromptValue(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      const spec = prompt
+                      setPrompt(null)
+                      void runCommand(spec, promptValue.trim() || undefined)
+                    } else if (e.key === 'Escape') {
+                      setPrompt(null)
+                    }
+                  }}
+                />
+                <div className="dgp-btnrow" style={{ marginTop: 6 }}>
+                  <button type="button" className="dgp-btn" onClick={() => { const spec = prompt; setPrompt(null); void runCommand(spec, promptValue.trim() || undefined) }}>OK</button>
+                  <button type="button" className="dgp-btn" onClick={() => setPrompt(null)}>{t('cancel')}</button>
+                </div>
+              </div>
+            )}
+          </div>,
+          document.body,
+        )}
+
+      {toast && createPortal(<div className="dgp-toast">{toast}</div>, document.body)}
+    </span>
+  )
+}
+
+// ─── 设置分节：账号连接 + 目录白名单 + 写策略 ───
+
+function GitSection({ t }: { t: (key: string) => string }) {
+  useStyles()
+  const [state, setState] = useState<PanelState | null>(null)
+  const [rootsText, setRootsText] = useState('')
+  const [saved, setSaved] = useState(false)
+  const [connectOpen, setConnectOpen] = useState(false)
+  const [method, setMethod] = useState<'pat' | 'oauth'>('pat')
+  const [token, setToken] = useState('')
+  const [label, setLabel] = useState('')
+  const [clientId, setClientId] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [oauthFlow, setOauthFlow] = useState<{ verificationUri: string; userCode: string } | null>(null)
+  const [oauthStatus, setOauthStatus] = useState('')
+  const pollRef = useRef<number | null>(null)
+  const [error, setError] = useState('')
+
+  const load = useCallback(async () => {
+    try {
+      const data = await api<{ ok: boolean; state?: PanelState }>('/state')
+      if (data.ok && data.state) {
+        setState(data.state)
+        setRootsText(data.state.settings.allowedRoots.join('\n'))
+      }
+    } catch (err) {
+      setError((err as Error).message)
     }
   }, [])
 
-  // 打开后按真实尺寸再校正一次；窗口变化/滚动时跟随。
-  useLayoutEffect(() => {
-    if (!open) return
-    placeMenu()
-    const onMove = () => placeMenu()
-    window.addEventListener('resize', onMove)
-    window.addEventListener('scroll', onMove, true)
+  useEffect(() => {
+    void load()
     return () => {
-      window.removeEventListener('resize', onMove)
-      window.removeEventListener('scroll', onMove, true)
+      if (pollRef.current !== null) window.clearInterval(pollRef.current)
     }
-  }, [open, placeMenu])
+  }, [load])
 
-  const toggle = () => {
-    const next = !open
-    if (next) {
-      // portal + fixed 定位：脱离 composer 容器（含 container-type 形成的包含块），避免被裁。
-      placeMenu()
-      // 每次打开菜单都重新检测，避免用上一次的结果（尤其切换项目后）。
-      void reload()
+  const saveSettings = async () => {
+    const allowedRoots = rootsText.split('\n').map((line) => line.trim()).filter(Boolean)
+    try {
+      const data = await api<{ ok: boolean; state?: PanelState }>('/settings', { allowedRoots })
+      if (data.ok && data.state) {
+        setState(data.state)
+        setSaved(true)
+        window.setTimeout(() => setSaved(false), 1500)
+      } else {
+        setError(t('detectFailed'))
+      }
+    } catch (err) {
+      setError((err as Error).message)
     }
-    setOpen(next)
   }
 
-  const runInit = async () => {
-    setBusy(true)
-    showToast('info', t('initRunning'))
+  const toggleFlag = async (key: 'allowWrite' | 'requireConfirm', value: boolean) => {
     try {
-      const data = await api<{ ok: boolean; error?: string; result?: { created?: boolean; branch?: string } }>('/repo/init', {
-        cwd,
-        branch: 'main',
-      })
-      if (data.ok) {
-        const branch = data.result?.branch ? ' · ' + data.result.branch : ''
-        // created=false 说明这里本来就有仓库（并发/已被别处初始化），不能说成「刚初始化」。
-        showToast('ok', data.result?.created === false ? `${t('alreadyRepo')}${branch}` : `${t('initDone')}${branch}`)
-        await reload()
+      const data = await api<{ ok: boolean; state?: PanelState }>('/settings', { [key]: value })
+      if (data.ok && data.state) setState(data.state)
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  const connectPat = async () => {
+    setBusy(true)
+    setError('')
+    try {
+      const data = await api<{ ok: boolean; error?: string; state?: PanelState }>('/pat/connect', { token, label })
+      if (data.ok && data.state) {
+        setState(data.state)
+        setConnectOpen(false)
+        setToken('')
       } else {
-        showToast('error', data.error || t('initFailed'))
-        // 失败后重查一次，避免界面停留在过期状态（例如目录已被别人初始化）。
-        await reload()
+        setError(data.error ?? t('injectFailed'))
       }
-    } catch (error) {
-      showToast('error', `${t('initFailed')}：${(error as Error).message}`)
+    } catch (err) {
+      setError((err as Error).message)
     } finally {
       setBusy(false)
     }
   }
 
-  /** 打开项目目录（系统文件管理器）：走后端 /repo/open，替代原「复制目录路径」。 */
-  const openDir = async () => {
+  const startOauth = async () => {
+    setBusy(true)
+    setError('')
     try {
-      const data = await api<{ ok: boolean; error?: string }>(`/repo/open?cwd=${encodeURIComponent(cwd)}`)
-      if (data.ok) showToast('ok', t('toastOpened'))
-      else showToast('error', data.error || t('openFailed'))
-    } catch (error) {
-      showToast('error', `${t('openFailed')}：${(error as Error).message}`)
+      const data = await api<{
+        ok: boolean
+        error?: string
+        pollKey?: string
+        flow?: { userCode: string; verificationUri: string }
+      }>('/oauth/start', { clientId })
+      if (!data.ok || !data.pollKey || !data.flow) {
+        setError(data.error ?? t('detectFailed'))
+        return
+      }
+      setOauthFlow({ userCode: data.flow.userCode, verificationUri: data.flow.verificationUri })
+      setOauthStatus('waiting')
+      const pollKey = data.pollKey
+      pollRef.current = window.setInterval(async () => {
+        try {
+          const res = await api<{ ok: boolean; status?: string; account?: unknown; state?: PanelState; error?: string }>('/oauth/poll', { pollKey })
+          if (res.status === 'authorized' && res.state) {
+            if (pollRef.current !== null) window.clearInterval(pollRef.current)
+            setState(res.state)
+            setConnectOpen(false)
+            setOauthFlow(null)
+          } else if (res.status === 'denied' || res.status === 'expired' || res.status === 'error') {
+            if (pollRef.current !== null) window.clearInterval(pollRef.current)
+            setError(res.error ?? t('injectFailed'))
+            setOauthFlow(null)
+          }
+        } catch {
+          /* 网络抖动：下一轮再试 */
+        }
+      }, 4000)
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
     }
   }
 
-  const summary = checking && !status
-    ? `${cwd} · ${t('menuChecking')}`
-    : detectFailed
-      ? `${cwd} · ${t('menuDetectFailed')}`
-      : !status
-        ? cwd
-        : isRepo
-          ? `${status.root || cwd}${status.branch ? ' · ' + status.branch : status.head ? ' · ' + status.head : ''}`
-          : `${cwd} · ${t('notRepo')}`
+  const accountAction = async (action: 'remove' | 'recheck', id: string) => {
+    try {
+      const data = await api<{ ok: boolean; state?: PanelState }>(`/accounts/${action}`, { id })
+      if (data.state) setState(data.state)
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  const settings = state?.settings
 
   return (
-    <span className="dgp-root dgp-chip-wrap" ref={wrapRef}>
-      <button
-        type="button"
-        className="dgp-chip"
-        data-warn={warn ? '1' : '0'}
-        data-norepo={isRepo ? '0' : '1'}
-        data-dirty={dirty ? '1' : '0'}
-        data-open={open ? '1' : '0'}
-        title={title}
-        aria-label={`${t('entryTitle')}: ${label}`}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        onMouseDown={(event) => event.preventDefault()}
-        onClick={toggle}
-      >
-        <BranchIcon />
-        <span className="dgp-chip-name">{label}</span>
-        {aux ? <span className="dgp-chip-aux">{aux}</span> : null}
-        {warn ? <Dot state="error" /> : null}
-      </button>
+    <div className="dgp-root dgp-section" style={{ maxWidth: 640 }}>
+      <div className="dgp-head"><span className="dgp-title">{t('settingsTitle')}</span></div>
+      {error && <div className="dgp-empty" role="alert">{error} <button type="button" className="dgp-iconbtn" onClick={() => setError('')}>✕</button></div>}
 
-      {/* 单一入口：分支详情不再单独做一个按钮，走 chip 菜单里的「当前分支详情」项，
-          分支名由 chip 自身与该菜单项的副标题承载。 */}
+      <div className="dgp-sect">
+        <div className="dgp-sect-title">{t('account')}</div>
+        {(state?.accounts ?? []).map((account) => (
+          <div key={account.id} className="dgp-account">
+            <Dot state={account.status} />
+            <span>{account.login}</span>
+            <span className="dgp-muted">{account.kind === 'oauth' ? 'OAuth' : 'PAT'} · {account.scopes.join(' ')}</span>
+            <span style={{ flex: 1 }} />
+            <button type="button" className="dgp-btn" onClick={() => void accountAction('recheck', account.id)}>{t('recheck')}</button>
+            <button type="button" className="dgp-btn" onClick={() => void accountAction('remove', account.id)}>{t('disconnect')}</button>
+          </div>
+        ))}
+        {(state?.accounts ?? []).length === 0 && <div className="dgp-empty">{t('noAccount')}</div>}
+        <button type="button" className="dgp-btn" style={{ marginTop: 6 }} onClick={() => setConnectOpen(!connectOpen)}>
+          {t('connectAccount')}
+        </button>
+        {connectOpen && (
+          <div style={{ marginTop: 8, border: '1px solid var(--dsh-border, #666)', borderRadius: 8, padding: 10 }}>
+            <div className="dgp-btnrow" style={{ marginBottom: 8 }}>
+              <button type="button" className="dgp-btn" onClick={() => setMethod('pat')} style={method === 'pat' ? { borderColor: 'var(--dsh-accent, #4a9eff)' } : undefined}>{t('methodPat')}</button>
+              <button type="button" className="dgp-btn" onClick={() => setMethod('oauth')} style={method === 'oauth' ? { borderColor: 'var(--dsh-accent, #4a9eff)' } : undefined}>{t('methodOauth')}</button>
+            </div>
+            {method === 'pat' ? (
+              <>
+                <div className="dgp-sect-title">{t('tokenLabel')}</div>
+                <input className="dgp-input" type="password" placeholder={t('tokenPlaceholder')} value={token} onChange={(e) => setToken(e.target.value)} />
+                <div className="dgp-sect-title" style={{ marginTop: 6 }}>{t('labelLabel')}</div>
+                <input className="dgp-input" value={label} onChange={(e) => setLabel(e.target.value)} />
+                <div className="dgp-btnrow" style={{ marginTop: 8 }}>
+                  <button type="button" className="dgp-btn" disabled={busy || token.trim().length === 0} onClick={() => void connectPat()}>{t('connect')}</button>
+                  <button type="button" className="dgp-btn" onClick={() => setConnectOpen(false)}>{t('cancel')}</button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="dgp-sect-title">{t('clientIdLabel')}</div>
+                <div className="dgp-muted">{t('clientIdHint')}</div>
+                <input className="dgp-input" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+                {oauthFlow ? (
+                  <div style={{ marginTop: 8 }}>
+                    <div className="dgp-muted">{t('userCode')}</div>
+                    <div className="dgp-file"><a href={oauthFlow.verificationUri} target="_blank" rel="noreferrer">{oauthFlow.verificationUri}</a></div>
+                    <div style={{ fontSize: 18, fontFamily: 'var(--dsh-mono, monospace)', margin: '4px 0' }}>{oauthFlow.userCode}</div>
+                    <div className="dgp-muted">{oauthStatus === 'waiting' ? t('waiting') : ''}</div>
+                  </div>
+                ) : (
+                  <div className="dgp-btnrow" style={{ marginTop: 8 }}>
+                    <button type="button" className="dgp-btn" disabled={busy || clientId.trim().length === 0} onClick={() => void startOauth()}>{t('connect')}</button>
+                    <button type="button" className="dgp-btn" onClick={() => setConnectOpen(false)}>{t('cancel')}</button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+      </div>
 
-      {/* toast 放在菜单 portal 之外：菜单关闭后提示仍要留下。 */}
-      {toast ? <Toast tone={toast.tone} text={toast.text} onDone={() => setToast(null)} /> : null}
+      <div className="dgp-sect">
+        <div className="dgp-sect-title">{t('rootsTitle')}</div>
+        <div className="dgp-muted">{t('rootsHint')}</div>
+        <textarea className="dgp-input" rows={4} value={rootsText} onChange={(e) => setRootsText(e.target.value)} />
+        <div className="dgp-btnrow" style={{ marginTop: 6 }}>
+          <button type="button" className="dgp-btn" onClick={() => void saveSettings()}>{saved ? t('saved') : t('save')}</button>
+        </div>
+      </div>
 
-      {open
-        ? createPortal(
-            <span
-              className="dgp-portal dgp-menu"
-              role="menu"
-              ref={menuRef}
-              style={{
-                left: `${anchor.left}px`,
-                ...(anchor.top !== undefined ? { top: `${anchor.top}px` } : { bottom: `${anchor.bottom}px` }),
-              }}
-            >
-          <span className="dgp-menu-head">
-            <BranchIcon />
-            {t('menuTitle')}
-          </span>
-          <span className="dgp-menu-sum">{summary}</span>
-
-          {/* 有新版本：一行提示 + 跳转 release 页。查不到就整块不渲染。 */}
-          {latestVersion !== '' ? (
-            <a
-              className="dgp-menu-note"
-              data-tone="warn"
-              href={`https://github.com/${VERSION_REPO}/releases/latest`}
-              target="_blank"
-              rel="noreferrer"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => setOpen(false)}
-            >
-              {fmt(t('menuNewVersion'), { v: latestVersion })}
-            </a>
-          ) : null}
-
-          <span className="dgp-menu-sep" />
-
-          {/* 状态未知：先检测，不猜。 */}
-          {!status && !detectFailed ? (
-            <span className="dgp-menu-note" data-tone="plain">
-              {t('menuChecking')}
-            </span>
-          ) : null}
-
-          {/* 检测失败：明确告知 + 重试入口，不把它当成「不是仓库」。 */}
-          {detectFailed ? (
-            <>
-              <span className="dgp-menu-note" data-tone="error">
-                {t('menuDetectFailed')}：{detectMessage}
-              </span>
-              <button
-                type="button"
-                className="dgp-menu-item"
-                role="menuitem"
-                disabled={checking}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => void reload()}
-              >
-                <RefreshIcon />
-                <span className="dgp-menu-item-main">
-                  <span className="dgp-menu-item-title">{t('menuRetry')}</span>
-                </span>
-              </button>
-            </>
-          ) : null}
-
-          {/* 未初始化（目录存在但没有 .git）：只给【初始化】入口，走分步向导。
-              此时不展示分支详情 / 工作台 / 设置等不可用入口。 */}
-          {canInit ? (
-            <button
-              type="button"
-              className="dgp-menu-item"
-              role="menuitem"
-              data-primary="1"
-              disabled={busy}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => {
-                setOpen(false)
-                setWizardOpen(true)
-                void loadAccounts()
-              }}
-            >
-              <PlusIcon />
-              <span className="dgp-menu-item-main">
-                <span className="dgp-menu-item-title">{t('menuInit')}</span>
-                <span className="dgp-menu-item-hint">{t('menuInitHint')}</span>
-              </span>
-            </button>
-          ) : null}
-
-          {/* 已初始化：动作按「仓库 / 打开 / 设置」分组，主行动（工作台）单独一组置顶。 */}
-          {isRepo ? (
-            <>
-              <span className="dgp-menu-group">{t('menuGroupRepo')}</span>
-              <button
-                type="button"
-                className="dgp-menu-item"
-                role="menuitem"
-                data-primary="1"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  setOpen(false)
-                  setWorkbench(true)
-                }}
-              >
-                <BranchIcon />
-                <span className="dgp-menu-item-main">
-                  <span className="dgp-menu-item-title">{t('wbTitle')}</span>
-                  <span className="dgp-menu-item-hint">{t('wbOpenHint')}</span>
-                </span>
-              </button>
-
-              <button type="button" className="dgp-menu-item" role="menuitem" onMouseDown={(e) => e.preventDefault()} onClick={() => void reload()}>
-                <RefreshIcon />
-                <span className="dgp-menu-item-main">
-                  <span className="dgp-menu-item-title">{t('menuRefresh')}</span>
-                  <span className="dgp-menu-item-hint">{aux || t('menuRefreshHint')}</span>
-                </span>
-              </button>
-
-              {status?.branch ? (
-                <button
-                  type="button"
-                  className="dgp-menu-item"
-                  role="menuitem"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => {
-                    setOpen(false)
-                    setBranchDetailOpen(true)
-                  }}
-                >
-                  <BranchIcon />
-                  <span className="dgp-menu-item-main">
-                    <span className="dgp-menu-item-title">{t('branchDetail')}</span>
-                    <span className="dgp-menu-item-hint">{status.branch}</span>
-                  </span>
-                </button>
-              ) : null}
-
-              <span className="dgp-menu-sep" />
-              <span className="dgp-menu-group">{t('menuGroupOpen')}</span>
-              <button type="button" className="dgp-menu-item" role="menuitem" onMouseDown={(e) => e.preventDefault()} onClick={() => { setOpen(false); void openDir() }}>
-                <FolderIcon />
-                <span className="dgp-menu-item-main">
-                  <span className="dgp-menu-item-title">{t('menuOpenDir')}</span>
-                </span>
-              </button>
-
-              <span className="dgp-menu-sep" />
-            </>
-          ) : null}
-
-          {/* 设置入口：打开 Git 设置分节（任何状态都可达）。 */}
-          <button
-            type="button"
-            className="dgp-menu-item"
-            role="menuitem"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => {
-              setOpen(false)
-              void openSettingsSection({ shortcuts }, t('navLabel'))
-            }}
-          >
-            <GearIcon />
-            <span className="dgp-menu-item-main">
-              <span className="dgp-menu-item-title">{t('menuSettings')}</span>
-            </span>
-          </button>
-            </span>,
-            document.body,
-          )
-        : null}
-
-      {/* Git 工作台主面板（IDEA 式）：由 chip 打开。
-          portal 到 body：composer 行有 container-type:inline-size，会建立 layout containment，
-          把后代 position:fixed 的包含块降级成那一行——挂 body 才能让遮罩与面板真正铺满视口，
-          面板内的点击也不会冒泡进宿主输入区。 */}
-      {workbench
-        ? createPortal(
-            <Workbench
-              t={t}
-              cwd={cwd}
-              status={status}
-              onStatusChange={(next) => setStatus(next)}
-              onClose={() => {
-                setWorkbench(false)
-                void reload()
-              }}
-              onOpenSettings={() => void openSettingsSection({ shortcuts }, t('navLabel'))}
-            />,
-            document.body,
-          )
-        : null}
-
-      {/* 分步初始化向导：portal 到 body（composer 行有 layout containment）。 */}
-      {wizardOpen
-        ? createPortal(
-            <InitWizard
-              t={t}
-              cwd={cwd}
-              accounts={accounts}
-              authorizedRepos={(accountId) => Object.keys(repoPermissions[accountId] ?? {})}
-              shortcuts={shortcuts}
-              onQuickInit={() => {
-                setWizardOpen(false)
-                void runInit()
-              }}
-              onClose={() => setWizardOpen(false)}
-              onDone={() => {
-                void reload()
-              }}
-            />,
-            document.body,
-          )
-        : null}
-
-      {/* 当前分支详情弹窗：portal 到 body，页面中央。 */}
-      {branchDetailOpen && status?.branch
-        ? createPortal(
-            <BranchDetailModal
-              t={t}
-              cwd={cwd}
-              branch={status.branch}
-              onClose={() => setBranchDetailOpen(false)}
-            />,
-            document.body,
-          )
-        : null}
-    </span>
+      <div className="dgp-sect">
+        <label className="dgp-toggle">
+          <input type="checkbox" checked={settings?.allowWrite === true} onChange={(e) => void toggleFlag('allowWrite', e.target.checked)} />
+          {t('allowWrite')}
+        </label>
+        <div className="dgp-muted">{t('allowWriteHint')}</div>
+        <label className="dgp-toggle" style={{ marginTop: 6 }}>
+          <input type="checkbox" checked={settings?.requireConfirm !== false} onChange={(e) => void toggleFlag('requireConfirm', e.target.checked)} />
+          {t('requireConfirm')}
+        </label>
+        <div className="dgp-muted">{t('requireConfirmHint')}</div>
+      </div>
+    </div>
   )
-}
-
-
-/** 仓库范围页「检测到的仓库」：列出授权根下扫描到的仓库，一键填入授权目录。 */
-function FolderIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M1.8 4.5A1.5 1.5 0 0 1 3.3 3h3l1.5 1.7h4.9A1.5 1.5 0 0 1 14.2 6.2v5.3a1.5 1.5 0 0 1-1.5 1.5H3.3a1.5 1.5 0 0 1-1.5-1.5V4.5Z" />
-    </svg>
-  )
-}
-
-interface ClientContext {
-  slots?: {
-    inject?: (name: string, factory: () => any) => void
-    register?: (options: any, component: any) => any
-  }
-  locale?: {
-    register?: (namespace: string, dicts: Record<string, Dict>) => void
-    bind?: (namespace: string) => (key: string) => string
-    /** 新增可选语言：fallback 链必须能落到 en，id 已存在会抛错。 */
-    addLanguage?: (input: { id: string; label: string; fallback: string }) => unknown
-  }
-  sessions?: any
-  /** 可选服务软取：取不到返回 undefined，不会抛错。 */
-  get?: (name: string) => any
-  /** 可选服务：宿主快捷键服务，用于程序化触发 settings.open。 */
-  shortcuts?: { registry?: { invoke?: (id: string, context: any) => void } }
-  logger?: { info?: (msg: string) => void; warn?: (msg: string) => void; error?: (msg: string) => void }
-  effect?: (fn: () => void, label?: string) => void
 }
 
 export function apply(ctx: ClientContext): void {
-  let t: (key: string) => string = (key: string) => ZH[key] ?? key
+  let t: (key: string) => string = (key: string) => ZH[key] ?? EN[key] ?? key
   try {
-    ctx.locale?.register?.(NS, { zh: ZH, en: EN, ...EXTRA_LOCALES })
-    // 内置只有 zh / en；其余 6 种要显式加进语言目录才会出现在宿主的选择器里。
-    // 重复注册（热重载）会抛 locale "<id>" is already registered，属正常，吞掉即可。
-    for (const language of EXTRA_LANGUAGES) {
-      try {
-        ctx.locale?.addLanguage?.(language)
-      } catch {
-        /* 已注册：热重载时必然发生，忽略 */
-      }
-    }
+    ctx.locale?.register?.(NS, { zh: ZH, en: EN })
     const bound = ctx.locale?.bind?.(NS)
     if (typeof bound === 'function') {
       t = (key: string) => {
@@ -1725,25 +812,13 @@ export function apply(ctx: ClientContext): void {
   }
 
   const sessions = ctx.sessions
-  // shortcuts 是可选服务：软取，取不到也不影响 chip 渲染，只是「打开 Git 设置」少一条路径。
-  // 已在 exports.inject 声明 'shortcuts'，正常情况下 ctx.shortcuts 直接可用；
-  // 仍保留 ctx.get 软取兜底，宿主降级时不至于整块崩掉。
-  const shortcuts =
-    (typeof ctx.get === 'function' ? ctx.get('shortcuts') : undefined) ?? ctx.shortcuts
 
-  // 1) 设置页分节：全部配置都放这里（账号 / 仓库范围 / 授权说明）。
+  // 1) 设置页分节（账号 / 目录白名单 / 写策略）。
   try {
     ctx.slots?.inject?.('settings.section', () => {
       try {
         return ctx.slots?.register?.(
-          {
-            name: 'settings.section',
-            id: 'git-panel',
-            order: 20,
-            label: () => t('navLabel'),
-            locale: NS,
-            inject: () => ({ t }),
-          },
+          { name: 'settings.section', id: 'git-panel', order: 20, label: () => t('navLabel'), locale: NS, inject: () => ({ t }) },
           GitSection,
         )
       } catch (error) {
@@ -1756,28 +831,30 @@ export function apply(ctx: ClientContext): void {
     ctx.logger?.error?.(`[${NS}] settings.section 注入失败：${String(error)}`)
   }
 
-  // 2) 输入框下方左侧：只显示当前仓库分支（opencode 风格），点击进设置页。
+  // 2) 输入框左侧 chip。
   try {
     ctx.slots?.inject?.('conversation.input.left', () => {
       try {
-        const result = ctx.slots?.register?.(
+        return ctx.slots?.register?.(
           {
             name: 'conversation.input.left',
             id: 'dsh-git-panel-branch',
             order: 30,
             locale: NS,
-            inject: (sessionId: string) => ({ t, sessionId, sessions, shortcuts }),
+            inject: (sessionId: string) => ({ t, sessionId, sessions }),
           },
           BranchChip,
         )
-        return result
       } catch (error) {
         ctx.logger?.error?.(`[${NS}] 入口注册失败：${String(error)}`)
         return undefined
       }
     })
-    ctx.logger?.info?.(`[${NS}] 分支 chip 已注册到 conversation.input.left（${BUILD}）`)
+    ctx.logger?.info?.(`[${NS}] 分支 chip 已注册（${BUILD}）`)
   } catch (error) {
     ctx.logger?.error?.(`[${NS}] conversation.input.left 注入失败：${String(error)}`)
   }
 }
+
+// 保留导出名便于门禁脚本静态引用。
+export { fmt }
