@@ -239,13 +239,25 @@ check('无 git_remote_info（平台 API 已删）', !registeredTools.has('git_re
   check('拒绝原因可读且不回显 token', typeof r.json?.error === 'string' && r.json.error.length > 0 && !String(r.json.error).includes('npm_definitely_invalid'), JSON.stringify(r.json))
 }
 
-// ---- /npm/status 响应零明文 token ----
+// ---- /npm/status 多账号形状（v3.10 契约翻转并披露：accounts/activeState/npmrcConfigured）----
 {
   const r = await call(handler, { method: 'POST', url: '/dsh-git-panel/npm/status', body: JSON.stringify({}) })
   check('npm status ok', r.json?.ok === true, JSON.stringify(r.json))
   const body = String(r.body)
   check('status 响应不含 _authToken 明文形态', !/_authToken=|npm_[A-Za-z0-9]{20,}/.test(body), body.slice(0, 140))
-  check('status 字段形状合法（configured/masked/username/status）', r.json?.npm && typeof r.json.npm.configured === 'boolean' && 'masked' in r.json.npm && 'username' in r.json.npm, body.slice(0, 140))
+  check('status 新形状：accounts 数组 + activeState + npmrcConfigured 布尔', Array.isArray(r.json?.npm?.accounts) && ['connected', 'error'].includes(r.json?.npm?.activeState) && typeof r.json?.npm?.npmrcConfigured === 'boolean', body.slice(0, 200))
+}
+
+// ---- /npm/switch 不存在 id → 404（fail-closed 不写 npmrc）----
+{
+  const r = await call(handler, { method: 'POST', url: '/dsh-git-panel/npm/switch', body: JSON.stringify({ id: 'nope' }) })
+  check('切换不存在凭据 404', r.status === 404 && r.json?.ok === false, `${r.status} ${JSON.stringify(r.json)}`)
+}
+
+// ---- /npm/remove 不存在 id → 404 ----
+{
+  const r = await call(handler, { method: 'POST', url: '/dsh-git-panel/npm/remove', body: JSON.stringify({ id: 'nope' }) })
+  check('移除不存在凭据 404', r.status === 404, String(r.status))
 }
 
 // ---- 真实仓库：任意目录直接可读（v3.3 起无授权步骤）----

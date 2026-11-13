@@ -18,7 +18,7 @@ import {
   verifyToken,
 } from './providers.js'
 import { configureNpmToken, npmConfigView, npmTokenFromNpmrc, whoamiNpm } from './npm.js'
-import { redact } from './vault.js'
+import { maskSecret, redact } from './vault.js'
 
 export const ROUTE_PREFIX = '/dsh-git-panel'
 const MAX_BODY_BYTES = 256 * 1024
@@ -454,8 +454,22 @@ export function createHandler(deps: HandlerDeps) {
         return
       }
 
-      // ---- npm 发布凭据（发布走 AI 执行，npm 凭据配进 npm 官方存储位置 ~/.npmrc）----
-      // 连接：验证 token → 写入 ~/.npmrc 的官方源 authToken 行（等同 npm login 效果）。
+      // ---- npm 发布凭据多账号（v3.10）：表里存密文，active 账号同步写入 ~/.npmrc 供 npm publish 使用 ----
+
+      // 惰性迁移：表空但 ~/.npmrc 已有官方源 token（v3.9 或手动 npm login 配的）→ whoami 验真后收编为首个账号。
+      const migrateNpmrcIfNeeded = async () => {
+        if (deps.store.npmAccounts().length > 0) return
+        const legacy = npmTokenFromNpmrc()
+        if (!legacy) return
+        const identity = await whoamiNpm(legacy)
+        if (identity.ok && identity.username) {
+          const rec = deps.store.addNpmAccount({ login: identity.username, token: legacy })
+          deps.store.setNpmActiveId(rec.id)
+          deps.log?.('info', `npm 凭据已从 ~/.npmrc 收编：${identity.username}`)
+        }
+      }
+
+      // 连接：验证 token → 入表（密文）→ 设为当前 → 同步 ~/.npmrc。
       if (path === '/npm/connect') {
         const token = str(body.token).trim()
         if (token.length === 0) {
@@ -467,27 +481,96 @@ export function createHandler(deps: HandlerDeps) {
           sendJson(res, 400, { ok: false, error: identity.error ?? 'token 验证失败' })
           return
         }
+        const record = deps.store.addNpmAccount({ login: identity.username, token })
         const written = configureNpmToken(token)
         if (!written.ok) {
-          sendJson(res, 500, { ok: false, error: written.error ?? '写入失败' })
+          // 密文已保存但未同步到 npmrc：明确报出，不静默半成功。
+          sendJson(res, 500, { ok: false, error: `凭据已保存但 ~/.npmrc 同步失败：${written.error ?? '未知原因'}` })
           return
         }
-        deps.log?.('info', `npm 凭据已配置：${identity.username}（写入 ~/.npmrc 官方源 authToken 行）`)
-        sendJson(res, 200, { ok: true, username: identity.username, npm: npmConfigView() })
+        deps.store.setNpmActiveId(record.id)
+        deps.log?.('info', `npm 凭据已接入并设为当前：${identity.username}`)
+        sendJson(res, 200, { ok: true, id: record.id, login: identity.username })
         return
       }
-      // 状态查询：界面只拿掩码；whoami 验真在服务端内部用明文 token，不外泄。
-      if (path === '/npm/status') {
-        const view = npmConfigView()
-        if (view.configured) {
-          const identity = await whoamiNpm(npmTokenFromNpmrc())
-          sendJson(res, 200, {
-            ok: true,
-            npm: { configured: true, masked: view.masked, username: identity.ok ? identity.username : '', status: identity.ok ? 'connected' : 'error', error: identity.ok ? '' : identity.error ?? '' },
-          })
+      // 切换当前 npm 凭据：验证目标 token → 重写 ~/.npmrc → 置 active。验证失败不切换。
+      if (path === '/npm/switch') {
+        const id = str(body.id).trim()
+        const record = deps.store.getNpmAccount(id)
+        if (!record) {
+          sendJson(res, 404, { ok: false, error: 'npm 凭据不存在' })
           return
         }
-        sendJson(res, 200, { ok: true, npm: { configured: false, masked: '', username: '', status: 'none', error: '' } })
+        const token = deps.store.revealNpmSecret(id)
+        if (!token) {
+          deps.store.markNpmAccount(id, { lastError: '凭据无法解密' })
+          sendJson(res, 400, { ok: false, error: '凭据无法解密，请重新粘贴 token' })
+          return
+        }
+        const identity = await whoamiNpm(token)
+        if (!identity.ok) {
+          deps.store.markNpmAccount(id, { lastError: identity.error ?? '验证失败' })
+          sendJson(res, 400, { ok: false, error: `切换被拒绝：${identity.error ?? 'token 验证失败'}` })
+          return
+        }
+        const written = configureNpmToken(token)
+        if (!written.ok) {
+          sendJson(res, 500, { ok: false, error: `~/.npmrc 同步失败：${written.error ?? '未知原因'}` })
+          return
+        }
+        deps.store.setNpmActiveId(id)
+        deps.store.markNpmAccount(id, { lastError: '' })
+        deps.log?.('info', `npm 当前凭据已切换：${record.login}`)
+        sendJson(res, 200, { ok: true, id, login: record.login })
+        return
+      }
+      // 移除凭据：只删表内密文；~/.npmrc 的最后一同步值不代删（用户自己的文件），npmrcConfigured 会如实反映。
+      if (path === '/npm/remove') {
+        const id = str(body.id).trim()
+        if (!deps.store.removeNpmAccount(id)) {
+          sendJson(res, 404, { ok: false, error: 'npm 凭据不存在' })
+          return
+        }
+        deps.log?.('info', `npm 凭据已移除：${id.slice(0, 8)}…`)
+        sendJson(res, 200, { ok: true })
+        return
+      }
+      // 状态：账号列表（login + 掩码 + active 标记）；当前账号实时 whoami 验真，其余只报存储态。
+      if (path === '/npm/status') {
+        await migrateNpmrcIfNeeded()
+        const list = deps.store.npmAccounts()
+        const activeId = deps.store.settings().npmActiveId
+        let activeState: 'connected' | 'error' = 'connected'
+        let activeError = ''
+        for (const item of list) {
+          if (item.id === activeId) {
+            const token = deps.store.revealNpmSecret(item.id)
+            if (!token) {
+              activeState = 'error'
+              activeError = '凭据无法解密'
+            } else {
+              const ident = await whoamiNpm(token)
+              activeState = ident.ok ? 'connected' : 'error'
+              activeError = ident.ok ? '' : ident.error ?? '验证失败'
+            }
+          }
+        }
+        sendJson(res, 200, {
+          ok: true,
+          npm: {
+            accounts: list.map((item) => ({
+              id: item.id,
+              login: item.login,
+              masked: maskSecret(deps.store.revealNpmSecret(item.id) ?? ''),
+              active: item.id === activeId,
+              state: item.id === activeId ? activeState : 'saved',
+              error: item.id === activeId ? activeError : item.lastError,
+            })),
+            activeState,
+            activeError,
+            npmrcConfigured: npmConfigView().configured,
+          },
+        })
         return
       }
 

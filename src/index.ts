@@ -6,7 +6,7 @@ import { redact } from './node/vault.js'
 
 export const name = '@zjjlivingfree/dsh-git-panel'
 export const inject = ['webServer']
-export const PLUGIN_VERSION = '0.8.0'
+export const PLUGIN_VERSION = '0.9.0'
 
 /**
  * node 半边：注册 HTTP 接口（供输入框入口的面板调用）+ 把 Git 操作注册成 Agent 工具。

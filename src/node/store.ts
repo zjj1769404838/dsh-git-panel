@@ -33,23 +33,45 @@ export interface Settings {
   defaultAccountId: string
   /** 「直接提交」按钮偏好：注入指令后是否代按发送。 */
   autoSubmit: boolean
+  /** v3.10：当前生效的 npm 凭据 id（'' = 未选定，跟随 ~/.npmrc 现状）。 */
+  npmActiveId: string
 }
 
 export interface PanelState {
   version: number
   accounts: AccountRecord[]
   settings: Settings
+  /** v3.10：npm 发布凭据多账号表（token 密文；activeId 同步进 ~/.npmrc）。 */
+  npmAccounts: NpmAccountRecord[]
 }
+
+export interface NpmAccountRecord {
+  id: string
+  login: string
+  /** 密文（`v1.` 前缀）；明文只在内存短暂存在。 */
+  secret: string
+  createdAt: number
+  lastCheckedAt: number
+  lastError: string
+}
+
+export const NPM_PROVIDER = 'npm'
 
 const DEFAULT_SETTINGS: Settings = {
   allowWrite: false,
   requireConfirm: true,
   defaultAccountId: '',
   autoSubmit: false,
+  npmActiveId: '',
 }
 
 function emptyState(): PanelState {
-  return { version: 2, accounts: [], settings: { ...DEFAULT_SETTINGS } }
+  return { version: 3, accounts: [], settings: { ...DEFAULT_SETTINGS }, npmAccounts: [] }
+}
+
+/** npm 记录（provider=npm 的 GitHub 账号卡不认它）。 */
+function isNpmRecord(item: AccountRecord): boolean {
+  return item.provider === NPM_PROVIDER
 }
 
 /**
@@ -73,9 +95,9 @@ export class PanelStore {
       const raw = JSON.parse(readFileSync(this.file, 'utf8')) as Partial<PanelState>
       const accounts = Array.isArray(raw.accounts) ? (raw.accounts as AccountRecord[]) : []
       this.state = {
-        version: 2,
+        version: 3,
         accounts: accounts
-          .filter((item) => item && typeof item.id === 'string' && typeof item.secret === 'string')
+          .filter((item) => item && typeof item.id === 'string' && typeof item.secret === 'string' && !isNpmRecord(item))
           .map((item) => ({
             id: item.id,
             provider: typeof item.provider === 'string' ? item.provider : 'github',
@@ -96,7 +118,18 @@ export class PanelStore {
           requireConfirm: raw.settings?.requireConfirm !== false,
           defaultAccountId: typeof raw.settings?.defaultAccountId === 'string' ? raw.settings.defaultAccountId : '',
           autoSubmit: (raw.settings as Partial<Settings> | undefined)?.autoSubmit === true,
+          npmActiveId: typeof raw.settings?.npmActiveId === 'string' ? raw.settings.npmActiveId : '',
         },
+        npmAccounts: (Array.isArray(raw.npmAccounts) ? raw.npmAccounts : [])
+          .filter((item) => item && typeof item.id === 'string' && typeof item.secret === 'string' && typeof item.login === 'string')
+          .map((item) => ({
+            id: item.id,
+            login: item.login,
+            secret: item.secret,
+            createdAt: Number(item.createdAt) || Date.now(),
+            lastCheckedAt: Number(item.lastCheckedAt) || 0,
+            lastError: typeof item.lastError === 'string' ? item.lastError : '',
+          })),
       }
     } catch (error) {
       // 状态文件损坏时不让插件挂掉：退回空状态，原文件保留为 .broken 供人工检查。
@@ -122,6 +155,7 @@ export class PanelStore {
       version: this.state.version,
       accounts: this.state.accounts.map((item) => ({ ...item, secret: '' })),
       settings: { ...this.state.settings },
+      npmAccounts: this.state.npmAccounts.map((item) => ({ ...item, secret: '' })),
     }
   }
 
@@ -225,9 +259,75 @@ export class PanelStore {
     if ('requireConfirm' in patch) next.requireConfirm = patch.requireConfirm !== false
     if ('autoSubmit' in patch) next.autoSubmit = patch.autoSubmit === true
     if (typeof next.defaultAccountId !== 'string') next.defaultAccountId = ''
+    if (typeof next.npmActiveId !== 'string') next.npmActiveId = ''
     this.state.settings = next
     this.persist()
     return { ...next }
+  }
+
+  // ---- v3.10 npm 凭据多账号 ----
+
+  npmAccounts(): NpmAccountRecord[] {
+    return this.state.npmAccounts
+  }
+
+  getNpmAccount(id: string): NpmAccountRecord | undefined {
+    return this.state.npmAccounts.find((item) => item.id === id)
+  }
+
+  /** 新增/替换 npm 凭据：同 login 视为更新 token（换新 id 会丢历史，故原地换密文保留 id）。 */
+  addNpmAccount(input: { login: string; token: string }): NpmAccountRecord {
+    const existing = this.state.npmAccounts.find((item) => item.login === input.login)
+    if (existing) {
+      existing.secret = seal(input.token)
+      existing.lastCheckedAt = Date.now()
+      existing.lastError = ''
+      this.persist()
+      return existing
+    }
+    const record: NpmAccountRecord = {
+      id: randomBytes(8).toString('hex'),
+      login: input.login,
+      secret: seal(input.token),
+      createdAt: Date.now(),
+      lastCheckedAt: Date.now(),
+      lastError: '',
+    }
+    this.state.npmAccounts.unshift(record)
+    this.persist()
+    return record
+  }
+
+  removeNpmAccount(id: string): boolean {
+    const before = this.state.npmAccounts.length
+    this.state.npmAccounts = this.state.npmAccounts.filter((item) => item.id !== id)
+    if (this.state.settings.npmActiveId === id) this.state.settings.npmActiveId = ''
+    if (this.state.npmAccounts.length === before) return false
+    this.persist()
+    return true
+  }
+
+  markNpmAccount(id: string, patch: Partial<Pick<NpmAccountRecord, 'lastCheckedAt' | 'lastError'>>): void {
+    const record = this.getNpmAccount(id)
+    if (!record) return
+    Object.assign(record, patch, { lastCheckedAt: patch.lastCheckedAt ?? Date.now() })
+    this.persist()
+  }
+
+  /** 读取 npm 明文 token（仅内存使用，不得写日志/返回值）。 */
+  revealNpmSecret(id: string): string | null {
+    const record = this.getNpmAccount(id)
+    if (!record) return null
+    try {
+      return open(record.secret)
+    } catch {
+      return null
+    }
+  }
+
+  setNpmActiveId(id: string): void {
+    this.state.settings.npmActiveId = typeof id === 'string' ? id : ''
+    this.persist()
   }
 
   reset(): void {

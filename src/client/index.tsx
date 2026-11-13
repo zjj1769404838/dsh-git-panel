@@ -160,6 +160,9 @@ const ZH: Dict = {
   npmAccount: 'npm 发布账号',
   npmNoAccount: '未配置 npm 凭据（发布按钮会提示先配置）',
   npmConnect: '连接 npm',
+  npmAdd: '添加凭据',
+  npmSwitch: '切换',
+  npmActive: '当前',
   npmReconnect: '重新连接',
   npmError: '凭据校验失败',
   npmTokenLabel: 'npm token',
@@ -228,9 +231,12 @@ const EN: Dict = {
   clientIdHint: 'No third-party app credential is bundled: create your own GitHub OAuth App and paste its Client ID.',
   userCode: 'Open the URL below in a browser and enter the code',
   waiting: 'Waiting for authorization…',
-  npmAccount: 'npm publishing account',
+  npmAccount: 'npm publishing accounts',
   npmNoAccount: 'No npm credential (the publish button will tell you to set one up)',
   npmConnect: 'Connect npm',
+  npmAdd: 'Add credential',
+  npmSwitch: 'Switch',
+  npmActive: 'Active',
   npmReconnect: 'Reconnect',
   npmError: 'Credential check failed',
   npmTokenLabel: 'npm token',
@@ -515,16 +521,24 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
   )
 }
 
-// ─── npm 凭据卡（v3.9）：像连 GitHub 账号一样连 npm ───
-// 状态来自 node 端 /npm/status（读 ~/.npmrc 官方源 authToken 行 + whoami 验真）；
-// 连接 = POST /npm/connect：node 端先验证 token 再写入 ~/.npmrc（等同 npm login）。
+// ─── npm 凭据卡（v3.10 多账号 + 切换）：像连 GitHub 账号一样连 npm ───
+// 表里可存多个 npm token（node 侧密文），active 账号由 node 同步写入 ~/.npmrc 供 npm publish 使用。
+// 首次读状态时 node 会把 ~/.npmrc 里既有的官方源 token 惰性收编为首个账号（v3.9/手动 npm login 不断档）。
+
+interface NpmAccountRow {
+  id: string
+  login: string
+  masked: string
+  active: boolean
+  state: 'connected' | 'error' | 'saved'
+  error: string
+}
 
 interface NpmStatusView {
-  configured: boolean
-  masked: string
-  username: string
-  status: 'connected' | 'error' | 'none'
-  error: string
+  accounts: NpmAccountRow[]
+  activeState: 'connected' | 'error'
+  activeError: string
+  npmrcConfigured: boolean
 }
 
 function NpmCard({ t }: { t: (key: string) => string }) {
@@ -551,7 +565,7 @@ function NpmCard({ t }: { t: (key: string) => string }) {
     setBusy(true)
     setError('')
     try {
-      const data = await api<{ ok: boolean; username?: string; error?: string }>('/npm/connect', { token })
+      const data = await api<{ ok: boolean; login?: string; error?: string }>('/npm/connect', { token })
       if (data.ok) {
         setOpen(false)
         setToken('')
@@ -566,28 +580,60 @@ function NpmCard({ t }: { t: (key: string) => string }) {
     }
   }
 
+  const switchTo = async (id: string) => {
+    setBusy(true)
+    setError('')
+    try {
+      const data = await api<{ ok: boolean; error?: string }>('/npm/switch', { id })
+      if (!data.ok) setError(data.error ?? t('injectFailed'))
+      await load()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const remove = async (id: string) => {
+    setBusy(true)
+    setError('')
+    try {
+      const data = await api<{ ok: boolean; error?: string }>('/npm/remove', { id })
+      if (!data.ok) setError(data.error ?? t('injectFailed'))
+      await load()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const rows = view?.accounts ?? []
+
   return (
     <div className="dgp-sect">
       <div className="dgp-sect-title">{t('npmAccount')}</div>
       {error && <div className="dgp-empty" role="alert">{error}</div>}
-      {view?.status === 'connected' && (
-        <div className="dgp-account">
-          <Dot state="connected" />
-          <span className="dgp-acct-login" title={view.username}>{view.username}</span>
-          <span className="dgp-muted">npm · {view.masked}</span>
-        </div>
-      )}
-      {view?.status === 'error' && (
-        <div className="dgp-account">
-          <Dot state="error" />
-          <span className="dgp-muted">{t('npmError')}: {view.error}</span>
+      {rows.map((row) => (
+        <div key={row.id} className="dgp-account">
+          <Dot state={row.active ? row.state === 'error' ? 'error' : 'connected' : 'connected'} />
+          <span className="dgp-acct-login" title={row.login}>{row.login}</span>
+          <span className="dgp-muted">{row.active ? t('npmActive') : row.state === 'error' && row.error ? row.error : row.masked}</span>
           <span className="dgp-spacer" />
-          <button type="button" className="dgp-btn" onClick={() => setOpen(true)}>{t('npmReconnect')}</button>
+          {!row.active && (
+            <button type="button" className="dgp-btn" disabled={busy} onClick={() => void switchTo(row.id)}>{t('npmSwitch')}</button>
+          )}
+          <button type="button" className="dgp-btn dgp-btn-danger" disabled={busy} onClick={() => void remove(row.id)}>{t('disconnect')}</button>
         </div>
+      ))}
+      {rows.length === 0 && <div className="dgp-empty">{t('npmNoAccount')}</div>}
+      {rows.length > 0 && view?.activeState === 'error' && (
+        <div className="dgp-muted">{t('npmError')}: {view.activeError}</div>
       )}
-      {(view === null || view.status === 'none') && <div className="dgp-empty">{t('npmNoAccount')}</div>}
-      {view?.status !== 'connected' && !open && (
-        <button type="button" className="dgp-btn" style={{ marginTop: 6 }} onClick={() => setOpen(true)}>{t('npmConnect')}</button>
+      {!open && (
+        <button type="button" className="dgp-btn" style={{ marginTop: 6 }} onClick={() => setOpen(true)}>
+          {rows.length === 0 ? t('npmConnect') : t('npmAdd')}
+        </button>
       )}
       {open && (
         <div className="dgp-card">
