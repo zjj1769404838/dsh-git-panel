@@ -112,6 +112,12 @@ check('store 设置含 autoSubmit（直接提交开关）', store !== null && st
 check('store 仓库三档权限方法已删', store !== null && !store.includes('setRepoPermission') && !store.includes('isRepoWritableFor') && !store.includes('normalizeRepoPermissions'))
 check('store 令牌密文存储（seal/open）', store !== null && store.includes('seal(') && store.includes('open('))
 
+// ---- git 可移植路径发现契约（v3.13）----
+const gitMod = await readText(resolve(root, 'src/node/git.ts'))
+check('git 路径发现从环境变量推导 + DSH_GIT_PATH 覆盖（零硬编码个人路径）', gitMod !== null && gitMod.includes('process.env.ProgramFiles') && gitMod.includes("'DSH_GIT_PATH'") && !gitMod.includes('17694') && !gitMod.includes('my-projects') && !gitMod.includes('D:/'))
+check('git 子进程 env.PATH 前置 Git 支持目录（GUI 启动缺 PATH 也能找到 git）', gitMod !== null && gitMod.includes('env: gitChildEnv()') && gitMod.includes('gitSupportDirs()') && gitMod.includes('delimiter'))
+check('ENOENT 不再伪装成退出码1：spawnFailed 给出可读环境缺件提示', gitMod !== null && gitMod.includes('spawnFailed') && gitMod.includes('找不到 git 可执行文件'))
+
 // ---- providers 契约：不内置任何第三方应用凭据 ----
 const providers = await readText(resolve(root, 'src/node/providers.ts'))
 check('providers 仅 GitHub 单平台', providers !== null && !providers.includes("'gitlab'") && !providers.includes("'gitea'"))

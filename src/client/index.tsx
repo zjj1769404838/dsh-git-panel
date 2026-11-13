@@ -30,7 +30,7 @@ import {
 
 export const inject = ['slots', 'sessions', 'locale']
 
-const BUILD = 'dgp-v3.12'
+const BUILD = 'dgp-v3.13'
 
 // ─── 指令模板（乙案：AI 统一走插件的 git_write / git_confirm 受控通道）───
 const TOOL_PREAMBLE =

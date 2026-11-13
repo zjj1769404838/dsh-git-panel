@@ -342,6 +342,29 @@ await mkdir(repo, { recursive: true })
   check('state.json 不含 confirmToken 痕迹', !/confirmToken|pendingWrites/.test(stateFiles), stateFiles.slice(0, 120))
 }
 
+// ---- v3.13 行为回归：GUI 启动缺 PATH 时 git 路径发现仍可读仓库 ----
+{
+  const saved = {
+    PATH: process.env.PATH,
+    DSH_GIT_PATH: process.env.DSH_GIT_PATH,
+    GIT_PATH: process.env.GIT_PATH,
+  }
+  try {
+    // 模拟 Electron GUI 启动继承的最小 PATH（不含任何 Git 安装目录）
+    process.env.PATH = process.platform === 'win32' ? 'C:\\Windows\\System32;C:\\Windows' : '/usr/sbin:/sbin'
+    delete process.env.DSH_GIT_PATH
+    delete process.env.GIT_PATH
+    const tool = registeredTools.get('git_repo_info')
+    const result = await tool.execute({ cwd: repo })
+    check('GUI 缺 PATH 时 git 路径发现生效（repo_info 仍读到 main 分支）', result.ok === true && result.branch === 'main', JSON.stringify(result).slice(0, 220))
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  }
+}
+
 if (failures.length > 0) {
   console.error(`✗ hardening 失败 ${failures.length} 项（通过 ${pass} 项）：`)
   for (const item of failures) console.error('  - ' + item)

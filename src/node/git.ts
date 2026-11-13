@@ -1,10 +1,79 @@
 import { execFile } from 'node:child_process'
 import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { redact } from './vault.js'
 
 const TIMEOUT_MS = 30_000
 const MAX_OUTPUT = 400_000
+
+/**
+ * 可移植的 git 可执行文件发现（v3.13 修复）。
+ *
+ * 症状：DSH 桌面端从 GUI 图标启动时可能继承一份不含 Git 安装目录的 PATH，
+ * 于是 execFile('git', ...) 触发 ENOENT；旧版把「非数字 err.code」兜底成
+ * `退出码 1：无输出`，把「环境缺件」伪装成「git 命令失败」，极难排查。
+ *
+ * 做法（不硬编码任何个人路径、零新增依赖）：
+ *  - 从标准环境变量推导 Git for Windows 的安装根，拼出 cmd/bin/usr/bin/mingw64/bin；
+ *  - 允许 DSH_GIT_PATH / GIT_PATH 显式覆盖（指向 git.exe 或其所在目录）；
+ *  - 把这些「确实存在」的目录前置到「传给 git 子进程」的 env.PATH。
+ * 实跑验证：Node 的 execFile 用传入的 env.PATH 解析可执行文件，故 command 仍为 'git'。
+ * 只改子进程环境，不动宿主进程与全局配置。
+ */
+function gitSupportDirs(): string[] {
+  const dirs: string[] = []
+  const add = (p: string | undefined) => {
+    if (typeof p === 'string' && p.trim()) dirs.push(p.trim())
+  }
+  // 1) 显式覆盖优先（可指向 git.exe 文件或其所在目录）
+  for (const key of ['DSH_GIT_PATH', 'GIT_PATH']) {
+    const v = process.env[key]
+    if (!v) continue
+    add(v.toLowerCase().endsWith('.exe') ? dirname(v) : v)
+  }
+  // 2) 从环境变量推导标准安装位置，绝不写死盘符/用户名
+  if (process.platform === 'win32') {
+    const roots = [
+      process.env.ProgramFiles,
+      process.env['ProgramFiles(x86)'],
+      process.env.LOCALAPPDATA ? join(process.env.LOCALAPPDATA, 'Programs') : undefined,
+      process.env.SystemDrive ? join(process.env.SystemDrive, 'Program Files') : undefined,
+      process.env.SystemDrive ? join(process.env.SystemDrive, 'Program Files (x86)') : undefined,
+    ]
+    for (const base of roots) {
+      if (!base) continue
+      const git = join(base, 'Git')
+      add(join(git, 'cmd'))
+      add(join(git, 'bin'))
+      add(join(git, 'usr', 'bin'))
+      add(join(git, 'mingw64', 'bin'))
+    }
+  } else {
+    for (const p of ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin']) add(p)
+  }
+  // 去重 + 只保留真实存在的目录，避免把一堆无效项塞进 PATH
+  const seen = new Set<string>()
+  return dirs.filter((d) => {
+    const key = process.platform === 'win32' ? d.toLowerCase() : d
+    if (seen.has(key)) return false
+    seen.add(key)
+    return existsSync(d)
+  })
+}
+
+/** 构造 git 子进程环境：PATH 前置 git 支持目录 + 禁用一切交互提示。 */
+function gitChildEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_ASKPASS: '',
+    GIT_PAGER: 'cat',
+    GIT_EDITOR: 'true',
+  }
+  const pathKey = Object.keys(env).find((k) => k.toLowerCase() === 'path') ?? 'PATH'
+  env[pathKey] = [...gitSupportDirs(), env[pathKey] ?? ''].filter(Boolean).join(delimiter)
+  return env
+}
 
 export interface GitRunResult {
   ok: boolean
@@ -498,14 +567,9 @@ export function runGit(cwd: string, args: string[]): Promise<GitRunResult> {
         timeout: TIMEOUT_MS,
         maxBuffer: MAX_OUTPUT * 4,
         windowsHide: true,
-        env: {
-          ...process.env,
-          // 禁止 git 弹交互提示/编辑器，否则会卡死进程。
-          GIT_TERMINAL_PROMPT: '0',
-          GIT_ASKPASS: '',
-          GIT_PAGER: 'cat',
-          GIT_EDITOR: 'true',
-        },
+        // 用增强后的子进程环境：PATH 已前置 Git 安装目录（GUI 启动缺 PATH 时也能找到 git），
+        // 同时禁用交互提示/编辑器。只作用于 git 子进程，不改宿主进程与全局配置。
+        env: gitChildEnv(),
       },
       (error, stdoutRaw, stderrRaw) => {
         const stdout = clip(String(stdoutRaw ?? ''))
@@ -514,11 +578,18 @@ export function runGit(cwd: string, args: string[]): Promise<GitRunResult> {
           resolvePromise({ ok: true, code: 0, stdout, stderr, error: '', command })
           return
         }
-        const code = typeof (error as any).code === 'number' ? (error as any).code : 1
+        const errCode = (error as any).code
+        const code = typeof errCode === 'number' ? errCode : 1
         const killed = (error as any).killed === true
+        // ENOENT/EACCES 等「找不到/跑不了 git 可执行文件」不是 git 命令失败：
+        // 旧版把非数字 code 兜底成 1 + 空输出，伪装成「退出码 1：无输出」。
+        // 这里给出可读的环境缺件提示与人工修复清单（不回显任何凭据）。
+        const spawnFailed = typeof errCode === 'string' && (errCode === 'ENOENT' || errCode === 'EACCES' || errCode === 'EPERM')
         const message = killed
           ? `git ${sub} 超时（${TIMEOUT_MS / 1000}s）被终止`
-          : describeFailure(sub, code, stderr, stdout)
+          : spawnFailed
+            ? `找不到 git 可执行文件（${errCode}）：本机未安装 Git，或宿主进程 PATH 不含其安装目录。请安装 Git，或在启动 DSH 前把 Git 的可执行目录加入 PATH；高级用户可设 DSH_GIT_PATH（指向 git 可执行文件或其所在目录）。`
+            : describeFailure(sub, code, stderr, stdout)
         resolvePromise({
           ok: false,
           code,

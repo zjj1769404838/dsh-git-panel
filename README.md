@@ -27,6 +27,7 @@ v3.2 起宿主设置页不再有 Git 分节：账号连接、写策略全部收�
 - `git_write` 动作面覆盖基础 git：init / add / commit / checkout / switch / restore / reset / stash / merge / rebase / push / pull / fetch / cherry-pick / revert / tag / branch / clean。
 - 开启「写操作前需要我确认」时，`git_write` 只返回 confirmToken 与摘要，AI 必须经你点头再调 `git_confirm`；取消也会作废该 token。
 - 所有本地 git 命令在任何目录都可执行（v3.3 拍板：目录白名单已移除）；写操作仍受 allowWrite 总开关与 confirmToken 两段确认约束，非仓库目录会给出可读错误。
+- **Git 可执行文件发现（v3.13）**：桌面端从 GUI 图标启动时可能继承不含 Git 安装目录的 PATH，导致所有 git 命令报「退出码 1：无输出」。插件会从标准环境变量（Windows 的 `ProgramFiles` / `LOCALAPPDATA` / `SystemDrive`，其他平台为常见安装前缀）推导 Git 安装位置，把确实存在的目录前置到「git 子进程」的 PATH，不改动全局配置、不硬编码任何个人路径；也支持 `DSH_GIT_PATH` / `GIT_PATH` 显式覆盖。若 Git 确实未安装，会给出可读的「找不到 git 可执行文件」提示与人工修复清单，而不再伪装成命令失败。
 
 ## 三、安装
 
