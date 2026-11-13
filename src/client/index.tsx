@@ -128,6 +128,9 @@ const ZH: Dict = {
   gear: '账号与授权',
   account: 'GitHub 账号',
   noAccount: '未连接账号（不影响本地 git 操作）',
+  acctConnected: '已连接',
+  acctExpired: '已失效',
+  acctError: '凭据异常',
   connectAccount: '连接账号',
   methodPat: 'PAT 令牌',
   methodOauth: 'OAuth 设备码',
@@ -187,6 +190,9 @@ const EN: Dict = {
   gear: 'Accounts & Access',
   account: 'GitHub account',
   noAccount: 'No account connected (local git still works)',
+  acctConnected: 'Connected',
+  acctExpired: 'Expired',
+  acctError: 'Credential error',
   connectAccount: 'Connect account',
   methodPat: 'PAT token',
   methodOauth: 'OAuth device flow',
@@ -409,8 +415,8 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
         {accounts.map((account) => (
           <div key={account.id} className="dgp-account">
             <Dot state={account.status} />
-            <span>{account.login}</span>
-            <span className="dgp-muted">{account.kind === 'oauth' ? 'OAuth' : 'PAT'}</span>
+            <span className="dgp-acct-login" title={account.login}>{account.login}</span>
+            <span className="dgp-muted">{account.kind === 'oauth' ? 'OAuth' : 'PAT'} · {t(account.status === 'expired' ? 'acctExpired' : account.status === 'error' ? 'acctError' : 'acctConnected')}</span>
             <span className="dgp-spacer" />
             <button type="button" className="dgp-btn" onClick={() => void accountAction('recheck', account.id)}>{t('recheck')}</button>
             <button type="button" className="dgp-btn" onClick={() => void accountAction('remove', account.id)}>{t('disconnect')}</button>
@@ -427,9 +433,9 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
             {method === 'pat' ? (
               <>
                 <div className="dgp-sect-title">{t('tokenLabel')}</div>
-                <input className="dgp-input" type="password" placeholder={t('tokenPlaceholder')} value={token} onChange={(e) => setToken(e.target.value)} />
+                <input className="dgp-input" type="password" autoComplete="off" aria-label={t('tokenLabel')} placeholder={t('tokenPlaceholder')} value={token} onChange={(e) => setToken(e.target.value)} />
                 <div className="dgp-sect-title" style={{ marginTop: 6 }}>{t('labelLabel')}</div>
-                <input className="dgp-input" value={label} onChange={(e) => setLabel(e.target.value)} />
+                <input className="dgp-input" aria-label={t('labelLabel')} value={label} onChange={(e) => setLabel(e.target.value)} />
                 <div className="dgp-btnrow" style={{ marginTop: 8 }}>
                   <button type="button" className="dgp-btn" disabled={busy || token.trim().length === 0} onClick={() => void connectPat()}>{t('connect')}</button>
                   <button type="button" className="dgp-btn" onClick={() => setConnectOpen(false)}>{t('cancel')}</button>
@@ -439,7 +445,7 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
               <>
                 <div className="dgp-sect-title">{t('clientIdLabel')}</div>
                 <div className="dgp-muted">{t('clientIdHint')}</div>
-                <input className="dgp-input" value={clientId} onChange={(e) => setClientId(e.target.value)} />
+                <input className="dgp-input" aria-label={t('clientIdLabel')} value={clientId} onChange={(e) => setClientId(e.target.value)} />
                 {oauthFlow ? (
                   <div style={{ marginTop: 8 }}>
                     <div className="dgp-muted">{t('userCode')}</div>
@@ -604,10 +610,16 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
     const next = !open
     if (next && chipRef.current) {
       const rect = chipRef.current.getBoundingClientRect()
-      setAnchor({ left: Math.min(rect.left, window.innerWidth - 400), bottom: window.innerHeight - rect.top + 6 })
+      setAnchor({ left: Math.max(8, Math.min(rect.left, window.innerWidth - 392)), bottom: window.innerHeight - rect.top + 6 })
     }
     setOpen(next)
-    if (next) void reload()
+    if (next) {
+      void reload()
+      // 面板 portal 在 body 末尾：打开即把焦点移入，Tab 顺序才不绕全页（P1-5 审计）。
+      requestAnimationFrame(() => panelRef.current?.focus())
+    } else {
+      chipRef.current?.focus()
+    }
   }
 
   const runCommand = useCallback(
@@ -635,15 +647,26 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
   }
 
   const isRepo = status?.isRepo === true
+  const branchLabel = isRepo
+    ? status!.detached
+      ? `HEAD @ ${status!.head.slice(0, 7)}`
+      : status!.branch || '—'
+    : 'Git'
+
+  // 参数行出现时滚动到底部，防止被 GearSection 展开挤出视口（P1-6）。
+  useEffect(() => {
+    if (prompt && panelRef.current) panelRef.current.scrollTop = panelRef.current.scrollHeight
+  }, [prompt])
 
   return (
     <span className="dgp-root" ref={chipRef}>
       <button
         type="button"
         className="dgp-chip"
-        title={isRepo ? `${status?.branch ?? ''}` : detectError || t('entry')}
+        title={isRepo ? branchLabel : detectError || t('entry')}
         onClick={toggle}
         aria-expanded={open}
+        aria-controls={open ? 'dgp-panel' : undefined}
       >
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
           <circle cx="5" cy="4" r="2" />
@@ -652,13 +675,13 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
           <path d="M5 6v4M7 7h2M11 9v1a3 3 0 0 1-3 3H7" />
         </svg>
         <span className="dgp-chip-branch">
-          {checking && !status ? '…' : isRepo ? status?.branch || '—' : 'Git'}
+          {checking && !status ? '…' : branchLabel}
         </span>
         {isRepo && (
           <span className="dgp-chip-badge">
-            {status!.ahead > 0 ? `↑${status!.ahead}` : ''}
-            {status!.behind > 0 ? `↓${status!.behind}` : ''}
-            {status!.changed > 0 ? ` ${status!.changed}*` : ''}
+            {status!.ahead > 0 ? `↑${status!.ahead} ` : ''}
+            {status!.behind > 0 ? `↓${status!.behind} ` : ''}
+            {status!.changed > 0 ? `${status!.changed}*` : ''}
           </span>
         )}
       </button>
@@ -667,10 +690,14 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
         createPortal(
           <div
             ref={panelRef}
+            id="dgp-panel"
+            tabIndex={-1}
+            role="dialog"
+            aria-label={t('panelTitle')}
             className="dgp-panel"
             style={{ left: anchor.left, bottom: anchor.bottom }}
             onMouseLeave={() => {
-              // 折叠区里有输入焦点时不因鼠标离开关闭（避免填一半目录/令牌就掉面板）。
+              // 折叠区里有输入焦点时不因鼠标离开关闭（避免填一半令牌就掉面板）。
               const active = document.activeElement
               if (active && panelRef.current?.contains(active)) return
               setOpen(false)
@@ -679,19 +706,19 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
             <div className="dgp-head">
               <span className="dgp-title">{t('panelTitle')}</span>
               <button type="button" className="dgp-iconbtn" title={t('refresh')} aria-label={t('refresh')} onClick={() => void reload()}><RefreshGlyph /></button>
-              <label className="dgp-toggle" title={t('autoSubmit')}>
-                <input
-                  type="checkbox"
-                  checked={autoSubmit}
-                  onChange={(e) => {
-                    setAutoSubmit(e.target.checked)
-                    writePref(PREF_AUTO_SUBMIT, e.target.checked ? '1' : '0')
-                  }}
-                />
-                {t('autoSubmit')}
-              </label>
               <button type="button" className="dgp-iconbtn" title={t('close')} aria-label={t('close')} onClick={() => setOpen(false)}><CloseGlyph /></button>
             </div>
+            <label className="dgp-toggle" title={t('autoSubmit')} style={{ marginBottom: 8 }}>
+              <input
+                type="checkbox"
+                checked={autoSubmit}
+                onChange={(e) => {
+                  setAutoSubmit(e.target.checked)
+                  writePref(PREF_AUTO_SUBMIT, e.target.checked ? '1' : '0')
+                }}
+              />
+              {t('autoSubmit')}
+            </label>
 
             {detectError && !isRepo && (
               <div className="dgp-sect">
@@ -717,7 +744,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
                   {files.slice(0, 12).map((file) => (
                     <div key={file.path} className="dgp-file" title={file.path}>
                       <span className="dgp-file-status">{file.staged ? file.worktree === 'M' ? 'MM' : 'M' : file.untracked ? '?' : file.worktree}</span>
-                      <span className="dgp-file-path">{file.path}</span>
+                      <span className="dgp-file-path">{file.path.length > 48 ? '…' + file.path.slice(-47) : file.path}</span>
                       <span className="dgp-file-stat">{file.added > 0 ? `+${file.added}` : ''}{file.deleted > 0 ? ` -${file.deleted}` : ''}</span>
                     </div>
                   ))}
@@ -739,7 +766,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
                   <div className="dgp-sect-title">{t('actions')}</div>
                   <div className="dgp-btnrow">
                     {COMMANDS.filter((c) => c.id !== 'init').map((command) => (
-                      <button key={command.id} type="button" className="dgp-btn" onClick={() => onActionClick(command)}>
+                      <button key={command.id} type="button" className={'dgp-btn' + (command.id === 'discard' ? ' dgp-btn-danger' : '')} onClick={() => onActionClick(command)}>
                         {t(command.labelKey)}
                       </button>
                     ))}
@@ -757,6 +784,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
                 <input
                   className="dgp-input"
                   autoFocus
+                  aria-label={t(prompt.labelKey).replace('…', '')}
                   placeholder={
                     prompt.id === 'commit' ? t('commitIntent')
                       : prompt.id === 'discard' ? t('discardFiles')
