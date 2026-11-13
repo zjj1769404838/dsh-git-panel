@@ -403,7 +403,7 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
         }}
       >
         <summary className="dgp-sect-title" style={{ cursor: 'pointer' }}>{t('gear')}</summary>
-        {error && <div className="dgp-empty" role="alert">{error} <button type="button" className="dgp-iconbtn" onClick={() => setError('')}>✕</button></div>}
+        {error && <div className="dgp-empty" role="alert">{error} <button type="button" className="dgp-iconbtn" aria-label={t('close')} onClick={() => setError('')}><CloseGlyph /></button></div>}
 
         <div className="dgp-sect-title" style={{ marginTop: 6 }}>{t('account')}</div>
         {accounts.map((account) => (
@@ -411,7 +411,7 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
             <Dot state={account.status} />
             <span>{account.login}</span>
             <span className="dgp-muted">{account.kind === 'oauth' ? 'OAuth' : 'PAT'}</span>
-            <span style={{ flex: 1 }} />
+            <span className="dgp-spacer" />
             <button type="button" className="dgp-btn" onClick={() => void accountAction('recheck', account.id)}>{t('recheck')}</button>
             <button type="button" className="dgp-btn" onClick={() => void accountAction('remove', account.id)}>{t('disconnect')}</button>
           </div>
@@ -419,7 +419,7 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
         {accounts.length === 0 && <div className="dgp-empty">{t('noAccount')}</div>}
         <button type="button" className="dgp-btn" style={{ marginTop: 6 }} onClick={() => setConnectOpen(!connectOpen)}>{t('connectAccount')}</button>
         {connectOpen && (
-          <div style={{ marginTop: 8, border: '1px solid var(--dsh-border, #666)', borderRadius: 8, padding: 8 }}>
+          <div className="dgp-card">
             <div className="dgp-btnrow" style={{ marginBottom: 8 }}>
               <button type="button" className="dgp-btn" onClick={() => setMethod('pat')} style={method === 'pat' ? { borderColor: 'var(--dsh-accent, #4a9eff)' } : undefined}>{t('methodPat')}</button>
               <button type="button" className="dgp-btn" onClick={() => setMethod('oauth')} style={method === 'oauth' ? { borderColor: 'var(--dsh-accent, #4a9eff)' } : undefined}>{t('methodOauth')}</button>
@@ -444,7 +444,7 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
                   <div style={{ marginTop: 8 }}>
                     <div className="dgp-muted">{t('userCode')}</div>
                     <div className="dgp-file"><a href={oauthFlow.verificationUri} target="_blank" rel="noreferrer">{oauthFlow.verificationUri}</a></div>
-                    <div style={{ fontSize: 18, fontFamily: 'var(--dsh-mono, monospace)', margin: '4px 0' }}>{oauthFlow.userCode}</div>
+                    <div className="dgp-code">{oauthFlow.userCode}</div>
                     <div className="dgp-muted">{t('waiting')}</div>
                   </div>
                 ) : (
@@ -473,6 +473,25 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
   )
 }
 
+// ─── 面板头图标（同一 stroke/weight 的绘制 SVG，替代 Unicode 字符）───
+
+function RefreshGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
+      <path d="M13.5 1.5v3h-3" />
+    </svg>
+  )
+}
+
+function CloseGlyph() {
+  return (
+    <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+      <path d="M4 4l8 8M12 4l-8 8" />
+    </svg>
+  )
+}
+
 // ─── chip + 弹层 ───
 
 function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; sessionId: string; sessions?: SessionsService }) {
@@ -494,6 +513,22 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
   const [anchor, setAnchor] = useState({ left: 0, bottom: 0 })
 
   const cwd = useSessionCwd(sessions, sessionId)
+
+  // Escape 关面板/退参数行（键盘可达性）。
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      if (prompt) {
+        setPrompt(null)
+        e.stopPropagation()
+      } else {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [open, prompt])
 
   useEffect(() => {
     const stop = subscribePref(() => setAutoSubmit(readPref(PREF_AUTO_SUBMIT, '0') === '1'))
@@ -643,7 +678,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
           >
             <div className="dgp-head">
               <span className="dgp-title">{t('panelTitle')}</span>
-              <button type="button" className="dgp-iconbtn" title={t('refresh')} onClick={() => void reload()}>⟳</button>
+              <button type="button" className="dgp-iconbtn" title={t('refresh')} aria-label={t('refresh')} onClick={() => void reload()}><RefreshGlyph /></button>
               <label className="dgp-toggle" title={t('autoSubmit')}>
                 <input
                   type="checkbox"
@@ -655,7 +690,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
                 />
                 {t('autoSubmit')}
               </label>
-              <button type="button" className="dgp-iconbtn" title={t('close')} onClick={() => setOpen(false)}>✕</button>
+              <button type="button" className="dgp-iconbtn" title={t('close')} aria-label={t('close')} onClick={() => setOpen(false)}><CloseGlyph /></button>
             </div>
 
             {detectError && !isRepo && (
@@ -717,7 +752,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
             <GearSection t={t} accounts={accounts} onAccounts={setAccounts} />
 
             {prompt && (
-              <div className="dgp-sect" style={{ border: '1px solid var(--dsh-border, #666)', borderRadius: 8, padding: 8 }}>
+              <div className="dgp-sect dgp-card">
                 <div className="dgp-sect-title">{t(prompt.labelKey).replace('…', '')} · {t('askParam')}</div>
                 <input
                   className="dgp-input"
@@ -750,7 +785,7 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
           document.body,
         )}
 
-      {toast && createPortal(<div className="dgp-toast">{toast}</div>, document.body)}
+      {toast && createPortal(<div className="dgp-toast" role="status">{toast}</div>, document.body)}
     </span>
   )
 }
