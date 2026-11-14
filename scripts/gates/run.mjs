@@ -137,13 +137,12 @@ check('npm 多账号存储契约：store 有 npmAccounts 表 + active id + 密�
 check('npm 切换 fail-closed：handler switch 先 whoami 验证失败不切换', handler !== null && /npm\/switch[\s\S]{0,900}whoamiNpm/.test(handler))
 const npmMod = await readText(resolve(root, 'src/node/npm.ts'))
 check('npm 模块契约：whoami Bearer 验证 + 仅写 TOKEN_KEY 行 + 备份语义', npmMod !== null && npmMod.includes('/-/whoami') && npmMod.includes('//registry.npmjs.org/:_authToken') && npmMod.includes('copyFileSync'))
-check('npm-publish 指令模板指向面板 npm 卡（不再要求手动 npm login 为唯一路径）', clientIndex !== null && clientIndex.includes('「账号与授权 → npm」'))
-check('指令模板统一引用 git_write（乙案受控通道）', clientIndex !== null && (clientIndex.match(/git_write/g) ?? []).length >= 6)
-check('client 调用 injectCommand 注入', clientIndex !== null && clientIndex.includes('injectCommand('))
+// v3.15：命令模板 / 注入链整套删除（动作全交 AI 经 Agent 工具执行）→ 语义反转为「不得复活」。
+check('client 已删命令模板：不得再出现 npm-publish 模板或 git_write 文案', clientIndex !== null && !clientIndex.includes('账号与授权 → npm') && (clientIndex.match(/git_write/g) ?? []).length === 0)
+check('client 防复活：不得再定义命令表 / 动作组 / 注入调用', clientIndex !== null && !clientIndex.includes('COMMANDS') && !clientIndex.includes('ACTION_GROUPS') && !clientIndex.includes('injectCommand') && !clientIndex.includes('findComposer'))
 const shared = await readText(resolve(root, 'src/client/shared.tsx'))
-check('shared 注入链含官方锚点 data-composer-input', shared !== null && shared.includes('[data-composer-input]'))
-check('shared textarea 写入走原生 value setter', shared !== null && shared.includes('getOwnPropertyDescriptor(proto'))
-check('shared 直接提交找发送按钮', shared !== null && shared.includes('findSendButton'))
+check('shared 防复活：注入链 / 原生 value setter / 找发送按钮整套已删', shared !== null && !shared.includes('[data-composer-input]') && !shared.includes('getOwnPropertyDescriptor(proto') && !shared.includes('findSendButton') && !shared.includes('injectCommand'))
+check('shared 防复活：本地偏好读写 / fmt 工具 / COMMIT 视图类型已删', shared !== null && !shared.includes('PREF_AUTO_SUBMIT') && !shared.includes('readPref') && !shared.includes('function fmt') && !shared.includes('CommitRowView') && !shared.includes('BranchRowView'))
 check('shared 不再引用 highlight/prismjs', shared !== null && !shared.includes('highlight.js') && !shared.includes('prism'))
 
 // ---- 已删件防复活 ----

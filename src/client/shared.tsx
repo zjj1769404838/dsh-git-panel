@@ -1,9 +1,7 @@
 /**
- * client 半边公共层（v3 极简化）：API 调用、样式、通用小组件、共享类型，
- * 以及「命令注入器」——把指令文本写进宿主输入框（可选代按发送）。
- * 注入链路与 prompt-optimizer 已验证的做法一致：
- * 官方 data-* 锚点 → textarea（原生 value setter + input/change 事件）
- * → contenteditable（execCommand insertText，失败退 textContent + InputEvent）。
+ * client 半边公共层（v3.15 极简化）：API 调用、样式、通用小组件、共享类型。
+ * v3.15：删除「命令注入器」（把指令写进宿主输入框 + 可选代按发送）整套——
+ * 交互动作链下线，面板只承载状态展示与基础配置。
  */
 import { useEffect } from 'react'
 
@@ -76,24 +74,6 @@ export interface RepoChangesView {
   files: ChangeFileView[]
 }
 
-export interface CommitRowView {
-  hash: string
-  author: string
-  date: string
-  subject: string
-  refs?: string
-}
-
-export interface BranchRowView {
-  name: string
-  current: boolean
-  remote: boolean
-  tracking: string
-  lastDate?: string
-  lastAuthor?: string
-  head?: string
-}
-
 export interface AccountView {
   id: string
   provider: string
@@ -122,45 +102,12 @@ export interface PanelState {
   settings: SettingsView
 }
 
-// ---- 本地偏好（localStorage） ----
-
-export const PREF_EVENT = 'dgp:pref-changed'
-export const PREF_AUTO_SUBMIT = 'dgp.autoSubmit'
-
-export function readPref(key: string, fallback: string): string {
-  try {
-    const value = localStorage.getItem(key)
-    return value === null ? fallback : value
-  } catch {
-    return fallback
-  }
-}
-
-export function writePref(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value)
-    window.dispatchEvent(new Event(PREF_EVENT))
-  } catch {
-    /* 隐私模式下 localStorage 不可用：偏好退化为默认值 */
-  }
-}
-
-export function subscribePref(onChange: () => void): () => void {
-  const handler = () => onChange()
-  window.addEventListener(PREF_EVENT, handler)
-  window.addEventListener('storage', handler)
-  return () => {
-    window.removeEventListener(PREF_EVENT, handler)
-    window.removeEventListener('storage', handler)
-  }
-}
-
 // ---- 样式 ----
 
 export const CSS = `
 /* 设计令牌（ui-ux-pro-max / Dark Mode OLED）：开发者工具深色皮肤。
-   变量同时挂在 root / panel / toast：panel 与 toast 是 portal，脱离 .dgp-root 继承，必须自带一份。 */
-.dgp-root, .dgp-panel, .dgp-toast {
+   变量同时挂在 root / panel：panel 是 portal，脱离 .dgp-root 继承，必须自带一份。 */
+.dgp-root, .dgp-panel {
   --dgp-bg: #0f172a;
   --dgp-bg-soft: #1b2336;
   --dgp-bg-hover: #272f42;
@@ -178,7 +125,7 @@ export const CSS = `
   --dgp-sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
 }
 @media (prefers-color-scheme: light) {
-  .dgp-root, .dgp-panel, .dgp-toast {
+  .dgp-root, .dgp-panel {
     --dgp-bg: #ffffff;
     --dgp-bg-soft: #f4f7fb;
     --dgp-bg-hover: #e8eef6;
@@ -191,10 +138,10 @@ export const CSS = `
     --dgp-shadow: 0 1px 2px rgba(15,23,42,.10), 0 16px 44px -12px rgba(15,23,42,.28);
   }
 }
-.dgp-root, .dgp-panel, .dgp-toast { font: 13px/1.5 var(--dgp-sans); color: var(--dgp-fg); }
+.dgp-root, .dgp-panel { font: 13px/1.5 var(--dgp-sans); color: var(--dgp-fg); }
 .dgp-root ::selection, .dgp-panel ::selection { background: var(--dgp-accent); color: var(--dgp-accent-fg); }
 
-/* chip：输入框旁入口，恒显 Git 文本 + 分支 + 状态徽标 */
+/* chip：输入框旁入口，恒显 Git 文本 + 分支（v3.15 去掉状态数字徽标） */
 .dgp-chip { display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px; border-radius: 8px;
   border: 1px solid var(--dgp-border-strong); background: var(--dgp-bg-soft); color: var(--dgp-fg);
   cursor: pointer; font-size: 12px; line-height: 18px; max-width: 280px; white-space: nowrap;
@@ -205,11 +152,6 @@ export const CSS = `
 .dgp-chip-label { font-weight: 600; letter-spacing: .04em; flex: none; }
 .dgp-chip-sep { color: var(--dgp-fg-muted); flex: none; font-family: var(--dgp-mono); }
 .dgp-chip-branch { overflow: hidden; text-overflow: ellipsis; min-width: 0; font-family: var(--dgp-mono); }
-.dgp-chip-badge { display: inline-flex; gap: 4px; flex: none; }
-.dgp-badge { font: 600 11px/1 var(--dgp-mono); padding: 3px 5px; border-radius: 5px; background: var(--dgp-bg-hover); color: var(--dgp-fg-muted); }
-.dgp-badge-info { color: var(--dgp-info); }
-.dgp-badge-warn { color: var(--dgp-warn); }
-.dgp-badge-ok { color: var(--dgp-accent); }
 
 /* 焦点可见 */
 .dgp-chip:focus-visible, .dgp-btn:focus-visible, .dgp-iconbtn:focus-visible, .dgp-input:focus-visible {
@@ -226,9 +168,8 @@ export const CSS = `
 .dgp-panel::-webkit-scrollbar-thumb { background: var(--dgp-border-strong); border-radius: 4px; }
 .dgp-panel::-webkit-scrollbar-track { background: transparent; }
 @keyframes dgp-pop { from { opacity: 0; transform: translateY(6px) scale(.98); } to { opacity: 1; transform: none; } }
-@keyframes dgp-fade { from { opacity: 0; } to { opacity: 1; } }
 
-/* 头部 / 状态栏 / 工具条 */
+/* 头部 / 状态栏 */
 .dgp-head { display: flex; align-items: center; gap: 8px; padding: 11px 14px; border-bottom: 1px solid var(--dgp-border); }
 .dgp-head svg { color: var(--dgp-accent); flex: none; }
 .dgp-title { font-weight: 600; font-size: 13px; letter-spacing: .01em; }
@@ -243,8 +184,6 @@ export const CSS = `
 .dgp-status-dot[data-state='clean'] { background: var(--dgp-accent); }
 .dgp-status-dot[data-state='dirty'] { background: var(--dgp-warn); }
 .dgp-status-branch { font: 600 12px var(--dgp-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.dgp-status-meta { font: 11px var(--dgp-mono); color: var(--dgp-fg-muted); flex: none; }
-.dgp-toolbar { padding: 8px 14px; border-bottom: 1px solid var(--dgp-border); background: var(--dgp-bg-soft); }
 
 /* 分区 */
 .dgp-sect { margin: 0; padding: 11px 14px; border-bottom: 1px solid var(--dgp-border); }
@@ -254,7 +193,7 @@ export const CSS = `
 .dgp-empty { color: var(--dgp-fg-muted); padding: 6px 0; font-size: 12px; }
 .dgp-spacer { flex: 1; }
 
-/* 按钮 */
+/* 按钮（v3.15 删除强调/分组按钮：动作按钮已下线） */
 .dgp-btn { border: 1px solid var(--dgp-border-strong); background: var(--dgp-bg-soft); color: var(--dgp-fg);
   border-radius: 7px; padding: 5px 11px; cursor: pointer; font-size: 12px; line-height: 16px;
   transition: transform 120ms ease-out, background 150ms ease, border-color 150ms ease, color 150ms ease, filter 150ms ease; }
@@ -262,25 +201,15 @@ export const CSS = `
 .dgp-btn:hover:not(:disabled):not(.dgp-btn-accent) { border-color: var(--dgp-accent); background: var(--dgp-bg-hover); }
 .dgp-btn:active:not(:disabled) { transform: translateY(1px); }
 .dgp-btn:disabled { opacity: .4; cursor: default; }
-.dgp-btn-primary { border-color: var(--dgp-accent); color: var(--dgp-accent); font-weight: 600; }
-.dgp-btn-accent { background: var(--dgp-accent); color: var(--dgp-accent-fg); border-color: var(--dgp-accent); font-weight: 600; }
-.dgp-btn-accent:hover:not(:disabled) { background: var(--dgp-accent); color: var(--dgp-accent-fg); filter: brightness(1.08); border-color: var(--dgp-accent); }
 .dgp-btn-danger { color: var(--dgp-danger); border-color: rgba(239,68,68,.5); }
 .dgp-btn-danger:hover:not(:disabled) { border-color: var(--dgp-danger); }
 .dgp-btnrow { display: flex; flex-wrap: wrap; gap: 6px; }
-.dgp-btn-group { margin-top: 10px; }
-.dgp-btn-group:first-child { margin-top: 0; }
-.dgp-group-label { font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
-  color: var(--dgp-fg-muted); margin-bottom: 6px; }
 
-/* 文件 / 提交列表 */
+/* 文件列表 */
 .dgp-file { display: flex; gap: 8px; align-items: center; padding: 3px 0; font: 12px/1.5 var(--dgp-mono); }
 .dgp-file a { overflow-wrap: anywhere; min-width: 0; color: var(--dgp-info); }
 .dgp-file-status { width: 20px; text-align: center; color: var(--dgp-accent); font-weight: 600; }
 .dgp-file-path { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-.dgp-file-stat { color: var(--dgp-fg-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-.dgp-row-line { padding: 2px 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dgp-hash { font: 12px var(--dgp-mono); color: var(--dgp-accent); margin-right: 8px; }
 
 /* 表单 / 卡片 / 账号 */
 .dgp-toggle { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; cursor: pointer;
@@ -299,14 +228,8 @@ export const CSS = `
 .dgp-dot-expired { background: var(--dgp-warn); }
 .dgp-dot-error { background: var(--dgp-danger); }
 
-/* toast */
-.dgp-toast { position: fixed; z-index: 2300; left: 50%; transform: translateX(-50%); bottom: 24px;
-  max-width: min(90vw, 420px); text-align: center; background: var(--dgp-bg-soft); color: var(--dgp-fg);
-  border: 1px solid var(--dgp-border-strong); border-radius: 9px; box-shadow: var(--dgp-shadow);
-  padding: 8px 15px; font-size: 12px; animation: dgp-fade 160ms ease; }
-
 @media (prefers-reduced-motion: reduce) {
-  .dgp-panel, .dgp-toast { animation: none; }
+  .dgp-panel { animation: none; }
   .dgp-btn:active, .dgp-chip:active, .dgp-iconbtn:active { transform: none; }
 }
 `
@@ -326,146 +249,4 @@ export function useStyles(): void {
 export function Dot({ state }: { state?: string }) {
   const label = state === 'expired' ? 'expired' : state === 'error' ? 'error' : 'connected'
   return <span className={`dgp-dot dgp-dot-${state || 'connected'}`} role="img" aria-label={label} />
-}
-
-export function fmt(template: string, params: Record<string, string | number>): string {
-  return template.replace(/\{(\w+)\}/g, (_, key: string) => String(params[key] ?? ''))
-}
-
-// ---- 命令注入器 ----
-
-interface ComposerFound {
-  el: HTMLElement
-  kind: 'textarea' | 'input' | 'contenteditable'
-  setText: (value: string) => Promise<boolean>
-}
-
-const nextTick = () => new Promise<void>((resolve) => setTimeout(resolve, 0))
-
-/** 发现宿主输入框：官方 data-* 锚点 → textarea → contenteditable，取可见的最高者。 */
-function findComposer(): ComposerFound | null {
-  const visible = (el: Element) => {
-    const r = el.getBoundingClientRect()
-    return r.width > 0 && r.height > 0 && r.height >= 24
-  }
-  const anchors = [
-    '[data-composer-input]',
-    '[data-composer-seat] textarea',
-    '[data-composer-seat] [contenteditable="true"]',
-    'textarea',
-    '[contenteditable="true"]',
-  ]
-  const seen: HTMLElement[] = []
-  for (const sel of anchors) {
-    for (const el of Array.from(document.querySelectorAll(sel))) {
-      const h = el as HTMLElement
-      if (!visible(h)) continue
-      if (seen.indexOf(h) === -1) seen.push(h)
-    }
-  }
-  if (seen.length === 0) return null
-  const el = seen.reduce((a, b) => (b.getBoundingClientRect().height > a.getBoundingClientRect().height ? b : a))
-
-  const tag = el.tagName.toLowerCase()
-  if (tag === 'textarea' || tag === 'input') {
-    const box = el as HTMLTextAreaElement
-    return {
-      el,
-      kind: tag,
-      setText: async (v: string) => {
-        const proto = Object.getPrototypeOf(box)
-        const desc = Object.getOwnPropertyDescriptor(proto, 'value') || Object.getOwnPropertyDescriptor(box, 'value')
-        if (desc && desc.set) desc.set.call(box, v)
-        else box.value = v
-        box.dispatchEvent(new Event('input', { bubbles: true }))
-        box.dispatchEvent(new Event('change', { bubbles: true }))
-        return box.value === v
-      },
-    }
-  }
-
-  // contenteditable（宿主可能是 Lexical/ProseMirror，需等选区同步后再 execCommand）
-  return {
-    el,
-    kind: 'contenteditable',
-    setText: async (v: string) => {
-      const inner = (el.querySelector('[contenteditable="true"]') as HTMLElement | null) || el
-      const focusTarget = inner.isContentEditable ? inner : el
-      focusTarget.focus()
-      const sel = window.getSelection()
-      const selectAllInside = (node: HTMLElement) => {
-        const range = document.createRange()
-        range.selectNodeContents(node)
-        if (sel) {
-          sel.removeAllRanges()
-          sel.addRange(range)
-        }
-      }
-      const norm = (s: string) => s.replace(/\u200b/g, '').replace(/\s+/g, ' ').trim()
-      const readBack = () => norm(focusTarget.textContent ?? '')
-      let written = false
-      for (let attempt = 0; attempt < 3 && !written; attempt++) {
-        selectAllInside(focusTarget)
-        await nextTick()
-        let cmdOk = false
-        try {
-          cmdOk = document.execCommand('insertText', false, v)
-        } catch {
-          cmdOk = false
-        }
-        written = cmdOk && readBack() === norm(v)
-      }
-      if (!written) {
-        focusTarget.textContent = v
-        written = readBack() === norm(v)
-      }
-      try {
-        focusTarget.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: v }))
-      } catch {
-        focusTarget.dispatchEvent(new Event('input', { bubbles: true }))
-      }
-      return written
-    },
-  }
-}
-
-/** 找输入框同一工具栏里的发送按钮：向上 6 层，找含 button 的兄弟容器，取最后一个启用按钮。 */
-function findSendButton(el: HTMLElement): HTMLButtonElement | null {
-  let node: HTMLElement | null = el
-  for (let depth = 0; depth < 6 && node; depth++) {
-    const parent = node.parentElement
-    if (!parent) break
-    for (const child of Array.from(parent.children) as HTMLElement[]) {
-      if (child.contains(el)) continue
-      const buttons = Array.from(child.querySelectorAll('button')) as HTMLButtonElement[]
-      const enabled = buttons.filter((b) => !b.disabled && b.getBoundingClientRect().width > 0)
-      if (enabled.length > 0) return enabled[enabled.length - 1]
-    }
-    node = parent
-  }
-  return null
-}
-
-export interface InjectResult {
-  ok: boolean
-  submitted: boolean
-  error?: string
-}
-
-/**
- * 把指令文本注入宿主输入框。autoSubmit=true 时尝试代按发送按钮；
- * 找不到发送按钮只回报 submitted:false——指令已在框里，用户手动回车即可。
- */
-export async function injectCommand(text: string, autoSubmit: boolean): Promise<InjectResult> {
-  const composer = findComposer()
-  if (!composer) return { ok: false, submitted: false, error: '未找到输入框（composer 不可见）' }
-  const written = await composer.setText(text)
-  if (!written) return { ok: false, submitted: false, error: '写入输入框失败（回读校验不通过）' }
-  if (!autoSubmit) return { ok: true, submitted: false }
-  const button = findSendButton(composer.el)
-  if (button) {
-    button.click()
-    return { ok: true, submitted: true }
-  }
-  return { ok: true, submitted: false, error: '未定位到发送按钮，指令已放入输入框' }
 }

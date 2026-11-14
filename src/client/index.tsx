@@ -1,141 +1,17 @@
-/**
- * client 半边（v3.2）：输入框左侧分支 chip + 点击弹层。
- * 弹层承载全部功能：只读状态（分支/领先落后/改动文件/最近提交）、动作按钮
- * （每个按钮把一条给 Agent 的指令注入宿主输入框，AI 经 git_write/git_confirm
- * 受控执行）、以及折叠区「账号与授权」（GitHub PAT/OAuth 连接、本地目录白名单、
- * 写策略开关）。宿主设置页不再有 Git 分节（v3.2 拍板：设置全部并入面板）。
- * 「直接提交」开关打开时注入后尝试代按发送按钮。
- */
+// dsh-git-panel — 分支 chip（v3.15 极简化：只读状态 + 账号与授权配置）。
+// 设计拍板：所有 git 动作（提交/推送/切换分支…）交给 AI 通过 7 个 Agent 工具执行；
+// chip 弹层只展示只读信息（分支、改动文件清单）与「账号与授权」配置（GitHub PAT/OAuth、npm 多账号、写开关）。
+// 不内置任何第三方应用凭据（见 providers.ts）。
+
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
-import {
-  NS,
-  api,
-  useStyles,
-  Dot,
-  fmt,
-  readPref,
-  writePref,
-  subscribePref,
-  injectCommand,
-  PREF_AUTO_SUBMIT,
-  type AccountView,
-  type ChangeFileView,
-  type Dict,
-  type PanelState,
-  type RepoChangesView,
-  type RepoStatusView,
-  type CommitRowView,
-} from './shared.js'
+import { NS, api, useStyles, Dot, type AccountView, type ChangeFileView, type Dict, type PanelState, type RepoChangesView, type RepoStatusView } from './shared.js'
 
 export const inject = ['slots', 'sessions', 'locale']
 
-const BUILD = 'dgp-v3.13'
+const BUILD = 'dgp-v3.15'
 
-// ─── 指令模板（乙案：AI 统一走插件的 git_write / git_confirm 受控通道）───
-const TOOL_PREAMBLE =
-  '请通过本项目的 Git 面板工具执行（调用 git_write，必要时接 git_confirm 完成确认；不要用裸 shell 绕过确认）。'
-
-interface CommandSpec {
-  id: string
-  labelKey: string
-  build: (cwd: string, extra?: string) => string
-}
-
-const COMMANDS: CommandSpec[] = [
-  {
-    id: 'stage-all',
-    labelKey: 'cmdStageAll',
-    build: (cwd) =>
-      `${TOOL_PREAMBLE}在仓库 ${cwd} 用 git_write(action=add, args=["-A"]) 暂存全部改动，然后用 git_repo_info 复核并简述结果。`,
-  },
-  {
-    id: 'commit',
-    labelKey: 'cmdCommit',
-    build: (cwd, extra) =>
-      `${TOOL_PREAMBLE}在仓库 ${cwd} 先 git_diff(mode=staged) 看已暂存内容，总结一条规范的提交信息${extra ? `（意图补充：${extra}）` : ''}，再 git_write(action=commit, args=["-m", "<信息>"]) 提交。若暂存区为空，先提示我。`,
-  },
-  {
-    id: 'push',
-    labelKey: 'cmdPush',
-    build: (cwd) =>
-      `${TOOL_PREAMBLE}在仓库 ${cwd} 先 git_repo_info 确认分支与远端；无上游则 git_write(action=push, args=["-u","origin","<当前分支>"])，否则 git_write(action=push, args=[])。认证失败时如实汇报，不要索要或回显任何令牌。`,
-  },
-  {
-    id: 'pull',
-    labelKey: 'cmdPull',
-    build: (cwd) =>
-      `${TOOL_PREAMBLE}在仓库 ${cwd} 执行 git_write(action=pull, args=["--rebase"])（若明显有分叉风险改用默认 merge）；出现冲突立刻停下并汇报冲突文件清单，不要自行取舍。`,
-  },
-  {
-    id: 'fetch',
-    labelKey: 'cmdFetch',
-    build: (cwd) => `${TOOL_PREAMBLE}在仓库 ${cwd} 执行 git_write(action=fetch, args=["--prune"])，然后汇报各分支领先/落后变化。`,
-  },
-  {
-    id: 'branch-create',
-    labelKey: 'cmdBranchCreate',
-    build: (cwd, extra) =>
-      `${TOOL_PREAMBLE}在仓库 ${cwd} 用 git_write(action=branch, args=["${extra || '<新分支名>'}"]) 基于当前 HEAD 新建分支，再 git_write(action=checkout, args=["${extra || '<新分支名>'}"]) 切过去。分支名未提供时先问我。`,
-  },
-  {
-    id: 'branch-switch',
-    labelKey: 'cmdBranchSwitch',
-    build: (cwd, extra) =>
-      `${TOOL_PREAMBLE}在仓库 ${cwd} 用 git_write(action=checkout, args=["${extra || '<目标分支>'}"]) 切换分支；工作区不干净导致失败时先向我说明，不要强制。分支名未提供时先列出 git_branches 让我选。`,
-  },
-  {
-    id: 'discard',
-    labelKey: 'cmdDiscard',
-    build: (cwd, extra) =>
-      `${TOOL_PREAMBLE}这是破坏性操作：先在回复里向用户复述将丢弃的文件（${extra || '<未跟踪/已修改文件>'}），得到确认后 git_write(action=restore, args=["--","<文件>"])；未跟踪文件用 clean 前必须再次单独确认。`,
-  },
-  {
-    id: 'stash',
-    labelKey: 'cmdStash',
-    build: (cwd) => `${TOOL_PREAMBLE}在仓库 ${cwd} 执行 git_write(action=stash, args=[]) 贮藏当前改动，完成后汇报贮藏内容摘要。`,
-  },
-  {
-    id: 'tag',
-    labelKey: 'cmdTag',
-    build: (cwd, extra) =>
-      `${TOOL_PREAMBLE}在仓库 ${cwd} 用 git_write(action=tag, args=["${extra || '<vX.Y.Z>'}"]) 打标签；标签名未提供时先问我。推不推送远端由我决定，先别自动 push tag。`,
-  },
-  {
-    id: 'init',
-    labelKey: 'cmdInit',
-    build: (cwd) =>
-      `${TOOL_PREAMBLE}该目录还不是仓库：请在 ${cwd} 执行 git_write(action=init, args=["-b","main"]) 初始化本地仓库，完成后汇报。远程关联等我另行指示。`,
-  },
-  {
-    // npm 发布不走 git_write（该通道仅限 git 子命令），由 AI 经 shell 按内嵌 SOP 执行；无参数占位，点击即注入。
-    // 通用性红线（v3.7 拍板）：模板面向任意 DSH 作者的任意机器，禁止内嵌任何个人路径/个人环境假设；
-    // 授权模型（v3.8 拍板）：对齐 git token 模式——用户点按钮即最终授权，此后 AI 全程自主跑到终验，不再逐步请示；
-    // 仅两种「需人工」前置保留 fail-closed 停止（官方源未配凭据、目标版本已占用），此时输出需用户手动补的步骤清单。
-    id: 'npm-publish',
-    labelKey: 'cmdNpmPublish',
-    build: (cwd) =>
-      `请把当前项目（${cwd}）发布到 npm。我点这个按钮就是最终授权：此后你全程自主执行到终验完成，不要逐步回来问我，除非撞上下面两种「需要我手动处理」的前置失败。这是不可逆外部写操作，禁止凭 exit 0 判定发布成功。` +
-      `1) 前置检查（两种可停情况）：a. 执行 npm whoami --registry=https://registry.npmjs.org——未登录/无凭据就停止，提示用户在本面板「账号与授权 → npm」卡里粘贴 token 连接（本插件会先向官方源验证、再写入 ~/.npmrc，等同 npm login；和配 git token 同理，配好一次之后全程就归你自动跑）；用户不便用面板时可指引 npm login；不得替用户登录、不得索要 token 到聊天里、不得回显任何 token；b. 带 ?nocache= 时间戳直查 https://registry.npmjs.org/<包名>（官方源为权威，勿经镜像），若我要发的版本已存在也停止并报告（name+version 永久占用不可复用）；` +
-      `2) 自动执行段：读取 package.json 的 name/version/files 核对；若仓库存在多处版本声明（lockfile、源码常量）逐处比对，不一致停止并列出差异；npm pack --dry-run 取产物清单（写入最终汇报即可，不用停下等我过目）；然后直接执行 npm publish --registry=https://registry.npmjs.org --access=public（scoped 包必须显式 --access=public；不得修改我的任何配置文件）；` +
-      `3) 自主终验：PUT 返回 202 只代表 staged，禁止重发；带 ?nocache= 轮询 packument 直至该版本出现，以 packument 为权威；` +
-      `4) 失败分层归因（网络→身份→配置→实现），错误码会伪装（如 404 掩盖权限/邮箱问题），归因坐实前不重试；E401/ENEEDAUTH 优先核对是否漏钉官方源或凭据失效；` +
-      `5) 一次性交付完整汇报：版本号、dist-tags、发布时间戳、产物清单、退出码证据。` +
-      `6) 长期提醒（不阻塞本次）：npm 官方正把发布向 CI 可信发布迁移，长期 token 通道未来可能收紧；真撞上那天按第 4 步归因并向我说清迁移选项即可。`,
-  },
-]
-
-// 动作分组（v3.11 重设计）：把平铺动作按工作流分 4 组，降低认知负荷、建立层次。
-interface ActionGroup {
-  labelKey: string
-  ids: string[]
-}
-const ACTION_GROUPS: ActionGroup[] = [
-  { labelKey: 'groupSync', ids: ['push', 'pull', 'fetch'] },
-  { labelKey: 'groupChanges', ids: ['stage-all', 'commit', 'stash', 'discard'] },
-  { labelKey: 'groupBranch', ids: ['branch-create', 'branch-switch', 'tag'] },
-  { labelKey: 'groupPublish', ids: ['npm-publish'] },
-]
+// ─── 文案（zh / en）───
 
 const ZH: Dict = {
   entry: 'Git',
@@ -144,19 +20,11 @@ const ZH: Dict = {
   refresh: '刷新',
   close: '关闭',
   notRepo: '当前会话目录不是 Git 仓库',
-  notRepoHint: '可让 AI 初始化仓库（下方「动作」区有对应按钮）。',
+  notRepoHint: '打开或切换到一个 Git 仓库目录后再查看。',
   changedFiles: '改动文件',
   noChanges: '工作区干净',
-  recentCommits: '最近提交',
-  noCommits: '还没有提交',
-  actions: '动作（生成指令给 AI 执行）',
-  groupSync: '同步',
-  groupChanges: '改动',
-  groupBranch: '分支与标签',
-  groupPublish: '发布',
-  inputHint: '可改词后再回车；指令只是发起，写操作仍受确认约束。',
-  autoSubmit: '直接提交（注入后代按发送）',
-  // 折叠区：账号与授权
+  retry: '重新检测',
+  detectFailed: '无法检测仓库状态',
   gear: '账号与授权',
   account: 'GitHub 账号',
   noAccount: '未连接账号（不影响本地 git 操作）',
@@ -173,47 +41,23 @@ const ZH: Dict = {
   clientIdHint: '本插件不内置任何应用凭据：需你自建 GitHub OAuth App 并填入 Client ID。',
   userCode: '浏览器打开下面的地址并输入代码完成授权',
   waiting: '等待授权…',
-  npmAccount: 'npm 发布账号',
-  npmNoAccount: '未配置 npm 凭据（发布按钮会提示先配置）',
-  npmConnect: '连接 npm',
-  npmAdd: '添加凭据',
-  npmSwitch: '切换',
-  npmActive: '当前',
-  npmReconnect: '重新连接',
-  npmError: '凭据校验失败',
-  npmTokenLabel: 'npm token',
-  npmTokenHint: '在 npmjs.com → Access Tokens 生成；验证通过后写入 ~/.npmrc（等同 npm login），保存后不再回显。',
-  npmTokenPlaceholder: '粘贴 npm token（npm_ 或旧式长 hex 均可）',
   connect: '连接',
   cancel: '取消',
   disconnect: '断开',
   recheck: '校验',
-  injected: '指令已放入输入框',
-  injectedSubmitted: '指令已提交给 AI',
   injectFailed: '注入失败',
-  detectFailed: '无法检测仓库状态',
-  retry: '重新检测',
   allowWrite: '允许 Agent 修改仓库',
-  allowWriteHint: '总开关：关闭时 git_write 一律拒绝。',
   requireConfirm: '写操作前需要我确认',
-  requireConfirmHint: '开启时 git_write 返回 confirmToken，你确认后 AI 才能调 git_confirm 执行。',
-  cmdStageAll: '暂存全部',
-  cmdCommit: '提交…',
-  cmdPush: '推送',
-  cmdPull: '拉取',
-  cmdFetch: '抓取',
-  cmdBranchCreate: '新建分支…',
-  cmdBranchSwitch: '切换分支…',
-  cmdDiscard: '丢弃改动…',
-  cmdStash: '贮藏',
-  cmdTag: '打标签…',
-  cmdInit: '初始化仓库',
-  cmdNpmPublish: '发布 npm',
-  askParam: '填入参数',
-  commitIntent: '提交意图（可留空）',
-  branchName: '分支名',
-  discardFiles: '要丢弃的文件（空格分隔）',
-  tagName: '标签名',
+  npmAccount: 'npm 发布账号',
+  npmNoAccount: '未配置 npm 凭据。',
+  npmConnect: '连接 npm',
+  npmAdd: '添加凭据',
+  npmSwitch: '切换',
+  npmActive: '当前',
+  npmError: '凭据校验失败',
+  npmTokenLabel: 'npm token',
+  npmTokenHint: '在 npmjs.com → Access Tokens 生成；验证通过后写入 ~/.npmrc（等同 npm login），保存后不再回显。',
+  npmTokenPlaceholder: '粘贴 npm token（npm_ 或旧式长 hex 均可）',
 }
 
 const EN: Dict = {
@@ -223,18 +67,11 @@ const EN: Dict = {
   refresh: 'Refresh',
   close: 'Close',
   notRepo: 'This session directory is not a Git repository',
-  notRepoHint: 'Let the AI init a repo (button below).',
+  notRepoHint: 'Open or switch to a Git repository directory to inspect it.',
   changedFiles: 'Changed files',
   noChanges: 'Working tree clean',
-  recentCommits: 'Recent commits',
-  noCommits: 'No commits yet',
-  actions: 'Actions (inject a command for the AI)',
-  groupSync: 'Sync',
-  groupChanges: 'Changes',
-  groupBranch: 'Branch & tags',
-  groupPublish: 'Publish',
-  inputHint: 'You can edit before pressing Enter; writes stay confirm-gated.',
-  autoSubmit: 'Auto submit (press send after injecting)',
+  retry: 'Check again',
+  detectFailed: 'Cannot detect repository status',
   gear: 'Accounts & Access',
   account: 'GitHub account',
   noAccount: 'No account connected (local git still works)',
@@ -251,48 +88,26 @@ const EN: Dict = {
   clientIdHint: 'No third-party app credential is bundled: create your own GitHub OAuth App and paste its Client ID.',
   userCode: 'Open the URL below in a browser and enter the code',
   waiting: 'Waiting for authorization…',
-  npmAccount: 'npm publishing accounts',
-  npmNoAccount: 'No npm credential (the publish button will tell you to set one up)',
-  npmConnect: 'Connect npm',
-  npmAdd: 'Add credential',
-  npmSwitch: 'Switch',
-  npmActive: 'Active',
-  npmReconnect: 'Reconnect',
-  npmError: 'Credential check failed',
-  npmTokenLabel: 'npm token',
-  npmTokenHint: 'Create one at npmjs.com → Access Tokens; after verification it is written to ~/.npmrc (same as npm login) and never shown again.',
-  npmTokenPlaceholder: 'Paste npm token (npm_ or legacy long hex)',
   connect: 'Connect',
   cancel: 'Cancel',
   disconnect: 'Disconnect',
   recheck: 'Recheck',
-  injected: 'Command placed in the input box',
-  injectedSubmitted: 'Command sent to the AI',
-  injectFailed: 'Inject failed',
-  detectFailed: 'Cannot detect repository status',
-  retry: 'Check again',
+  injectFailed: 'Injection failed',
   allowWrite: 'Allow the agent to modify repositories',
-  allowWriteHint: 'Master switch: git_write refuses when off.',
   requireConfirm: 'Ask me before every write',
-  requireConfirmHint: 'git_write returns a confirmToken you must approve via git_confirm.',
-  cmdStageAll: 'Stage all',
-  cmdCommit: 'Commit…',
-  cmdPush: 'Push',
-  cmdPull: 'Pull',
-  cmdFetch: 'Fetch',
-  cmdBranchCreate: 'New branch…',
-  cmdBranchSwitch: 'Switch branch…',
-  cmdDiscard: 'Discard…',
-  cmdStash: 'Stash',
-  cmdTag: 'Tag…',
-  cmdInit: 'Init repo',
-  cmdNpmPublish: 'Publish to npm',
-  askParam: 'Fill parameter',
-  commitIntent: 'Commit intent (optional)',
-  branchName: 'Branch name',
-  discardFiles: 'Files to discard (space separated)',
-  tagName: 'Tag name',
+  npmAccount: 'npm publishing accounts',
+  npmNoAccount: 'No npm credential configured.',
+  npmConnect: 'Connect npm',
+  npmAdd: 'Add credential',
+  npmSwitch: 'Switch',
+  npmActive: 'Active',
+  npmError: 'Credential check failed',
+  npmTokenLabel: 'npm token',
+  npmTokenHint: 'Create one at npmjs.com → Access Tokens; after verification it is written to ~/.npmrc (same as npm login) and never shown again.',
+  npmTokenPlaceholder: 'Paste npm token (npm_ or legacy long hex)',
 }
+
+// ─── 会话 cwd 订阅（宿主 sessions 服务）───
 
 interface SessionsService {
   list?: {
@@ -542,7 +357,7 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
 }
 
 // ─── npm 凭据卡（v3.10 多账号 + 切换）：像连 GitHub 账号一样连 npm ───
-// 表里可存多个 npm token（node 侧密文），active 账号由 node 同步写入 ~/.npmrc 供 npm publish 使用。
+// 表里可存多个 npm token（node 侧密文），active 账号由 node 同步写入 ~/.npmrc 供 AI 调 npm 工具使用。
 // 首次读状态时 node 会把 ~/.npmrc 里既有的官方源 token 惰性收编为首个账号（v3.9/手动 npm login 不断档）。
 
 interface NpmAccountRow {
@@ -689,60 +504,37 @@ function CloseGlyph() {
   )
 }
 
-// ─── chip + 弹层 ───
+// ─── 分支 chip：输入框左侧恒显「Git · 分支」，弹层只读状态 + 账号与授权配置 ───
 
 function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; sessionId: string; sessions?: SessionsService }) {
   useStyles()
   const [status, setStatus] = useState<RepoStatusView | null>(null)
   const [files, setFiles] = useState<ChangeFileView[]>([])
-  const [commits, setCommits] = useState<CommitRowView[]>([])
   const [accounts, setAccounts] = useState<AccountView[]>([])
   const [detectError, setDetectError] = useState('')
   const [open, setOpen] = useState(false)
   const [checking, setChecking] = useState(false)
-  const [toast, setToast] = useState<string>('')
-  const [autoSubmit, setAutoSubmit] = useState(() => readPref(PREF_AUTO_SUBMIT, '0') === '1')
-  const [prompt, setPrompt] = useState<CommandSpec | null>(null)
-  const [promptValue, setPromptValue] = useState('')
-  const toastTimer = useRef<number | null>(null)
   const chipRef = useRef<HTMLSpanElement | null>(null)
   const panelRef = useRef<HTMLDivElement | null>(null)
   const [anchor, setAnchor] = useState({ left: 0, bottom: 0 })
 
   const cwd = useSessionCwd(sessions, sessionId)
 
-  // Escape 关面板/退参数行（键盘可达性）。
+  // Escape 关面板（键盘可达性）。
   useEffect(() => {
     if (!open) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
-      if (prompt) {
-        setPrompt(null)
-        e.stopPropagation()
-      } else {
-        setOpen(false)
-      }
+      setOpen(false)
     }
     document.addEventListener('keydown', onKey, true)
     return () => document.removeEventListener('keydown', onKey, true)
-  }, [open, prompt])
-
-  useEffect(() => {
-    const stop = subscribePref(() => setAutoSubmit(readPref(PREF_AUTO_SUBMIT, '0') === '1'))
-    return stop
-  }, [])
-
-  const showToast = useCallback((text: string) => {
-    if (toastTimer.current !== null) window.clearTimeout(toastTimer.current)
-    setToast(text)
-    toastTimer.current = window.setTimeout(() => setToast(''), 2400)
-  }, [])
+  }, [open])
 
   const reload = useCallback(async () => {
     if (!cwd) {
       setStatus(null)
       setFiles([])
-      setCommits([])
       setDetectError('')
       return
     }
@@ -755,17 +547,14 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
         setStatus(data.status)
         setDetectError('')
         if (data.status.isRepo) {
-          const [changes, log, state] = await Promise.all([
+          const [changes, state] = await Promise.all([
             api<{ ok: boolean; changes?: RepoChangesView }>(`/repo/changes?cwd=${encodeURIComponent(cwd)}`).catch(() => null),
-            api<{ ok: boolean; commits?: CommitRowView[] }>(`/repo/commits?cwd=${encodeURIComponent(cwd)}&limit=5`).catch(() => null),
             api<{ ok: boolean; state?: PanelState }>('/state').catch(() => null),
           ])
           setFiles(changes?.changes?.files ?? [])
-          setCommits(log?.commits ?? [])
           if (state?.state?.accounts) setAccounts(state.state.accounts)
         } else {
           setFiles([])
-          setCommits([])
         }
       } else {
         setStatus(null)
@@ -813,41 +602,12 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
     }
   }
 
-  const runCommand = useCallback(
-    async (spec: CommandSpec, extra?: string) => {
-      if (!cwd) return
-      const text = spec.build(cwd, extra)
-      const result = await injectCommand(text, autoSubmit)
-      if (result.ok) {
-        showToast(result.submitted ? t('injectedSubmitted') : t('injected'))
-        setOpen(false)
-      } else {
-        showToast(`${t('injectFailed')}：${result.error ?? ''}`)
-      }
-    },
-    [cwd, autoSubmit, t, showToast],
-  )
-
-  const onActionClick = (spec: CommandSpec) => {
-    if (['stage-all', 'push', 'pull', 'fetch', 'stash', 'init', 'npm-publish'].includes(spec.id)) {
-      void runCommand(spec)
-    } else {
-      setPrompt(spec)
-      setPromptValue('')
-    }
-  }
-
   const isRepo = status?.isRepo === true
   const branchLabel = isRepo
     ? status!.detached
       ? `HEAD @ ${status!.head.slice(0, 7)}`
       : status!.branch || '—'
     : '—'
-
-  // 参数行出现时滚动到底部，防止被 GearSection 展开挤出视口（P1-6）。
-  useEffect(() => {
-    if (prompt && panelRef.current) panelRef.current.scrollTop = panelRef.current.scrollHeight
-  }, [prompt])
 
   return (
     <span className="dgp-root" ref={chipRef}>
@@ -870,13 +630,6 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
         <span className="dgp-chip-branch">
           {checking && !status ? '…' : branchLabel}
         </span>
-        {isRepo && (
-          <span className="dgp-chip-badge">
-            {status!.changed > 0 && <span className="dgp-badge dgp-badge-warn">{status!.changed}*</span>}
-            {status!.ahead > 0 && <span className="dgp-badge dgp-badge-ok">↑{status!.ahead}</span>}
-            {status!.behind > 0 && <span className="dgp-badge dgp-badge-info">↓{status!.behind}</span>}
-          </span>
-        )}
       </button>
 
       {open &&
@@ -910,24 +663,8 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
               <div className="dgp-statusbar">
                 <span className="dgp-status-dot" data-state={status!.changed > 0 ? 'dirty' : 'clean'} role="img" aria-label={status!.changed > 0 ? t('changedFiles') : t('noChanges')} />
                 <span className="dgp-status-branch" title={branchLabel}>{branchLabel}</span>
-                <span className="dgp-status-meta">
-                  {status!.ahead > 0 ? `↑${status!.ahead} ` : ''}{status!.behind > 0 ? `↓${status!.behind} ` : ''}{status!.changed > 0 ? `${status!.changed}*` : t('noChanges')}
-                </span>
               </div>
             )}
-            <div className="dgp-toolbar">
-              <label className="dgp-toggle" title={t('autoSubmit')}>
-                <input
-                  type="checkbox"
-                  checked={autoSubmit}
-                  onChange={(e) => {
-                    setAutoSubmit(e.target.checked)
-                    writePref(PREF_AUTO_SUBMIT, e.target.checked ? '1' : '0')
-                  }}
-                />
-                {t('autoSubmit')}
-              </label>
-            </div>
 
             {detectError && !isRepo && (
               <div className="dgp-sect">
@@ -939,102 +676,26 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
               <div className="dgp-sect">
                 <div className="dgp-empty">{t('notRepo')}</div>
                 <div className="dgp-muted">{t('notRepoHint')}</div>
-                <div className="dgp-btnrow" style={{ marginTop: 6 }}>
-                  <button type="button" className="dgp-btn" onClick={() => onActionClick(COMMANDS.find((c) => c.id === 'init')!)}>{t('cmdInit')}</button>
-                </div>
               </div>
             )}
 
             {isRepo && (
-              <>
-                <div className="dgp-sect">
-                  <div className="dgp-sect-title">{t('changedFiles')} ({files.length})</div>
-                  {files.length === 0 && <div className="dgp-empty">{t('noChanges')}</div>}
-                  {files.slice(0, 12).map((file) => (
-                    <div key={file.path} className="dgp-file" title={file.path}>
-                      <span className="dgp-file-status">{file.staged ? file.worktree === 'M' ? 'MM' : 'M' : file.untracked ? '?' : file.worktree}</span>
-                      <span className="dgp-file-path">{file.path.length > 48 ? '…' + file.path.slice(-47) : file.path}</span>
-                      <span className="dgp-file-stat">{file.added > 0 ? `+${file.added}` : ''}{file.deleted > 0 ? ` -${file.deleted}` : ''}</span>
-                    </div>
-                  ))}
-                  {files.length > 12 && <div className="dgp-muted">…{files.length - 12}</div>}
-                </div>
-
-                <div className="dgp-sect">
-                  <div className="dgp-sect-title">{t('recentCommits')}</div>
-                  {commits.length === 0 && <div className="dgp-empty">{t('noCommits')}</div>}
-                  {commits.map((commit) => (
-                    <div key={commit.hash} className="dgp-row-line" title={`${commit.subject} (${commit.author}, ${commit.date})`}>
-                      <span className="dgp-hash">{commit.hash}</span>
-                      {commit.subject}
-                    </div>
-                  ))}
-                </div>
-
-                <div className="dgp-sect">
-                  <div className="dgp-sect-title">{t('actions')}</div>
-                  {ACTION_GROUPS.map((group) => (
-                    <div key={group.labelKey} className="dgp-btn-group">
-                      <div className="dgp-group-label">{t(group.labelKey)}</div>
-                      <div className="dgp-btnrow">
-                        {group.ids.map((id) => {
-                          const command = COMMANDS.find((c) => c.id === id)!
-                          let cls = 'dgp-btn'
-                          if (id === 'push') cls += ' dgp-btn-primary'
-                          if (id === 'npm-publish') cls += ' dgp-btn-accent'
-                          if (id === 'discard') cls += ' dgp-btn-danger'
-                          return (
-                            <button key={id} type="button" className={cls} onClick={() => onActionClick(command)}>
-                              {t(command.labelKey)}
-                            </button>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                  <div className="dgp-muted" style={{ marginTop: 10 }}>{t('inputHint')}</div>
-                </div>
-              </>
+              <div className="dgp-sect">
+                <div className="dgp-sect-title">{t('changedFiles')}</div>
+                {files.length === 0 && <div className="dgp-empty">{t('noChanges')}</div>}
+                {files.slice(0, 12).map((file) => (
+                  <div key={file.path} className="dgp-file" title={file.path}>
+                    <span className="dgp-file-status">{file.staged ? file.worktree === 'M' ? 'MM' : 'M' : file.untracked ? '?' : file.worktree}</span>
+                    <span className="dgp-file-path">{file.path.length > 48 ? '…' + file.path.slice(-47) : file.path}</span>
+                  </div>
+                ))}
+              </div>
             )}
 
             <GearSection t={t} accounts={accounts} onAccounts={setAccounts} />
-
-            {prompt && (
-              <div className="dgp-sect dgp-card">
-                <div className="dgp-sect-title">{t(prompt.labelKey).replace('…', '')} · {t('askParam')}</div>
-                <input
-                  className="dgp-input"
-                  autoFocus
-                  aria-label={t(prompt.labelKey).replace('…', '')}
-                  placeholder={
-                    prompt.id === 'commit' ? t('commitIntent')
-                      : prompt.id === 'discard' ? t('discardFiles')
-                        : prompt.id === 'tag' ? t('tagName')
-                          : t('branchName')
-                  }
-                  value={promptValue}
-                  onChange={(e) => setPromptValue(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      const spec = prompt
-                      setPrompt(null)
-                      void runCommand(spec, promptValue.trim() || undefined)
-                    } else if (e.key === 'Escape') {
-                      setPrompt(null)
-                    }
-                  }}
-                />
-                <div className="dgp-btnrow" style={{ marginTop: 6 }}>
-                  <button type="button" className="dgp-btn" onClick={() => { const spec = prompt; setPrompt(null); void runCommand(spec, promptValue.trim() || undefined) }}>OK</button>
-                  <button type="button" className="dgp-btn" onClick={() => setPrompt(null)}>{t('cancel')}</button>
-                </div>
-              </div>
-            )}
           </div>,
           document.body,
         )}
-
-      {toast && createPortal(<div className="dgp-toast" role="status">{toast}</div>, document.body)}
     </span>
   )
 }
@@ -1081,6 +742,3 @@ export function apply(ctx: ClientContext): void {
     ctx.logger?.error?.(`[${NS}] conversation.input.left 注入失败：${String(error)}`)
   }
 }
-
-// 保留导出名便于门禁脚本静态引用。
-export { fmt }

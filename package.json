@@ -1,7 +1,7 @@
 {
   "name": "@zjjlivingfree/dsh-git-panel",
-  "version": "0.10.2",
-  "description": "DSH Git 面板（v3 极简）：输入框旁 chip 展示仓库状态，动作按钮把 git 指令注入输入框交给 AI 经 git_write/git_confirm 受控执行；支持 GitHub OAuth 设备码与 PAT，令牌加密保存、永不明文回显。",
+  "version": "0.11.0",
+  "description": "DSH Git 面板（v3.15 配置型极简）：输入框旁 chip 只读展示分支与改动文件，动作全部交给 AI 通过 git 工具执行；内置「账号与授权」配置（GitHub PAT/OAuth 设备码、npm 多账号+切换、Agent 写开关），令牌加密保存、永不明文回显。",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
