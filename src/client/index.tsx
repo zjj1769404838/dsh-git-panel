@@ -516,7 +516,7 @@ function NpmCard({ t, cwd }: { t: (key: string) => string; cwd: string }) {
         <div key={row.id} className="dgp-account">
           <Dot state={row.active ? row.state === 'error' ? 'error' : 'connected' : 'connected'} />
           <span className="dgp-acct-login" title={row.login}>{row.login}</span>
-          <span className="dgp-muted">{row.active ? t('npmActive') : row.state === 'error' && row.error ? row.error : row.masked}</span>
+          <span className="dgp-muted" title={row.active ? t('npmActive') : row.state === 'error' && row.error ? row.error : row.masked}>{row.active ? t('npmActive') : row.state === 'error' && row.error ? row.error : row.masked}</span>
           <span className="dgp-spacer" />
           {!row.active && (
             <button type="button" className="dgp-btn" disabled={busy} onClick={() => void switchTo(row.id)}>{t('npmSwitch')}</button>
@@ -831,8 +831,8 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
                   ) : (
                     commits.map((commit) => (
                       <div key={commit.hash} className="dgp-commit">
-                        <span className="dgp-commit-hash">{commit.shortHash}</span>
-                        <span className="dgp-commit-subject">{commit.subject}</span>
+                        <span className="dgp-commit-hash" title={commit.hash}>{commit.shortHash}</span>
+                        <span className="dgp-commit-subject" title={commit.subject}>{commit.subject}</span>
                         <span className="dgp-commit-date">{commit.date}</span>
                       </div>
                     ))

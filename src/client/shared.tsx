@@ -240,9 +240,11 @@ export const CSS = `
 .dgp-input::placeholder { color: var(--dgp-fg-muted); opacity: 1; }
 .dgp-card { margin-top: 8px; border: 1px solid var(--dgp-border); border-radius: 10px; padding: 11px 12px; background: var(--dgp-bg-soft); }
 .dgp-code { font-size: 18px; font-family: var(--dgp-mono); letter-spacing: .08em; margin: 4px 0; user-select: all; color: var(--dgp-accent-strong); }
-.dgp-account { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--dgp-border); }
+.dgp-account { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-bottom: 1px solid var(--dgp-border); flex-wrap: nowrap; }
 .dgp-account:last-child { border-bottom: none; }
-.dgp-acct-login { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--dgp-mono); font-size: 12px; }
+.dgp-account .dgp-muted { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dgp-account .dgp-btn { flex: none; }
+.dgp-acct-login { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--dgp-mono); font-size: 12px; }
 .dgp-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
 .dgp-dot-connected { background: var(--dgp-accent); }
 .dgp-dot-expired { background: var(--dgp-warn); }
