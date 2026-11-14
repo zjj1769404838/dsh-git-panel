@@ -1,15 +1,15 @@
-// dsh-git-panel — 分支 chip（v3.15 极简化：只读状态 + 账号与授权配置）。
+// dsh-git-panel — 分支 chip（v3.16 极简化：只读 Git chip + 账号与授权配置）。
 // 设计拍板：所有 git 动作（提交/推送/切换分支…）交给 AI 通过 7 个 Agent 工具执行；
-// chip 弹层只展示只读信息（分支、改动文件清单）与「账号与授权」配置（GitHub PAT/OAuth、npm 多账号、写开关）。
+// chip 弹层只展示「账号与授权」配置（GitHub PAT/OAuth、npm 多账号、写开关）。
 // 不内置任何第三方应用凭据（见 providers.ts）。
 
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
-import { NS, api, useStyles, Dot, type AccountView, type ChangeFileView, type Dict, type PanelState, type RepoChangesView, type RepoStatusView } from './shared.js'
+import { NS, api, useStyles, Dot, type AccountView, type Dict, type PanelState, type RepoStatusView } from './shared.js'
 
 export const inject = ['slots', 'sessions', 'locale']
 
-const BUILD = 'dgp-v3.15'
+const BUILD = 'dgp-v3.16'
 
 // ─── 文案（zh / en）───
 
@@ -21,8 +21,6 @@ const ZH: Dict = {
   close: '关闭',
   notRepo: '当前会话目录不是 Git 仓库',
   notRepoHint: '打开或切换到一个 Git 仓库目录后再查看。',
-  changedFiles: '改动文件',
-  noChanges: '工作区干净',
   retry: '重新检测',
   detectFailed: '无法检测仓库状态',
   gear: '账号与授权',
@@ -68,8 +66,6 @@ const EN: Dict = {
   close: 'Close',
   notRepo: 'This session directory is not a Git repository',
   notRepoHint: 'Open or switch to a Git repository directory to inspect it.',
-  changedFiles: 'Changed files',
-  noChanges: 'Working tree clean',
   retry: 'Check again',
   detectFailed: 'Cannot detect repository status',
   gear: 'Accounts & Access',
@@ -509,7 +505,6 @@ function CloseGlyph() {
 function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; sessionId: string; sessions?: SessionsService }) {
   useStyles()
   const [status, setStatus] = useState<RepoStatusView | null>(null)
-  const [files, setFiles] = useState<ChangeFileView[]>([])
   const [accounts, setAccounts] = useState<AccountView[]>([])
   const [detectError, setDetectError] = useState('')
   const [open, setOpen] = useState(false)
@@ -534,7 +529,6 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
   const reload = useCallback(async () => {
     if (!cwd) {
       setStatus(null)
-      setFiles([])
       setDetectError('')
       return
     }
@@ -547,14 +541,8 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
         setStatus(data.status)
         setDetectError('')
         if (data.status.isRepo) {
-          const [changes, state] = await Promise.all([
-            api<{ ok: boolean; changes?: RepoChangesView }>(`/repo/changes?cwd=${encodeURIComponent(cwd)}`).catch(() => null),
-            api<{ ok: boolean; state?: PanelState }>('/state').catch(() => null),
-          ])
-          setFiles(changes?.changes?.files ?? [])
+          const state = await api<{ ok: boolean; state?: PanelState }>('/state').catch(() => null)
           if (state?.state?.accounts) setAccounts(state.state.accounts)
-        } else {
-          setFiles([])
         }
       } else {
         setStatus(null)
@@ -659,12 +647,6 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
               <button type="button" className="dgp-iconbtn" title={t('refresh')} aria-label={t('refresh')} onClick={() => void reload()}><RefreshGlyph /></button>
               <button type="button" className="dgp-iconbtn" title={t('close')} aria-label={t('close')} onClick={() => setOpen(false)}><CloseGlyph /></button>
             </div>
-            {isRepo && (
-              <div className="dgp-statusbar">
-                <span className="dgp-status-dot" data-state={status!.changed > 0 ? 'dirty' : 'clean'} role="img" aria-label={status!.changed > 0 ? t('changedFiles') : t('noChanges')} />
-                <span className="dgp-status-branch" title={branchLabel}>{branchLabel}</span>
-              </div>
-            )}
 
             {detectError && !isRepo && (
               <div className="dgp-sect">
@@ -676,19 +658,6 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
               <div className="dgp-sect">
                 <div className="dgp-empty">{t('notRepo')}</div>
                 <div className="dgp-muted">{t('notRepoHint')}</div>
-              </div>
-            )}
-
-            {isRepo && (
-              <div className="dgp-sect">
-                <div className="dgp-sect-title">{t('changedFiles')}</div>
-                {files.length === 0 && <div className="dgp-empty">{t('noChanges')}</div>}
-                {files.slice(0, 12).map((file) => (
-                  <div key={file.path} className="dgp-file" title={file.path}>
-                    <span className="dgp-file-status">{file.staged ? file.worktree === 'M' ? 'MM' : 'M' : file.untracked ? '?' : file.worktree}</span>
-                    <span className="dgp-file-path">{file.path.length > 48 ? '…' + file.path.slice(-47) : file.path}</span>
-                  </div>
-                ))}
               </div>
             )}
 
