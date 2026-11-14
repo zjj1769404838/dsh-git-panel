@@ -9,7 +9,7 @@ import { NS, api, useStyles, Dot, type AccountView, type Dict, type PanelState, 
 
 export const inject = ['slots', 'sessions', 'locale']
 
-const BUILD = 'dgp-v3.17'
+const BUILD = 'dgp-v3.18'
 
 // ─── 文案（zh / en）───
 
@@ -549,7 +549,7 @@ function NpmCard({ t, cwd }: { t: (key: string) => string; cwd: string }) {
       <input className="dgp-input" type="text" autoComplete="off" aria-label={t('packageName')} value={pkgName} onChange={(e) => setPkgName(e.target.value)} />
       <div className="dgp-btnrow" style={{ marginTop: 8 }}>
         <button type="button" className="dgp-btn" onClick={() => void saveName()}>{t('saveName')}</button>
-        <button type="button" className="dgp-btn" disabled={busyPublish} onClick={() => void doPublish()}>{busyPublish ? t('publishing') : t('publish')}</button>
+        <button type="button" className="dgp-btn dgp-btn-accent" disabled={busyPublish} onClick={() => void doPublish()}>{busyPublish ? t('publishing') : t('publish')}</button>
       </div>
       {setupMsg && <div className="dgp-muted" style={{ marginTop: 6 }}>{setupMsg}</div>}
       {pkgError && <div className="dgp-empty" role="alert" style={{ marginTop: 6 }}>{pkgError}</div>}
@@ -796,8 +796,8 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
                 <div className="dgp-btnrow">
                   <button
                     type="button"
-                    className="dgp-btn"
                     disabled={repoBusy || !allowWrite}
+                    className="dgp-btn dgp-btn-accent"
                     onClick={() => void setupRepo()}
                   >
                     {repoBusy ? t('createRepoBtn') + '…' : t('createRepoBtn')}
