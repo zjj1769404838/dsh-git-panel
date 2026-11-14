@@ -9,7 +9,7 @@ import { NS, api, useStyles, Dot, type AccountView, type Dict, type PanelState, 
 
 export const inject = ['slots', 'sessions', 'locale']
 
-const BUILD = 'dgp-v3.16'
+const BUILD = 'dgp-v3.17'
 
 // ─── 文案（zh / en）───
 
@@ -56,6 +56,24 @@ const ZH: Dict = {
   npmTokenLabel: 'npm token',
   npmTokenHint: '在 npmjs.com → Access Tokens 生成；验证通过后写入 ~/.npmrc（等同 npm login），保存后不再回显。',
   npmTokenPlaceholder: '粘贴 npm token（npm_ 或旧式长 hex 均可）',
+  // v3.17：初始化仓库 / 远程地址 / 最近提交 / npm 包名
+  initRepo: '初始化仓库',
+  initHint: '在当前目录新建 Git 仓库，并在你的 GitHub 账号下创建同名远程仓库（仅个人仓库，不建 organization）。',
+  repoName: '仓库名',
+  isPrivate: '私有仓库',
+  createRepoBtn: '创建仓库',
+  writeDisabled: '未开启「允许 Agent 修改仓库」，无法创建仓库。请在「账号与授权」中开启。',
+  remote: '远程',
+  openRemote: '在 GitHub 打开',
+  recentCommits: '最近提交',
+  noCommits: '暂无提交记录',
+  packageName: 'npm 包名',
+  packageNameHint: '发布前核对包名；如需修改，填写后点「保存包名」。',
+  saveName: '保存包名',
+  publish: '发布到 npm',
+  publishing: '处理中…',
+  publishDone: '已发布',
+  publishFailed: '发布失败：',
 }
 
 const EN: Dict = {
@@ -101,6 +119,23 @@ const EN: Dict = {
   npmTokenLabel: 'npm token',
   npmTokenHint: 'Create one at npmjs.com → Access Tokens; after verification it is written to ~/.npmrc (same as npm login) and never shown again.',
   npmTokenPlaceholder: 'Paste npm token (npm_ or legacy long hex)',
+  initRepo: 'Initialize repository',
+  initHint: 'Create a Git repository in the current directory and a same-named remote repo under your GitHub account (personal only, no organization).',
+  repoName: 'Repository name',
+  isPrivate: 'Private repository',
+  createRepoBtn: 'Create repository',
+  writeDisabled: 'Repository modification is disabled. Enable "Allow the agent to modify repositories" in Accounts & Access.',
+  remote: 'Remote',
+  openRemote: 'Open on GitHub',
+  recentCommits: 'Recent commits',
+  noCommits: 'No commits yet',
+  packageName: 'npm package name',
+  packageNameHint: 'Verify the package name before publishing; edit and click "Save name" if needed.',
+  saveName: 'Save name',
+  publish: 'Publish to npm',
+  publishing: 'Working…',
+  publishDone: 'Published',
+  publishFailed: 'Publish failed: ',
 }
 
 // ─── 会话 cwd 订阅（宿主 sessions 服务）───
@@ -153,7 +188,7 @@ function useSessionCwd(sessions: SessionsService | undefined, sessionId: string)
 
 // ─── 折叠区：账号与授权（原设置页分节全部内容并入面板）───
 
-function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; accounts: AccountView[]; onAccounts: (next: AccountView[]) => void }) {
+function GearSection({ t, accounts, onAccounts, cwd }: { t: (key: string) => string; accounts: AccountView[]; onAccounts: (next: AccountView[]) => void; cwd: string }) {
   const [flags, setFlags] = useState<{ allowWrite: boolean; requireConfirm: boolean } | null>(null)
   const [connectOpen, setConnectOpen] = useState(false)
   const [method, setMethod] = useState<'pat' | 'oauth'>('pat')
@@ -335,7 +370,7 @@ function GearSection({ t, accounts, onAccounts }: { t: (key: string) => string; 
           </div>
         )}
 
-        <NpmCard t={t} />
+        <NpmCard t={t} cwd={cwd} />
 
         <div style={{ marginTop: 8 }}>
           <label className="dgp-toggle">
@@ -372,21 +407,27 @@ interface NpmStatusView {
   npmrcConfigured: boolean
 }
 
-function NpmCard({ t }: { t: (key: string) => string }) {
+function NpmCard({ t, cwd }: { t: (key: string) => string; cwd: string }) {
   const [view, setView] = useState<NpmStatusView | null>(null)
   const [token, setToken] = useState('')
   const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [pkgName, setPkgName] = useState('')
+  const [pkgError, setPkgError] = useState('')
+  const [busyPublish, setBusyPublish] = useState(false)
+  const [setupMsg, setSetupMsg] = useState('')
 
   const load = useCallback(async () => {
     try {
       const data = await api<{ ok: boolean; npm?: NpmStatusView }>('/npm/status', {})
       if (data.ok && data.npm) setView(data.npm)
+      const nameData = await api<{ ok: boolean; name?: string; error?: string }>(`/npm/name?cwd=${encodeURIComponent(cwd)}`).catch(() => null)
+      if (nameData && nameData.ok) setPkgName(nameData.name ?? '')
     } catch (err) {
       setError((err as Error).message)
     }
-  }, [])
+  }, [cwd])
 
   useEffect(() => {
     void load()
@@ -439,6 +480,32 @@ function NpmCard({ t }: { t: (key: string) => string }) {
     }
   }
 
+  const saveName = async () => {
+    setPkgError('')
+    try {
+      const data = await api<{ ok: boolean; error?: string }>('/npm/set-name', { cwd, name: pkgName })
+      if (!data.ok) setPkgError(data.error ?? t('injectFailed'))
+    } catch (err) {
+      setPkgError((err as Error).message)
+    }
+  }
+
+  const doPublish = async () => {
+    if (busyPublish) return
+    setBusyPublish(true)
+    setPkgError('')
+    setSetupMsg('')
+    try {
+      const data = await api<{ ok: boolean; output?: string; error?: string }>('/npm/publish', { cwd })
+      if (data.ok) setSetupMsg(t('publishDone'))
+      else setPkgError(data.error ?? t('publishFailed'))
+    } catch (err) {
+      setPkgError((err as Error).message)
+    } finally {
+      setBusyPublish(false)
+    }
+  }
+
   const rows = view?.accounts ?? []
 
   return (
@@ -477,6 +544,15 @@ function NpmCard({ t }: { t: (key: string) => string }) {
           </div>
         </div>
       )}
+      <div className="dgp-sect-title" style={{ marginTop: 10 }}>{t('packageName')}</div>
+      <div className="dgp-muted">{t('packageNameHint')}</div>
+      <input className="dgp-input" type="text" autoComplete="off" aria-label={t('packageName')} value={pkgName} onChange={(e) => setPkgName(e.target.value)} />
+      <div className="dgp-btnrow" style={{ marginTop: 8 }}>
+        <button type="button" className="dgp-btn" onClick={() => void saveName()}>{t('saveName')}</button>
+        <button type="button" className="dgp-btn" disabled={busyPublish} onClick={() => void doPublish()}>{busyPublish ? t('publishing') : t('publish')}</button>
+      </div>
+      {setupMsg && <div className="dgp-muted" style={{ marginTop: 6 }}>{setupMsg}</div>}
+      {pkgError && <div className="dgp-empty" role="alert" style={{ marginTop: 6 }}>{pkgError}</div>}
     </div>
   )
 }
@@ -515,6 +591,14 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
 
   const cwd = useSessionCwd(sessions, sessionId)
 
+  const [remotes, setRemotes] = useState<Array<{ name: string; url: string }>>([])
+  const [commits, setCommits] = useState<Array<{ hash: string; shortHash: string; subject: string; date: string }>>([])
+  const [allowWrite, setAllowWrite] = useState(false)
+  const [repoBusy, setRepoBusy] = useState(false)
+  const [repoError, setRepoError] = useState('')
+  const [repoName, setRepoName] = useState(() => (cwd ? cwd.split(/[\\/]/).pop() ?? '' : ''))
+  const [isPrivate, setIsPrivate] = useState(false)
+
   // Escape 关面板（键盘可达性）。
   useEffect(() => {
     if (!open) return
@@ -541,8 +625,15 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
         setStatus(data.status)
         setDetectError('')
         if (data.status.isRepo) {
-          const state = await api<{ ok: boolean; state?: PanelState }>('/state').catch(() => null)
-          if (state?.state?.accounts) setAccounts(state.state.accounts)
+          const [st, rem, com] = await Promise.all([
+            api<{ ok: boolean; state?: PanelState }>('/state').catch(() => null),
+            api<{ ok: boolean; remotes?: Array<{ name: string; url: string }> }>(`/repo/remotes?cwd=${encodeURIComponent(cwd)}`).catch(() => null),
+            api<{ ok: boolean; commits?: Array<{ hash: string; shortHash: string; subject: string; date: string }> }>(`/repo/commits?limit=5&cwd=${encodeURIComponent(cwd)}`).catch(() => null),
+          ])
+          if (st?.state?.accounts) setAccounts(st.state.accounts)
+          setAllowWrite(st?.state?.settings?.allowWrite === true)
+          setRemotes(rem?.remotes ?? [])
+          setCommits(com?.commits ?? [])
         }
       } else {
         setStatus(null)
@@ -587,6 +678,29 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
       requestAnimationFrame(() => panelRef.current?.focus())
     } else {
       chipRef.current?.focus()
+    }
+  }
+
+  const setupRepo = async () => {
+    if (!cwd) return
+    setRepoBusy(true)
+    setRepoError('')
+    try {
+      const data = await api<{ ok: boolean; error?: string }>('/repo/setup', {
+        cwd,
+        name: repoName,
+        isPrivate,
+        commit: true,
+      })
+      if (data.ok) {
+        void reload()
+      } else {
+        setRepoError(data.error ?? t('injectFailed'))
+      }
+    } catch (error) {
+      setRepoError((error as Error).message || t('injectFailed'))
+    } finally {
+      setRepoBusy(false)
     }
   }
 
@@ -661,7 +775,73 @@ function BranchChip({ t, sessionId, sessions }: { t: (key: string) => string; se
               </div>
             )}
 
-            <GearSection t={t} accounts={accounts} onAccounts={setAccounts} />
+            {!isRepo && (
+              <div className="dgp-sect">
+                <div className="dgp-sect-title">{t('initRepo')}</div>
+                <div className="dgp-muted">{t('initHint')}</div>
+                <div className="dgp-field">
+                  <label className="dgp-label">{t('repoName')}</label>
+                  <input
+                    className="dgp-input"
+                    value={repoName}
+                    onChange={(e) => setRepoName(e.target.value)}
+                    placeholder={cwd.split(/[\\/]/).pop() ?? ''}
+                  />
+                </div>
+                <label className="dgp-checkbox">
+                  <input type="checkbox" checked={isPrivate} onChange={(e) => setIsPrivate(e.target.checked)} />
+                  <span>{t('isPrivate')}</span>
+                </label>
+                {repoError && <div className="dgp-empty">{repoError}</div>}
+                <div className="dgp-btnrow">
+                  <button
+                    type="button"
+                    className="dgp-btn"
+                    disabled={repoBusy || !allowWrite}
+                    onClick={() => void setupRepo()}
+                  >
+                    {repoBusy ? t('createRepoBtn') + '…' : t('createRepoBtn')}
+                  </button>
+                </div>
+                {!allowWrite && <div className="dgp-muted">{t('writeDisabled')}</div>}
+              </div>
+            )}
+
+            {isRepo && (
+              <>
+                <div className="dgp-sect">
+                  <div className="dgp-sect-title">{t('remote')}</div>
+                  {remotes.length === 0 ? (
+                    <div className="dgp-empty">{t('openRemote')}</div>
+                  ) : (
+                    remotes.map((remote) => (
+                      <div key={remote.name} className="dgp-remote">
+                        <span className="dgp-remote-name">{remote.name}</span>
+                        <a className="dgp-remote-url" href={remote.url} target="_blank" rel="noopener noreferrer">
+                          {remote.url}
+                        </a>
+                      </div>
+                    ))
+                  )}
+                </div>
+                <div className="dgp-sect">
+                  <div className="dgp-sect-title">{t('recentCommits')}</div>
+                  {commits.length === 0 ? (
+                    <div className="dgp-empty">{t('noCommits')}</div>
+                  ) : (
+                    commits.map((commit) => (
+                      <div key={commit.hash} className="dgp-commit">
+                        <span className="dgp-commit-hash">{commit.shortHash}</span>
+                        <span className="dgp-commit-subject">{commit.subject}</span>
+                        <span className="dgp-commit-date">{commit.date}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </>
+            )}
+
+            <GearSection t={t} accounts={accounts} onAccounts={setAccounts} cwd={cwd} />
           </div>,
           document.body,
         )}

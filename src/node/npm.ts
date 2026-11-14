@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { spawn } from 'node:child_process'
 import { pluginDir } from './paths.js'
 import { maskSecret, redact } from './vault.js'
 
@@ -106,4 +107,71 @@ export function npmConfigState(): { configured: boolean; masked: string; token: 
 export function npmConfigView(): { configured: boolean; masked: string } {
   const state = npmConfigState()
   return { configured: state.configured, masked: state.masked }
+}
+
+/**
+ * 读取 cwd 下 package.json 的 name 字段（面板展示用，构建发布前先核对包名）。
+ * 非标准包目录返回 { ok:false }，不抛错。
+ */
+export function getPackageName(cwd: string): { ok: boolean; name: string; error: string } {
+  if (typeof cwd !== 'string' || cwd.trim().length === 0) return { ok: false, name: '', error: '缺少工作目录参数' }
+  try {
+    const raw = readFileSync(join(cwd, 'package.json'), 'utf8')
+    const data = JSON.parse(raw) as { name?: unknown }
+    if (typeof data.name !== 'string') return { ok: false, name: '', error: 'package.json 缺少 name 字段' }
+    return { ok: true, name: data.name, error: '' }
+  } catch (error) {
+    return { ok: false, name: '', error: `读取 package.json 失败：${redact(error)}` }
+  }
+}
+
+/**
+ * 改写 cwd 下 package.json 的 name 字段（用户确认包名不对时改）。
+ * 采用原样反序列化再回写，尽量保真；字段缺失则补建。
+ */
+export function setPackageName(cwd: string, name: string): { ok: boolean; error: string } {
+  if (typeof cwd !== 'string' || cwd.trim().length === 0) return { ok: false, error: '缺少工作目录参数' }
+  const clean = typeof name === 'string' ? name.trim() : ''
+  if (!/^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/.test(clean)) {
+    return { ok: false, error: '包名不符合 npm 命名规范' }
+  }
+  const file = join(cwd, 'package.json')
+  if (!existsSync(file)) return { ok: false, error: '未找到 package.json' }
+  try {
+    const raw = readFileSync(file, 'utf8')
+    const data = JSON.parse(raw) as Record<string, unknown>
+    data.name = clean
+    writeFileSync(file, `${JSON.stringify(data, null, 2)}\n`)
+    return { ok: true, error: '' }
+  } catch (error) {
+    return { ok: false, error: `写入 package.json 失败：${redact(error)}` }
+  }
+}
+
+/**
+ * 发布到 npm（v3.17 拍板：显式「发布」按钮，不自动发；改包名不会触发发布）。
+ * 走 shell `npm publish`，凭据读取 ~/.npmrc（npm login 写入），不进 argv、不落盘、不回显。
+ * 钉官方源 --access=public；npmmirror 等只读镜像会拒 PUT，故强制官方源。
+ */
+export function publishPackage(cwd: string): Promise<{ ok: boolean; output: string; error: string }> {
+  return new Promise((resolve) => {
+    if (typeof cwd !== 'string' || cwd.trim().length === 0) {
+      resolve({ ok: false, output: '', error: '缺少工作目录参数' })
+      return
+    }
+    const child = spawn(
+      'npm',
+      ['publish', '--access=public', '--registry=https://registry.npmjs.org'],
+      { cwd, windowsHide: true, timeout: 180_000 },
+    )
+    let out = ''
+    let err = ''
+    child.stdout?.on('data', (chunk) => { out += String(chunk) })
+    child.stderr?.on('data', (chunk) => { err += String(chunk) })
+    child.on('error', (error) => resolve({ ok: false, output: out, error: `启动 npm 失败：${redact(error)}` }))
+    child.on('close', (code) => {
+      if (code === 0) resolve({ ok: true, output: out, error: '' })
+      else resolve({ ok: false, output: out + err, error: `npm publish 退出码 ${code}` })
+    })
+  })
 }

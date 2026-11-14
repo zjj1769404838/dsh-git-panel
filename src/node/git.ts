@@ -530,6 +530,16 @@ export async function initRepo(cwd: string, branch = 'main'): Promise<InitResult
 }
 
 /**
+ * 在已初始化的仓库里创建一个空提交（--allow-empty）。
+ * 仅用于「初始化仓库时顺带建一个空提交」这类场景（v3.17 拍板：自动空提交、不自动 push）；
+ * 'commit' 已在白名单（WRITE 集）中，runGit 直接放行。
+ */
+export function initialCommit(cwd: string, msg = 'init'): Promise<GitRunResult> {
+  const clean = typeof msg === 'string' && msg.length > 0 ? msg : 'init'
+  return runGit(cwd, ['commit', '--allow-empty', '-m', clean])
+}
+
+/**
  * 执行 git。用 execFile 直接传参数数组（不经 shell），杜绝命令注入；
  * 参数里禁止出现 `--upload-pack`、`--exec` 这类可执行外部程序的选项。
  */

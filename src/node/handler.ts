@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { PanelStore } from './store.js'
-import { readRepoChanges, readRepoStatus } from './git.js'
+import { initRepo, initialCommit, readRepoChanges, readRepoStatus } from './git.js'
 import {
+  addRemote,
   readBranches,
   readCommitDetail,
   readCommits,
@@ -12,12 +13,21 @@ import {
   readTags,
 } from './git-ops.js'
 import {
+  createRepo,
   listAccountRepos,
   pollDeviceFlow,
   startDeviceFlow,
   verifyToken,
 } from './providers.js'
-import { configureNpmToken, npmConfigView, npmTokenFromNpmrc, whoamiNpm } from './npm.js'
+import {
+  configureNpmToken,
+  getPackageName,
+  npmConfigView,
+  npmTokenFromNpmrc,
+  publishPackage,
+  setPackageName,
+  whoamiNpm,
+} from './npm.js'
 import { maskSecret, redact } from './vault.js'
 
 export const ROUTE_PREFIX = '/dsh-git-panel'
@@ -297,6 +307,17 @@ export function createHandler(deps: HandlerDeps) {
             return
           }
           sendJson(res, 200, { ok: true, repos: result.repos, truncated: result.truncated })
+          return
+        }
+        // 读取当前工作目录 package.json 的 name（面板展示，发布前先核对包名）。
+        if (path === '/npm/name') {
+          const cwd = str(url.searchParams.get('cwd')).trim()
+          if (!cwd) {
+            sendJson(res, 400, { ok: false, error: '缺少 cwd 参数' })
+            return
+          }
+          const result = getPackageName(cwd)
+          sendJson(res, result.ok ? 200 : 200, { ok: result.ok, name: result.name, error: result.error })
           return
         }
         sendJson(res, 404, { ok: false, error: `未知接口：GET ${path}` })
@@ -582,6 +603,78 @@ export function createHandler(deps: HandlerDeps) {
         if ('defaultAccountId' in body) patch.defaultAccountId = str(body.defaultAccountId)
         const settings = deps.store.updateSettings(patch as never)
         sendJson(res, 200, { ok: true, settings, state: deps.store.snapshot() })
+        return
+      }
+
+      // 写操作闸门：未开启「允许 Agent 修改仓库」则一律拒绝（GUI 文案由客户端负责提示）。
+      const writeSettings = deps.store.settings()
+      const requireWrite = (): { allowed: boolean } => {
+        if (writeSettings.allowWrite !== true) {
+          return { allowed: false }
+        }
+        return { allowed: true }
+      }
+
+      // 初始化本地仓库 + 在 GitHub 新建同名远程仓库 + 关联 origin + 可选空提交（v3.17）。
+      if (path === '/repo/setup') {
+        const gate = requireWrite()
+        if (!gate.allowed) {
+          sendJson(res, 403, { ok: false, error: '未开启「允许 Agent 修改仓库」，请在「账号与授权」中开启' })
+          return
+        }
+        const cwd = str(body.cwd).trim()
+        const name = str(body.name).trim()
+        const isPrivate = body.private === true
+        if (!cwd) { sendJson(res, 400, { ok: false, error: '缺少 cwd 参数' }); return }
+        if (!/^[\w.-]{1,100}$/.test(name)) { sendJson(res, 400, { ok: false, error: '仓库名不符合 GitHub 命名规范' }); return }
+        const initResult = await initRepo(cwd, 'main')
+        if (!initResult.ok) { sendJson(res, 200, { ok: false, error: initResult.error ?? '初始化仓库失败' }); return }
+        const account = writeSettings.defaultAccountId
+          ? deps.store.getAccount(writeSettings.defaultAccountId)
+          : deps.store.activeAccount()
+        if (!account) { sendJson(res, 200, { ok: false, error: '尚未连接 Git 账号，无法创建远程仓库' }); return }
+        const token = deps.store.revealSecret(account.id)
+        if (!token) { sendJson(res, 200, { ok: false, error: '凭据无法解密，请重新授权' }); return }
+        const repo = await createRepo(token, name, { private: isPrivate })
+        if (!repo.ok) { sendJson(res, 200, { ok: false, error: repo.error ?? '创建远程仓库失败' }); return }
+        const remoteUrl = `https://github.com/${account.login}/${name}.git`
+        const addResult = await addRemote(cwd, 'origin', remoteUrl)
+        if (!addResult.ok) { sendJson(res, 200, { ok: false, error: addResult.error ?? '关联远程仓库失败', remoteUrl }); return }
+        let committed = false
+        if (body.commit !== false) {
+          const commitResult = await initialCommit(cwd, 'init')
+          committed = commitResult.ok
+        }
+        sendJson(res, 200, { ok: true, root: initResult.root, branch: initResult.branch, remoteUrl, committed })
+        return
+      }
+
+      // 改写 package.json 的 name 字段（账号发布前核对包名）。
+      if (path === '/npm/set-name') {
+        const gate = requireWrite()
+        if (!gate.allowed) {
+          sendJson(res, 403, { ok: false, error: '未开启「允许 Agent 修改仓库」，请在「账号与授权」中开启' })
+          return
+        }
+        const cwd = str(body.cwd).trim()
+        const name = str(body.name).trim()
+        if (!cwd) { sendJson(res, 400, { ok: false, error: '缺少 cwd 参数' }); return }
+        const result = setPackageName(cwd, name)
+        sendJson(res, result.ok ? 200 : 200, { ok: result.ok, error: result.error })
+        return
+      }
+
+      // 发布到 npm（显式「发布」按钮；凭据取 ~/.npmrc，不进请求体、不落盘）。
+      if (path === '/npm/publish') {
+        const gate = requireWrite()
+        if (!gate.allowed) {
+          sendJson(res, 403, { ok: false, error: '未开启「允许 Agent 修改仓库」，请在「账号与授权」中开启' })
+          return
+        }
+        const cwd = str(body.cwd).trim()
+        if (!cwd) { sendJson(res, 400, { ok: false, error: '缺少 cwd 参数' }); return }
+        const result = await publishPackage(cwd)
+        sendJson(res, result.ok ? 200 : 200, { ok: result.ok, output: result.output, error: result.error })
         return
       }
 

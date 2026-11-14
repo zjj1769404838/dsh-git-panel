@@ -82,6 +82,47 @@ export async function listAccountRepos(token: string): Promise<{ ok: boolean; re
   }
 }
 
+export interface CreateRepoResult {
+  ok: boolean
+  cloneUrl?: string
+  htmlUrl?: string
+  error?: string
+}
+
+/**
+ * 在已登录账号下新建个人仓库（POST /user/repos）。
+ * 仅个人仓库：按用户拍板不加 org 选项；auto_init=false，初始空提交由本插件本地创建。
+ * 写操作：调用方须先确认 GitHub 令牌具备 repo 写权限；令牌只经内存与 API，不落盘。
+ */
+export async function createRepo(token: string, name: string, options: { private?: boolean } = {}): Promise<CreateRepoResult> {
+  if (typeof token !== 'string' || token.trim().length === 0) {
+    return { ok: false, error: '缺少 GitHub 令牌（需先在「账号与授权」中连接 GitHub）' }
+  }
+  const safe = name.trim()
+  if (!/^[\w.-]{1,100}$/.test(safe)) {
+    return { ok: false, error: '仓库名只能含字母、数字、. 和 -，最长 100 字符' }
+  }
+  try {
+    const res = await githubFetch('/user/repos', token, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: safe, private: options.private === true, auto_init: false }),
+    })
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, error: 'GitHub 拒绝（令牌缺少 repo 写权限或已撤销）' }
+    }
+    if (res.status === 422) {
+      const data = (await res.json().catch(() => ({}))) as Record<string, any>
+      return { ok: false, error: `创建失败：${typeof data.message === 'string' ? data.message : '仓库可能已存在'}` }
+    }
+    if (!res.ok) return { ok: false, error: `GitHub 返回 ${res.status}` }
+    const data = (await res.json()) as Record<string, any>
+    return { ok: true, cloneUrl: String(data.clone_url ?? ''), htmlUrl: String(data.html_url ?? '') }
+  } catch (error) {
+    return { ok: false, error: `网络错误：${redact(error)}` }
+  }
+}
+
 // ─── OAuth 设备码流程 ───
 // 沿用原插件的既有决定：本插件不内置任何第三方 OAuth 应用凭据，
 // client_id 由用户在连接账号时自填（需自建一个 GitHub OAuth App）。
