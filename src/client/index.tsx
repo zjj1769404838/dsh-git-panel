@@ -509,7 +509,7 @@ function NpmCard({ t, cwd }: { t: (key: string) => string; cwd: string }) {
   const rows = view?.accounts ?? []
 
   return (
-    <div className="dgp-sect">
+    <div className="dgp-subsect">
       <div className="dgp-sect-title">{t('npmAccount')}</div>
       {error && <div className="dgp-empty" role="alert">{error}</div>}
       {rows.map((row) => (

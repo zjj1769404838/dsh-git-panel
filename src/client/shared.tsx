@@ -199,6 +199,9 @@ export const CSS = `
 /* 分区 */
 .dgp-sect { margin: 0; padding: 13px 14px; border-bottom: 1px solid var(--dgp-border); }
 .dgp-sect:last-child { border-bottom: none; }
+/* 子分区：嵌在「账号与授权」折叠区内部。只做纵向分隔，不再叠加左右 padding——
+   否则整块会相对上方的 GITHUB 账号右移一个 padding（14px），造成左边缘不对齐。 */
+.dgp-subsect { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--dgp-border); }
 .dgp-sect-title { font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
   color: var(--dgp-fg-muted); margin-bottom: 9px; }
 .dgp-muted { color: var(--dgp-fg-muted); font-size: 12px; }
