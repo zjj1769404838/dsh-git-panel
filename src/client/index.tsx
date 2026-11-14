@@ -9,7 +9,7 @@ import { NS, api, useStyles, Dot, type AccountView, type Dict, type PanelState, 
 
 export const inject = ['slots', 'sessions', 'locale']
 
-const BUILD = 'dgp-v3.18'
+const BUILD = 'dgp-v3.19'
 
 // ─── 文案（zh / en）───
 
@@ -69,6 +69,7 @@ const ZH: Dict = {
   noCommits: '暂无提交记录',
   packageName: 'npm 包名',
   packageNameHint: '发布前核对包名；如需修改，填写后点「保存包名」。',
+  packageUrl: '包地址',
   saveName: '保存包名',
   publish: '发布到 npm',
   publishing: '处理中…',
@@ -131,6 +132,7 @@ const EN: Dict = {
   noCommits: 'No commits yet',
   packageName: 'npm package name',
   packageNameHint: 'Verify the package name before publishing; edit and click "Save name" if needed.',
+  packageUrl: 'Package URL',
   saveName: 'Save name',
   publish: 'Publish to npm',
   publishing: 'Working…',
@@ -547,6 +549,14 @@ function NpmCard({ t, cwd }: { t: (key: string) => string; cwd: string }) {
       <div className="dgp-sect-title" style={{ marginTop: 10 }}>{t('packageName')}</div>
       <div className="dgp-muted">{t('packageNameHint')}</div>
       <input className="dgp-input" type="text" autoComplete="off" aria-label={t('packageName')} value={pkgName} onChange={(e) => setPkgName(e.target.value)} />
+      {pkgName.trim() && (
+        <div className="dgp-remote">
+          <span className="dgp-remote-name">{t('packageUrl')}</span>
+          <a className="dgp-remote-url" href={`https://www.npmjs.com/package/${encodeURI(pkgName.trim())}`} target="_blank" rel="noopener noreferrer">
+            {`https://www.npmjs.com/package/${encodeURI(pkgName.trim())}`}
+          </a>
+        </div>
+      )}
       <div className="dgp-btnrow" style={{ marginTop: 8 }}>
         <button type="button" className="dgp-btn" onClick={() => void saveName()}>{t('saveName')}</button>
         <button type="button" className="dgp-btn dgp-btn-accent" disabled={busyPublish} onClick={() => void doPublish()}>{busyPublish ? t('publishing') : t('publish')}</button>
